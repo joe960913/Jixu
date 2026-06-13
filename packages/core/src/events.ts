@@ -34,6 +34,18 @@ export interface RunEventPayloads {
   };
   readonly "model.requested": { readonly effect: ModelGenerateEffect };
   readonly "run.created": { readonly agent: AgentSnapshot };
+  readonly "run.forked": {
+    readonly parentEventId: string;
+    readonly parentRunId: string;
+    readonly parentSequence: number;
+  };
+  readonly "run.pause_requested": Record<string, never>;
+  readonly "run.paused": Record<string, never>;
+  readonly "run.resumed": Record<string, never>;
+  readonly "run.waiting": {
+    readonly effectId: string;
+    readonly reasonCode: "effect_outcome_unknown";
+  };
   readonly "tool.completed": {
     readonly effectId: string;
     readonly name: string;

@@ -102,26 +102,55 @@ export interface DriverError {
   readonly retryable: boolean;
 }
 
+export interface ForkLineage {
+  readonly parentEventId: string;
+  readonly parentRunId: string;
+  readonly parentSequence: number;
+}
+
+export interface WaitingReason {
+  readonly effectId: string;
+  readonly reasonCode: "effect_outcome_unknown";
+}
+
 export interface RunState {
   readonly agent: AgentSnapshot | null;
   readonly error: DriverError | null;
+  readonly lineage: ForkLineage | null;
   readonly messages: readonly ModelMessage[];
+  readonly pauseRequested: boolean;
   readonly pendingEffects: Readonly<Record<string, EffectRequest>>;
+  readonly readyEffects: readonly EffectRequest[];
   readonly result: string | null;
   readonly revision: number;
   readonly runId: string;
   readonly status: RunStatus;
+  readonly waitingReason: WaitingReason | null;
+}
+
+export interface Checkpoint {
+  readonly eventId: string;
+  readonly eventSchemaVersion: number;
+  readonly reducerVersion: number;
+  readonly runId: string;
+  readonly sequence: number;
+  readonly state: RunState;
+  readonly stateDigest: string;
 }
 
 export function createInitialRunState(runId: string): RunState {
   return {
     agent: null,
     error: null,
+    lineage: null,
     messages: [],
+    pauseRequested: false,
     pendingEffects: {},
+    readyEffects: [],
     result: null,
     revision: 0,
     runId,
     status: "created",
+    waitingReason: null,
   };
 }

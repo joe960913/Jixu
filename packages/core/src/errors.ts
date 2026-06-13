@@ -59,3 +59,23 @@ export class SchemaValidationError extends JixuError {
     this.name = "SchemaValidationError";
   }
 }
+
+export class AgentMismatchError extends JixuError {
+  constructor(runId: string) {
+    super(
+      "agent_mismatch",
+      `Agent definition does not match the durable snapshot for Run ${runId}`,
+    );
+    this.name = "AgentMismatchError";
+  }
+}
+
+export class InvalidForkPointError extends JixuError {
+  constructor(runId: string, eventId: string) {
+    super(
+      "invalid_fork_point",
+      `Event ${eventId} is not a valid fork point in Run ${runId}`,
+    );
+    this.name = "InvalidForkPointError";
+  }
+}

@@ -4,6 +4,7 @@ import type {
   RunState,
   ToolCall,
 } from "./domain.ts";
+import { createInitialRunState } from "./domain.ts";
 import type {
   EffectRequest,
   ModelGenerateEffect,
@@ -14,6 +15,9 @@ import {
   UnsupportedEventError,
 } from "./errors.ts";
 import type { AnyRunEvent } from "./events.ts";
+import { jsonEquals } from "./json.ts";
+
+export const REDUCER_VERSION = 1;
 
 export interface TransitionResult {
   readonly effects: readonly EffectRequest[];
@@ -27,8 +31,12 @@ function requireAgent(state: RunState): AgentSnapshot {
   return state.agent;
 }
 
-function requireRunning(state: RunState, eventType: string): void {
-  if (state.status !== "running") {
+function requireStatus(
+  state: RunState,
+  eventType: string,
+  expected: RunState["status"],
+): void {
+  if (state.status !== expected) {
     throw new InvalidTransitionError(
       `${eventType} cannot apply while Run ${state.runId} is ${state.status}`,
     );
@@ -52,19 +60,48 @@ function removePending(
   return remaining;
 }
 
-function addPending(
+function acceptRequest(
   state: RunState,
   effect: EffectRequest,
-): Readonly<Record<string, EffectRequest>> {
-  if (state.pendingEffects[effect.id] !== undefined) {
-    throw new InvalidTransitionError(`Effect ${effect.id} is already pending`);
-  }
+): {
+  readonly pendingEffects: Readonly<Record<string, EffectRequest>>;
+  readonly readyEffects: readonly EffectRequest[];
+} {
   if (effect.runId !== state.runId) {
     throw new InvalidTransitionError(
       `Effect ${effect.id} belongs to Run ${effect.runId}`,
     );
   }
-  return { ...state.pendingEffects, [effect.id]: effect };
+
+  const pending = state.pendingEffects[effect.id];
+  if (pending !== undefined) {
+    if (
+      effect.attempt !== pending.attempt + 1 ||
+      effect.type !== pending.type ||
+      effect.idempotencyKey !== pending.idempotencyKey ||
+      effect.requestedByEventId !== pending.requestedByEventId ||
+      !jsonEquals(effect.input, pending.input)
+    ) {
+      throw new InvalidTransitionError(
+        `Effect ${effect.id} retry does not preserve logical identity`,
+      );
+    }
+    return {
+      pendingEffects: { ...state.pendingEffects, [effect.id]: effect },
+      readyEffects: state.readyEffects,
+    };
+  }
+
+  const readyIndex = state.readyEffects.findIndex(
+    (candidate) => candidate.id === effect.id,
+  );
+  if (readyIndex < 0 || !jsonEquals(state.readyEffects[readyIndex], effect)) {
+    throw new InvalidTransitionError(`Effect ${effect.id} is not ready`);
+  }
+  return {
+    pendingEffects: { ...state.pendingEffects, [effect.id]: effect },
+    readyEffects: state.readyEffects.filter((_, index) => index !== readyIndex),
+  };
 }
 
 function createModelEffect(
@@ -124,6 +161,21 @@ function advance(
   return { ...state, ...updates, revision: sequence };
 }
 
+function withReadyEffects(
+  state: RunState,
+  sequence: number,
+  effects: readonly EffectRequest[],
+  updates: Partial<RunState> = {},
+): TransitionResult {
+  return {
+    effects,
+    state: advance(state, sequence, {
+      ...updates,
+      readyEffects: effects,
+    }),
+  };
+}
+
 function failAfterToolOutcome(
   state: RunState,
   sequence: number,
@@ -137,7 +189,9 @@ function failAfterToolOutcome(
     effects: [],
     state: advance(state, sequence, {
       error: state.error ?? error,
+      pauseRequested: hasPendingTools ? state.pauseRequested : false,
       pendingEffects: remaining,
+      readyEffects: [],
       status: hasPendingTools ? "running" : "failed",
     }),
   };
@@ -171,12 +225,29 @@ export function reduce(state: RunState, event: AnyRunEvent): TransitionResult {
       };
     }
 
-    case "input.received": {
-      if (state.status !== "created") {
+    case "run.forked": {
+      if (state.revision === 0 || state.agent === null) {
         throw new InvalidTransitionError(
-          `Initial input cannot apply while Run ${state.runId} is ${state.status}`,
+          `Run ${state.runId} cannot record lineage before its copied prefix`,
         );
       }
+      return {
+        effects: [],
+        state: advance(state, event.sequence, {
+          error: null,
+          lineage: event.payload,
+          pauseRequested: false,
+          pendingEffects: {},
+          readyEffects: [],
+          result: null,
+          status: "created",
+          waitingReason: null,
+        }),
+      };
+    }
+
+    case "input.received": {
+      requireStatus(state, event.type, "created");
       const nextState = advance(state, event.sequence, {
         messages: [
           ...state.messages,
@@ -184,24 +255,74 @@ export function reduce(state: RunState, event: AnyRunEvent): TransitionResult {
         ],
         status: "running",
       });
+      const effects = [createModelEffect(nextState, event.id, 0)];
+      return withReadyEffects(nextState, event.sequence, effects);
+    }
+
+    case "run.pause_requested": {
+      requireStatus(state, event.type, "running");
+      if (state.pauseRequested) {
+        throw new InvalidTransitionError(`Run ${state.runId} already has a pause request`);
+      }
       return {
-        effects: [createModelEffect(nextState, event.id, 0)],
-        state: nextState,
+        effects: [],
+        state: advance(state, event.sequence, { pauseRequested: true }),
       };
     }
 
-    case "model.requested": {
-      requireRunning(state, event.type);
+    case "run.paused": {
+      requireStatus(state, event.type, "running");
+      if (!state.pauseRequested) {
+        throw new InvalidTransitionError(`Run ${state.runId} has no pause request`);
+      }
       return {
         effects: [],
         state: advance(state, event.sequence, {
-          pendingEffects: addPending(state, event.payload.effect),
+          pauseRequested: false,
+          status: "paused",
         }),
       };
     }
 
+    case "run.resumed": {
+      requireStatus(state, event.type, "paused");
+      return {
+        effects: state.readyEffects,
+        state: advance(state, event.sequence, {
+          status: "running",
+          waitingReason: null,
+        }),
+      };
+    }
+
+    case "run.waiting": {
+      requireStatus(state, event.type, "running");
+      if (state.pendingEffects[event.payload.effectId] === undefined) {
+        throw new InvalidTransitionError(
+          `Waiting Effect ${event.payload.effectId} is not pending`,
+        );
+      }
+      return {
+        effects: [],
+        state: advance(state, event.sequence, {
+          pauseRequested: false,
+          status: "waiting",
+          waitingReason: event.payload,
+        }),
+      };
+    }
+
+    case "model.requested": {
+      requireStatus(state, event.type, "running");
+      const accepted = acceptRequest(state, event.payload.effect);
+      return {
+        effects: [],
+        state: advance(state, event.sequence, accepted),
+      };
+    }
+
     case "model.completed": {
-      requireRunning(state, event.type);
+      requireStatus(state, event.type, "running");
       const remaining = removePending(
         state,
         event.payload.effectId,
@@ -217,20 +338,20 @@ export function reduce(state: RunState, event: AnyRunEvent): TransitionResult {
             toolCalls: response.toolCalls,
           },
         ],
+        pauseRequested:
+          response.toolCalls.length === 0 ? false : state.pauseRequested,
         pendingEffects: remaining,
         result: response.toolCalls.length === 0 ? response.content : null,
         status: response.toolCalls.length === 0 ? "completed" : "running",
       });
-      return {
-        effects: response.toolCalls.map((call, index) =>
-          createToolEffect(nextState, call, event.id, index),
-        ),
-        state: nextState,
-      };
+      const effects = response.toolCalls.map((call, index) =>
+        createToolEffect(nextState, call, event.id, index),
+      );
+      return withReadyEffects(nextState, event.sequence, effects);
     }
 
     case "model.failed": {
-      requireRunning(state, event.type);
+      requireStatus(state, event.type, "running");
       const remaining = removePending(
         state,
         event.payload.effectId,
@@ -240,24 +361,25 @@ export function reduce(state: RunState, event: AnyRunEvent): TransitionResult {
         effects: [],
         state: advance(state, event.sequence, {
           error: event.payload.error,
+          pauseRequested: false,
           pendingEffects: remaining,
+          readyEffects: [],
           status: "failed",
         }),
       };
     }
 
     case "tool.requested": {
-      requireRunning(state, event.type);
+      requireStatus(state, event.type, "running");
+      const accepted = acceptRequest(state, event.payload.effect);
       return {
         effects: [],
-        state: advance(state, event.sequence, {
-          pendingEffects: addPending(state, event.payload.effect),
-        }),
+        state: advance(state, event.sequence, accepted),
       };
     }
 
     case "tool.completed": {
-      requireRunning(state, event.type);
+      requireStatus(state, event.type, "running");
       const remaining = removePending(
         state,
         event.payload.effectId,
@@ -284,17 +406,20 @@ export function reduce(state: RunState, event: AnyRunEvent): TransitionResult {
       if (nextState.error !== null) {
         return {
           effects: [],
-          state: { ...nextState, status: "failed" },
+          state: {
+            ...nextState,
+            pauseRequested: false,
+            readyEffects: [],
+            status: "failed",
+          },
         };
       }
-      return {
-        effects: [createModelEffect(nextState, event.id, 0)],
-        state: nextState,
-      };
+      const effects = [createModelEffect(nextState, event.id, 0)];
+      return withReadyEffects(nextState, event.sequence, effects);
     }
 
     case "tool.failed": {
-      requireRunning(state, event.type);
+      requireStatus(state, event.type, "running");
       const remaining = removePending(
         state,
         event.payload.effectId,
@@ -319,16 +444,7 @@ export function replayEvents(
   runId: string,
   events: readonly AnyRunEvent[],
 ): RunState {
-  let state: RunState = {
-    agent: null,
-    error: null,
-    messages: [],
-    pendingEffects: {},
-    result: null,
-    revision: 0,
-    runId,
-    status: "created",
-  };
+  let state = createInitialRunState(runId);
   for (const event of events) {
     state = reduce(state, event).state;
   }

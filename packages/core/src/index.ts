@@ -3,6 +3,7 @@ export {
   defineSchema,
   defineTool,
 } from "./agent.ts";
+export { decodeCheckpoint, decodeRunEvent } from "./codec.ts";
 export type {
   AgentConfig,
   AgentDefinition,
@@ -20,7 +21,9 @@ export {
 export type {
   AgentSnapshot,
   AssistantMessage,
+  Checkpoint,
   DriverError,
+  ForkLineage,
   ModelMessage,
   ModelRef,
   ModelResponse,
@@ -31,6 +34,7 @@ export type {
   ToolIdempotency,
   ToolMessage,
   UserMessage,
+  WaitingReason,
 } from "./domain.ts";
 export type {
   DriverFailure,
@@ -46,6 +50,8 @@ export type {
   ToolExecuteInput,
 } from "./effects.ts";
 export {
+  AgentMismatchError,
+  InvalidForkPointError,
   InvalidTransitionError,
   JixuError,
   RevisionConflictError,
@@ -68,18 +74,28 @@ export {
   cloneFrozenJson,
   isJsonObject,
   isJsonValue,
+  jsonDigest,
+  jsonEquals,
 } from "./json.ts";
 export type { JsonObject, JsonPrimitive, JsonValue } from "./json.ts";
 export type {
   Clock,
   EventStore,
+  EventStreamItem,
   IdGenerator,
   ModelDriver,
+  ModelDriverContext,
+  RunStreamItem,
   Signal,
   SignalSink,
 } from "./ports.ts";
-export { reduce, replayEvents } from "./reducer.ts";
+export { REDUCER_VERSION, reduce, replayEvents } from "./reducer.ts";
 export type { TransitionResult } from "./reducer.ts";
 export { createRuntime, Runtime } from "./runtime.ts";
-export type { RunHandle, RuntimeConfig } from "./runtime.ts";
+export type {
+  ForkOptions,
+  RunHandle,
+  RunStreamOptions,
+  RuntimeConfig,
+} from "./runtime.ts";
 export { InMemoryEventStore } from "./store.ts";
