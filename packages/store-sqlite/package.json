@@ -1,11 +1,10 @@
 {
-  "name": "@jixu/testkit",
+  "name": "@jixu/store-sqlite",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./store-contract": "./src/store-contract.ts"
+    ".": "./src/index.ts"
   },
   "dependencies": {
     "@jixu/core": "workspace:*"
