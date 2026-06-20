@@ -1,0 +1,229 @@
+# Jixu Repository Instructions
+
+These instructions apply to every human or AI agent changing this repository.
+
+## 1. Read order
+
+Before proposing or making a change, read:
+
+1. `SPEC.md` — normative product behavior and architecture;
+2. this file — repository working rules;
+3. the relevant implementation and tests; and
+4. any directly relevant ADR or package documentation.
+
+Do not infer architecture from filenames, examples, or provider SDKs when the
+specification already defines it.
+
+## 2. Sources of truth
+
+- The ordered durable Event log is the sole authority for a Run.
+- State is derived from Events.
+- A Checkpoint is a disposable performance cache.
+- A Signal is transient and non-authoritative.
+- Provider conversation state, UI state, traces, and in-memory objects are not
+  runtime authority.
+- `SPEC.md` is the authority for public semantics and package boundaries at the
+  current commit. It is a living specification, not an immutable artifact.
+
+Never introduce a second run-state machine, a second event history, or a second
+component that can independently decide canonical Run status.
+
+## 3. Canonical concepts
+
+Use the terminology in `SPEC.md` exactly:
+
+- `Agent` is immutable configuration.
+- `Runtime` binds Stores and Drivers to the Kernel but is not durable authority.
+- `Run` is one durable execution.
+- `Kernel` is I/O-free domain logic.
+- `Event` is an immutable durable fact.
+- `Signal` is a transient observation.
+- `State` is the deterministic Event projection.
+- `Reducer` is pure.
+- `Effect` requests external work.
+- `Driver` performs an Effect.
+- `Tool` acts.
+- `Skill` supplies instructional context.
+- `Checkpoint` accelerates recovery but is not authority.
+- `Fork` creates a new Run.
+- `Replay` performs no Effects.
+
+Do not use `session`, `thread`, `workflow`, `job`, or `task` as a synonym for
+Run. Application layers may own those concepts only through an explicit mapping.
+
+If a proposed concept overlaps an existing term, stop and simplify instead of
+adding another noun.
+
+## 4. Architecture invariants
+
+All implementation must preserve these invariants:
+
+1. Externally observable work follows
+   `Event -> Reducer -> Effect -> Driver -> Event`.
+2. An external Effect is durably requested before dispatch.
+3. Reducers do not perform I/O, read clocks, generate random IDs, or call SDKs.
+4. Adapters depend on core ports; core never imports adapters.
+5. Replay is read-only and never dispatches a live Driver.
+6. Fork creates a new Run with explicit parent lineage.
+7. Unknown event types and schema versions fail closed.
+8. Secrets never enter Events, Checkpoints, errors, or Signals.
+9. Exactly-once behavior is never claimed without an enforceable idempotency
+   contract.
+10. Normal users do not write Reducers or manually construct Events.
+
+## 5. Spec-driven workflow
+
+`SPEC.md` records the best current understanding of Jixu. Development is
+expected to expose incorrect assumptions, missing failure modes, or simpler
+designs. Treat that evidence as input to the specification instead of forcing
+the implementation to preserve a stale idea.
+
+Spec-driven means the specification and implementation evolve together in a
+controlled order. It does not mean the first specification is permanently
+correct.
+
+### When implementation evidence disagrees with the spec
+
+1. Reproduce or otherwise verify the mismatch with code, tests, upstream
+   behavior, or a concrete constraint.
+2. Decide whether the mismatch is an implementation bug, an adapter detail, or
+   a wrong/incomplete product assumption.
+3. Record the evidence and the affected `JX-*` requirements.
+4. Update `SPEC.md` to the smallest coherent design that explains the evidence.
+5. Preserve stable requirement IDs where their meaning remains intact. Deprecate
+   or replace an ID explicitly; never silently reuse it for different semantics.
+6. Update acceptance criteria and compatibility or migration notes.
+7. Then change the implementation and tests to match the revised spec.
+
+Do not contort code around a disproven requirement. Do not silently make the
+code authoritative either.
+
+An evidence-backed spec correction that stays within the accepted goals,
+non-goals, public promise, and task scope MAY be made in the same change as its
+implementation. A change to project goals, non-goals, the public promise,
+security guarantees, compatibility policy, or milestone scope requires explicit
+maintainer direction before implementation.
+
+Significant decisions SHOULD receive an ADR explaining the evidence and rejected
+alternatives. Minor clarifications do not need an ADR. Avoid speculative spec
+churn without implementation evidence or a concrete user requirement.
+
+Before implementation, classify the change:
+
+### Behavior or architecture change
+
+1. Update `SPEC.md` first.
+2. Add or modify stable `JX-*` requirement IDs.
+3. State the affected packages, compatibility impact, and migration path.
+4. Define or update release-blocking acceptance criteria.
+5. Only then implement the narrowest design that satisfies the spec.
+
+### Behavior-preserving implementation change
+
+1. Cite the existing `JX-*` requirements it preserves.
+2. Confirm that no public semantics or canonical terms change.
+3. Keep the diff scoped to the implementation problem.
+
+Do not implement unspecified behavior and document it afterward.
+
+## 6. Planning expectations
+
+At the start of substantive work, state:
+
+- intended outcome;
+- affected requirement and acceptance IDs;
+- files or packages expected to change;
+- important non-goals; and
+- validation commands.
+
+If evidence contradicts the spec, follow the evolution process in §5. Continue
+through the spec update and implementation when the correction stays within the
+authorized scope; stop for maintainer direction only when it materially changes
+the product or scope.
+
+## 7. Implementation rules
+
+- Prefer plain TypeScript and explicit data flow over decorators, reflection,
+  registries, or hidden global state.
+- Keep `core` free of provider SDKs, MCP SDKs, database drivers, web frameworks,
+  and CLI frameworks.
+- Keep durable data JSON-serializable and schema-versioned.
+- Inject clocks, ID generation, Drivers, Stores, and Signal sinks.
+- Preserve provider-native metadata only behind typed adapter boundaries.
+- Use exhaustive discriminated unions for lifecycle, Event, Effect, and outcome
+  handling.
+- Fail closed when persisted data is unknown or incompatible.
+- Avoid generic abstractions until at least two concrete use cases require the
+  same behavior.
+- Do not add a dependency when a small local implementation is clearer, but do
+  not recreate an ecosystem protocol that Jixu should adapt to.
+
+## 8. Testing rules
+
+Tests must focus on load-bearing behavior, failure paths, and regressions.
+
+- Every behavior test cites one or more `JX-AC-*` acceptance IDs in its name or
+  adjacent comment.
+- Reducer tests are deterministic and perform no I/O.
+- Driver contract tests cover success, typed failure, cancellation,
+  indeterminate outcomes, and idempotency identity.
+- Recovery tests inject failures at append/dispatch/outcome boundaries.
+- Replay tests assert that no live Driver was called.
+- Fork tests assert parent immutability and exact State at the fork point.
+- Store contract tests run against every Store adapter.
+- Provider tests distinguish mocked contract tests from explicitly enabled live
+  probes.
+- Do not add low-value tests that only repeat TypeScript or library behavior.
+
+A milestone with a developer-facing surface is not complete until its documented
+acceptance path can be run by a maintainer. Internal tests alone cannot close
+that milestone. The runnable path MUST exercise the ordinary public concepts;
+do not invent a demo-only Agent subtype, state machine, or bypass around the
+Runtime.
+
+The minimum validation for a code change is targeted tests, typecheck, lint, and
+`git diff --check`. Release work also runs the full acceptance suite.
+
+## 9. Documentation rules
+
+- Use one canonical term for one concept.
+- Separate normative guarantees from illustrative examples.
+- Mark planned APIs as planned until they are published.
+- Do not advertise exactly-once execution, deterministic model behavior, or
+  distributed durability beyond what `SPEC.md` guarantees.
+- Update README examples when a public API changes.
+
+### Private stage records
+
+After each implementation stage passes its required validation, create one
+Chinese retrospective in `docs/stages/` before reporting the stage complete.
+Use the local template in that directory and record:
+
+- the stage goal, requirement IDs, and boundary;
+- why the architecture and trade-offs were chosen;
+- how the implementation works through the canonical execution model;
+- technologies and language/runtime features used;
+- validation evidence, failures encountered, and lessons learned;
+- known limitations, deferred work, and the next stage boundary.
+
+These records are private working assets, not normative project documentation.
+`SPEC.md` remains authoritative. The repository-local `.git/info/exclude` MUST
+exclude `/docs/`; never force-add, commit, push, or quote private stage records
+in a public PR or Issue.
+
+## 10. Change discipline
+
+- Branch names MUST NOT use the `codex/` prefix. Use a concise milestone or
+  intent name such as `m2-continuity` or `fix/revision-conflict`.
+- Complete and validate each milestone locally, then stop for maintainer
+  acceptance. Commit, push, and merge only after the maintainer explicitly
+  accepts that milestone.
+- Preserve unrelated user changes.
+- Do not make drive-by refactors or repository-wide formatting changes.
+- Do not update generated files, snapshots, dependencies, or lockfiles unless
+  they are part of the stated scope.
+- Do not add hosted services, telemetry, or network writes by default.
+- Use terse commits that describe the intent of the complete diff.
+
+The architecture should become easier to explain after every change. If a
+change requires more concepts to describe the same lifecycle, reconsider it.
