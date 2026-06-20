@@ -141,7 +141,45 @@ through the spec update and implementation when the correction stays within the
 authorized scope; stop for maintainer direction only when it materially changes
 the product or scope.
 
-## 7. Implementation rules
+## 7. Release-quality standard
+
+Every accepted development request MUST be implemented to a publishable standard
+within its stated milestone boundary. A working demo, toy implementation, happy-path
+prototype, or repository-only shortcut is evidence for exploration, not a completed
+deliverable.
+
+- Prefer current, maintained, ecosystem-native primitives and official extension
+  points. "Modern" means supported, interoperable, well-understood, and simpler to
+  operate; it does not mean adopting the newest dependency without evidence.
+- Design the public API, package boundary, configuration, errors, types, security,
+  compatibility, documentation, and upgrade path as parts of the implementation,
+  not as cleanup deferred until publication.
+- Exercise the real public entry point and ordinary consumer path. Build, test,
+  package, and publish MUST use the same artifact pipeline and the same authoritative
+  metadata; a synthetic test artifact cannot stand in for the artifact that will be
+  released.
+- Keep one source of truth for release metadata and runtime semantics. Generated or
+  transformed output MUST be mechanically derived from that source and verified for
+  drift.
+- Use realistic failure paths and clean-environment acceptance checks. A milestone is
+  not complete when it works only inside the monorepo, through private imports, with
+  undeclared dependencies, or via a demo-only bypass.
+- Optimize for clarity and long-term maintenance before cleverness. Avoid both
+  speculative abstraction and expedient duplication that makes the release path
+  harder to explain.
+- A spike or prototype MAY be used to reduce uncertainty, but it MUST be explicitly
+  labeled, isolated from the release path, and given an exit decision. It cannot
+  satisfy a milestone acceptance criterion or be presented as finished product code.
+- Any deliberate release-quality gap MUST be named before implementation with its
+  reason, risk, owner, removal milestone, and release impact. Do not silently defer a
+  known release blocker to a later milestone.
+
+When choosing between a shortcut and a release-quality design inside the accepted
+scope, choose the release-quality design. If that choice would materially expand the
+milestone, surface the conflict and revise the scope or specification explicitly
+instead of silently shipping the shortcut.
+
+## 8. Implementation rules
 
 - Prefer plain TypeScript and explicit data flow over decorators, reflection,
   registries, or hidden global state.
@@ -158,7 +196,7 @@ the product or scope.
 - Do not add a dependency when a small local implementation is clearer, but do
   not recreate an ecosystem protocol that Jixu should adapt to.
 
-## 8. Testing rules
+## 9. Testing rules
 
 Tests must focus on load-bearing behavior, failure paths, and regressions.
 
@@ -184,7 +222,7 @@ Runtime.
 The minimum validation for a code change is targeted tests, typecheck, lint, and
 `git diff --check`. Release work also runs the full acceptance suite.
 
-## 9. Documentation rules
+## 10. Documentation rules
 
 - Use one canonical term for one concept.
 - Separate normative guarantees from illustrative examples.
@@ -211,13 +249,18 @@ These records are private working assets, not normative project documentation.
 exclude `/docs/`; never force-add, commit, push, or quote private stage records
 in a public PR or Issue.
 
-## 10. Change discipline
+## 11. Change discipline
 
 - Branch names MUST NOT use the `codex/` prefix. Use a concise milestone or
   intent name such as `m2-continuity` or `fix/revision-conflict`.
 - Complete and validate each milestone locally, then stop for maintainer
   acceptance. Commit, push, and merge only after the maintainer explicitly
   accepts that milestone.
+- This repository currently has one maintainer. After acceptance, routine and
+  milestone-sized changes SHOULD be pushed and merged directly without a pull
+  request. Use a pull request only when the maintainer explicitly asks for one
+  or when a change is exceptionally large or high-risk and benefits materially
+  from a separate review surface.
 - Preserve unrelated user changes.
 - Do not make drive-by refactors or repository-wide formatting changes.
 - Do not update generated files, snapshots, dependencies, or lockfiles unless

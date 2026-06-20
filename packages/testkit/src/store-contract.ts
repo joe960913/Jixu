@@ -6,14 +6,11 @@ import {
   jsonDigest,
   REDUCER_VERSION,
   replayEvents,
-  RevisionConflictError,
-  RunAlreadyExistsError,
-  RunNotFoundError,
-} from "../../core/src/index.ts";
+} from "@jixu/core";
 import type {
   AnyRunEvent,
   EventStore,
-} from "../../core/src/index.ts";
+} from "@jixu/core";
 
 export interface StoreContractFixture {
   readonly cleanup?: () => Promise<void> | void;
@@ -41,6 +38,13 @@ function created(runId: string, eventId: string): AnyRunEvent {
   });
 }
 
+function hasErrorCode(expectedCode: string): (error: unknown) => boolean {
+  return (error) =>
+    error instanceof Error &&
+    "code" in error &&
+    error.code === expectedCode;
+}
+
 export function defineStoreContract(
   name: string,
   factory: StoreContractFactory,
@@ -52,7 +56,7 @@ export function defineStoreContract(
       await store.createRun("run-contract");
       await assert.rejects(
         store.createRun("run-contract"),
-        RunAlreadyExistsError,
+        hasErrorCode("run_already_exists"),
       );
       const first = created("run-contract", "event-contract-1");
       await store.append("run-contract", 0, first);
@@ -89,7 +93,7 @@ export function defineStoreContract(
       );
       const rejected = results.find((result) => result.status === "rejected");
       assert.ok(rejected !== undefined && rejected.status === "rejected");
-      assert.ok(rejected.reason instanceof RevisionConflictError);
+      assert.ok(hasErrorCode("revision_conflict")(rejected.reason));
     } finally {
       await fixture.cleanup?.();
     }
@@ -109,7 +113,10 @@ export function defineStoreContract(
         sequence: 2,
       };
       await assert.rejects(store.createFork("partial-fork", [invalid]));
-      await assert.rejects(store.read("partial-fork"), RunNotFoundError);
+      await assert.rejects(
+        store.read("partial-fork"),
+        hasErrorCode("run_not_found"),
+      );
     } finally {
       await fixture.cleanup?.();
     }

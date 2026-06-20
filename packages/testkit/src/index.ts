@@ -8,7 +8,7 @@ import type {
   ModelOutcome,
   Signal,
   SignalSink,
-} from "../../core/src/index.ts";
+} from "@jixu/core";
 
 export class FixedClock implements Clock {
   readonly #value: string;

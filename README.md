@@ -5,9 +5,9 @@
 Jixu is a small, event-sourced TypeScript runtime for agents that can pause,
 resume, fork, and replay.
 
-> **Project status:** M2 continuity runtime and its M2.1 experiential gate are
-> implemented locally, awaiting maintainer acceptance. Packages remain
-> unpublished and the public API is pre-release.
+> **Project status:** M2 continuity, the M2.1 experiential gate, and the M2.2
+> package portability gate are implemented locally. M2.2 is awaiting maintainer
+> acceptance. Packages remain unpublished and the public API is pre-release.
 
 ## Why Jixu
 
@@ -91,11 +91,22 @@ Useful controls:
 - `/config` changes the API format, Base URL, credentials, and model ID; and
 - `/help` shows the complete command list.
 
-The current source checkout has one canonical pnpm lockfile. Installation from
-packed release candidates through npm, pnpm, Yarn, and Bun is an M4 release
-acceptance item; it is not yet a supported published-package claim.
+The source checkout retains one canonical pnpm lockfile. Package portability is
+verified separately against derived release candidates:
 
-## Implemented through M2.1
+```bash
+pnpm run test:packages
+```
+
+That acceptance command compiles one set of ESM JavaScript and TypeScript
+declaration tarballs, then installs those exact local files in isolated npm,
+pnpm, Yarn, and Bun consumers. Every consumer executes the same documented
+`@jixu/core` Agent Run on Node and imports the first-party headless adapters.
+Generated packages, consumer lockfiles, and caches remain in temporary
+directories. Registry publication and release versioning remain M4 work, so
+this is not yet a public npm availability claim.
+
+## Implemented through M2.2
 
 - Deterministic Event → Reducer → Effect → Driver execution.
 - Recovery from the durable Event log, with ready and pending Effects kept
@@ -114,6 +125,8 @@ acceptance item; it is not yet a supported published-package claim.
   explicitly unsandboxed local `bash` Tool.
 - A reference OpenTUI application that runs the same ordinary `Agent`, persists
   credentials separately, and exposes continuity controls.
+- Compiled package candidates whose manifests contain no workspace-only paths,
+  verified from the same tarballs in clean npm, pnpm, Yarn, and Bun consumers.
 
 The JSONL Store is intended for one active local process. The SQLite adapter
 uses Node's built-in `node:sqlite`, which is still marked experimental by the
@@ -152,8 +165,9 @@ const recovered = await runtime.recover(agent, run.id);
 ```
 
 Live Runs also expose `pause()` and `resume()` at durable dispatch boundaries.
-Anthropic, MCP, Agent Skills, cancellation, package publication, standalone
-executables, and release examples remain planned for later milestones.
+Anthropic, MCP, Agent Skills, cancellation, registry publication and versioning,
+standalone executables, and release examples remain planned for later
+milestones.
 
 ## License
 

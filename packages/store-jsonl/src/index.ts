@@ -19,12 +19,12 @@ import {
   RevisionConflictError,
   RunAlreadyExistsError,
   RunNotFoundError,
-} from "../../core/src/index.ts";
+} from "@jixu/core";
 import type {
   AnyRunEvent,
   Checkpoint,
   EventStore,
-} from "../../core/src/index.ts";
+} from "@jixu/core";
 
 function errorCode(error: unknown): string | undefined {
   if (error !== null && typeof error === "object" && "code" in error) {

@@ -1,11 +1,36 @@
 {
   "name": "@jixu/testkit",
   "version": "0.0.0",
-  "private": true,
+  "description": "Deterministic fixtures and Store contracts for Jixu.",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joe960913/Jixu.git",
+    "directory": "packages/testkit"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./store-contract": "./src/store-contract.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./store-contract": {
+      "types": "./dist/store-contract.d.ts",
+      "import": "./dist/store-contract.js",
+      "default": "./dist/store-contract.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@jixu/core": "workspace:*"

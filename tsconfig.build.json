@@ -1,0 +1,12 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/core/tsconfig.build.json" },
+    { "path": "./packages/llm/tsconfig.build.json" },
+    { "path": "./packages/store-jsonl/tsconfig.build.json" },
+    { "path": "./packages/store-sqlite/tsconfig.build.json" },
+    { "path": "./packages/testkit/tsconfig.build.json" },
+    { "path": "./packages/tools-node/tsconfig.build.json" },
+    { "path": "./packages/jixu/tsconfig.build.json" }
+  ]
+}
