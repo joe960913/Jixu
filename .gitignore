@@ -11,4 +11,5 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
+.agents/
 .jixu/
