@@ -13,15 +13,15 @@ import { randomUUID } from "node:crypto";
 
 import {
   decodeCheckpoint,
-  decodeRunEvent,
+  decodeThreadEvent,
   InvalidTransitionError,
   replayEvents,
   RevisionConflictError,
-  RunAlreadyExistsError,
-  RunNotFoundError,
+  ThreadAlreadyExistsError,
+  ThreadNotFoundError,
 } from "@jixu/core";
 import type {
-  AnyRunEvent,
+  AnyThreadEvent,
   Checkpoint,
   EventStore,
 } from "@jixu/core";
@@ -34,11 +34,11 @@ function errorCode(error: unknown): string | undefined {
   return undefined;
 }
 
-function runFileName(runId: string): string {
-  return `${encodeURIComponent(runId)}.jsonl`;
+function threadFileName(threadId: string): string {
+  return `${encodeURIComponent(threadId)}.jsonl`;
 }
 
-function runIdFromFileName(fileName: string): string {
+function threadIdFromFileName(fileName: string): string {
   return decodeURIComponent(fileName.slice(0, -".jsonl".length));
 }
 
@@ -46,25 +46,25 @@ export class JsonlEventStore implements EventStore {
   readonly #checkpointDirectory: string;
   readonly #eventIds = new Set<string>();
   readonly #initialization: Promise<void>;
-  readonly #runDirectory: string;
+  readonly #threadDirectory: string;
   #writeTail: Promise<void> = Promise.resolve();
 
   constructor(directory: string) {
-    this.#runDirectory = join(directory, "runs");
+    this.#threadDirectory = join(directory, "threads");
     this.#checkpointDirectory = join(directory, "checkpoints");
     this.#initialization = this.#initialize();
   }
 
   async #initialize(): Promise<void> {
-    await mkdir(this.#runDirectory, { recursive: true });
+    await mkdir(this.#threadDirectory, { recursive: true });
     await mkdir(this.#checkpointDirectory, { recursive: true });
-    const entries = await readdir(this.#runDirectory, { withFileTypes: true });
+    const entries = await readdir(this.#threadDirectory, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith(".jsonl")) {
         continue;
       }
-      const runId = runIdFromFileName(entry.name);
-      for (const event of await this.#readEvents(runId)) {
+      const threadId = threadIdFromFileName(entry.name);
+      for (const event of await this.#readEvents(threadId)) {
         if (this.#eventIds.has(event.id)) {
           throw new InvalidTransitionError(`Event ID ${event.id} is duplicated`);
         }
@@ -84,12 +84,12 @@ export class JsonlEventStore implements EventStore {
     return current;
   }
 
-  #runPath(runId: string): string {
-    return join(this.#runDirectory, runFileName(runId));
+  #threadPath(threadId: string): string {
+    return join(this.#threadDirectory, threadFileName(threadId));
   }
 
-  #checkpointPath(runId: string): string {
-    return join(this.#checkpointDirectory, `${encodeURIComponent(runId)}.json`);
+  #checkpointPath(threadId: string): string {
+    return join(this.#checkpointDirectory, `${encodeURIComponent(threadId)}.json`);
   }
 
   async #writeNew(path: string, contents: string): Promise<void> {
@@ -112,13 +112,13 @@ export class JsonlEventStore implements EventStore {
     }
   }
 
-  async #readEvents(runId: string): Promise<readonly AnyRunEvent[]> {
+  async #readEvents(threadId: string): Promise<readonly AnyThreadEvent[]> {
     let source: string;
     try {
-      source = await readFile(this.#runPath(runId), "utf8");
+      source = await readFile(this.#threadPath(threadId), "utf8");
     } catch (error) {
       if (errorCode(error) === "ENOENT") {
-        throw new RunNotFoundError(runId);
+        throw new ThreadNotFoundError(threadId);
       }
       throw error;
     }
@@ -128,17 +128,17 @@ export class JsonlEventStore implements EventStore {
     return source
       .trimEnd()
       .split("\n")
-      .map((line) => decodeRunEvent(JSON.parse(line) as unknown));
+      .map((line) => decodeThreadEvent(JSON.parse(line) as unknown));
   }
 
-  async createRun(runId: string): Promise<void> {
+  async createThread(threadId: string): Promise<void> {
     await this.#initialization;
     await this.#withWriteLock(async () => {
       try {
-        await this.#writeNew(this.#runPath(runId), "");
+        await this.#writeNew(this.#threadPath(threadId), "");
       } catch (error) {
         if (errorCode(error) === "EEXIST") {
-          throw new RunAlreadyExistsError(runId);
+          throw new ThreadAlreadyExistsError(threadId);
         }
         throw error;
       }
@@ -146,20 +146,20 @@ export class JsonlEventStore implements EventStore {
   }
 
   async createFork(
-    runId: string,
-    events: readonly AnyRunEvent[],
+    threadId: string,
+    events: readonly AnyThreadEvent[],
   ): Promise<void> {
     await this.#initialization;
     await this.#withWriteLock(async () => {
       if (events.length === 0) {
-        throw new InvalidTransitionError(`Fork ${runId} must contain Events`);
+        throw new InvalidTransitionError(`Fork ${threadId} must contain Events`);
       }
       const localIds = new Set<string>();
       const validated = events.map((event, index) => {
-        const decoded = decodeRunEvent(event);
-        if (decoded.runId !== runId || decoded.sequence !== index + 1) {
+        const decoded = decodeThreadEvent(event);
+        if (decoded.threadId !== threadId || decoded.sequence !== index + 1) {
           throw new InvalidTransitionError(
-            `Fork Event ${decoded.id} is not contiguous for Run ${runId}`,
+            `Fork Event ${decoded.id} is not contiguous for Thread ${threadId}`,
           );
         }
         if (this.#eventIds.has(decoded.id) || localIds.has(decoded.id)) {
@@ -168,13 +168,13 @@ export class JsonlEventStore implements EventStore {
         localIds.add(decoded.id);
         return decoded;
       });
-      replayEvents(runId, validated);
+      replayEvents(threadId, validated);
       const contents = `${validated.map((event) => JSON.stringify(event)).join("\n")}\n`;
       try {
-        await this.#writeNew(this.#runPath(runId), contents);
+        await this.#writeNew(this.#threadPath(threadId), contents);
       } catch (error) {
         if (errorCode(error) === "EEXIST") {
-          throw new RunAlreadyExistsError(runId);
+          throw new ThreadAlreadyExistsError(threadId);
         }
         throw error;
       }
@@ -185,20 +185,20 @@ export class JsonlEventStore implements EventStore {
   }
 
   async append(
-    runId: string,
+    threadId: string,
     expectedRevision: number,
-    event: AnyRunEvent,
+    event: AnyThreadEvent,
   ): Promise<void> {
     await this.#initialization;
     await this.#withWriteLock(async () => {
-      const events = await this.#readEvents(runId);
+      const events = await this.#readEvents(threadId);
       if (events.length !== expectedRevision) {
-        throw new RevisionConflictError(runId, expectedRevision, events.length);
+        throw new RevisionConflictError(threadId, expectedRevision, events.length);
       }
-      const decoded = decodeRunEvent(event);
-      if (decoded.runId !== runId || decoded.sequence !== expectedRevision + 1) {
+      const decoded = decodeThreadEvent(event);
+      if (decoded.threadId !== threadId || decoded.sequence !== expectedRevision + 1) {
         throw new InvalidTransitionError(
-          `Event ${decoded.id} does not continue Run ${runId}`,
+          `Event ${decoded.id} does not continue Thread ${threadId}`,
         );
       }
       if (this.#eventIds.has(decoded.id)) {
@@ -207,55 +207,52 @@ export class JsonlEventStore implements EventStore {
       const contents = `${events.map((item) => JSON.stringify(item)).join("\n")}${
         events.length === 0 ? "" : "\n"
       }${JSON.stringify(decoded)}\n`;
-      await this.#replace(this.#runPath(runId), contents);
+      await this.#replace(this.#threadPath(threadId), contents);
       this.#eventIds.add(decoded.id);
     });
   }
 
   async read(
-    runId: string,
+    threadId: string,
     fromSequence = 1,
-  ): Promise<readonly AnyRunEvent[]> {
+  ): Promise<readonly AnyThreadEvent[]> {
     await this.#initialization;
-    return (await this.#readEvents(runId)).filter(
+    return (await this.#readEvents(threadId)).filter(
       (event) => event.sequence >= fromSequence,
     );
   }
 
-  async listNonTerminalRuns(): Promise<readonly string[]> {
+  async listThreads(): Promise<readonly string[]> {
     await this.#initialization;
-    const entries = await readdir(this.#runDirectory, { withFileTypes: true });
-    const runIds: string[] = [];
+    const entries = await readdir(this.#threadDirectory, { withFileTypes: true });
+    const threadIds: string[] = [];
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith(".jsonl")) {
         continue;
       }
-      const runId = runIdFromFileName(entry.name);
-      const events = await this.#readEvents(runId);
+      const threadId = threadIdFromFileName(entry.name);
+      const events = await this.#readEvents(threadId);
       if (events.length === 0) {
         continue;
       }
-      const status = replayEvents(runId, events).status;
-      if (status !== "cancelled" && status !== "completed" && status !== "failed") {
-        runIds.push(runId);
-      }
+      threadIds.push(threadId);
     }
-    return runIds.sort();
+    return threadIds.sort();
   }
 
-  async readCheckpoint(runId: string): Promise<Checkpoint | null> {
+  async readCheckpoint(threadId: string): Promise<Checkpoint | null> {
     await this.#initialization;
     try {
-      await access(this.#runPath(runId));
+      await access(this.#threadPath(threadId));
     } catch (error) {
       if (errorCode(error) === "ENOENT") {
-        throw new RunNotFoundError(runId);
+        throw new ThreadNotFoundError(threadId);
       }
       throw error;
     }
     try {
       return decodeCheckpoint(
-        JSON.parse(await readFile(this.#checkpointPath(runId), "utf8")) as unknown,
+        JSON.parse(await readFile(this.#checkpointPath(threadId), "utf8")) as unknown,
       );
     } catch (error) {
       if (errorCode(error) === "ENOENT") {
@@ -269,16 +266,16 @@ export class JsonlEventStore implements EventStore {
     await this.#initialization;
     await this.#withWriteLock(async () => {
       try {
-        await access(this.#runPath(checkpoint.runId));
+        await access(this.#threadPath(checkpoint.threadId));
       } catch (error) {
         if (errorCode(error) === "ENOENT") {
-          throw new RunNotFoundError(checkpoint.runId);
+          throw new ThreadNotFoundError(checkpoint.threadId);
         }
         throw error;
       }
       const decoded = decodeCheckpoint(checkpoint);
       await this.#replace(
-        this.#checkpointPath(decoded.runId),
+        this.#checkpointPath(decoded.threadId),
         `${JSON.stringify(decoded)}\n`,
       );
     });

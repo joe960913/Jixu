@@ -76,7 +76,7 @@ function effect(provider = "openai", model = "gpt-test"): ModelGenerateEffect {
       ],
     },
     requestedByEventId: "event-1",
-    runId: "run-1",
+    threadId: "run-1",
     type: "model.generate",
   };
 }

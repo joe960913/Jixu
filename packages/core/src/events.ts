@@ -9,19 +9,20 @@ import type {
 } from "./effects.ts";
 import type { JsonValue } from "./json.ts";
 
-export interface RunEvent<TType extends string, TPayload> {
+export interface ThreadEvent<TType extends string, TPayload> {
   readonly causationId?: string;
   readonly correlationId?: string;
   readonly id: string;
   readonly payload: TPayload;
-  readonly runId: string;
+  readonly threadId: string;
   readonly schemaVersion: number;
   readonly sequence: number;
   readonly timestamp: string;
   readonly type: TType;
 }
 
-export interface RunEventPayloads {
+export interface ThreadEventPayloads {
+  readonly "context.cleared": Record<string, never>;
   readonly "input.received": { readonly content: string };
   readonly "model.completed": {
     readonly effectId: string;
@@ -33,16 +34,16 @@ export interface RunEventPayloads {
     readonly error: DriverError;
   };
   readonly "model.requested": { readonly effect: ModelGenerateEffect };
-  readonly "run.created": { readonly agent: AgentSnapshot };
-  readonly "run.forked": {
+  readonly "thread.created": { readonly agent: AgentSnapshot };
+  readonly "thread.forked": {
     readonly parentEventId: string;
-    readonly parentRunId: string;
+    readonly parentThreadId: string;
     readonly parentSequence: number;
   };
-  readonly "run.pause_requested": Record<string, never>;
-  readonly "run.paused": Record<string, never>;
-  readonly "run.resumed": Record<string, never>;
-  readonly "run.waiting": {
+  readonly "thread.pause_requested": Record<string, never>;
+  readonly "thread.paused": Record<string, never>;
+  readonly "thread.continued": Record<string, never>;
+  readonly "thread.waiting": {
     readonly effectId: string;
     readonly reasonCode: "effect_outcome_unknown";
   };
@@ -62,26 +63,26 @@ export interface RunEventPayloads {
   readonly "tool.requested": { readonly effect: ToolExecuteEffect };
 }
 
-export type RunEventType = keyof RunEventPayloads;
+export type ThreadEventType = keyof ThreadEventPayloads;
 
-export type AnyRunEvent = {
-  [TType in RunEventType]: RunEvent<TType, RunEventPayloads[TType]>;
-}[RunEventType];
+export type AnyThreadEvent = {
+  [TType in ThreadEventType]: ThreadEvent<TType, ThreadEventPayloads[TType]>;
+}[ThreadEventType];
 
-export interface RunEventInput<TType extends RunEventType> {
+export interface ThreadEventInput<TType extends ThreadEventType> {
   readonly causationId?: string;
   readonly correlationId?: string;
   readonly id: string;
-  readonly payload: RunEventPayloads[TType];
-  readonly runId: string;
+  readonly payload: ThreadEventPayloads[TType];
+  readonly threadId: string;
   readonly sequence: number;
   readonly timestamp: string;
   readonly type: TType;
 }
 
-export function createRunEvent<TType extends RunEventType>(
-  input: RunEventInput<TType>,
-): RunEvent<TType, RunEventPayloads[TType]> {
+export function createThreadEvent<TType extends ThreadEventType>(
+  input: ThreadEventInput<TType>,
+): ThreadEvent<TType, ThreadEventPayloads[TType]> {
   return {
     ...input,
     schemaVersion: 1,

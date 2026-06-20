@@ -1,892 +1,746 @@
-# Jixu Core Runtime Specification
+# Jixu Single-Agent Harness Specification
 
-| Field | Value |
-| --- | --- |
-| Version | `0.2.7` |
-| Status | M2.2 Active — package portability acceptance pending |
-| Updated | 2026-08-18 |
-| Target | Jixu v0.1 |
-
-This document is the normative specification for Jixu. When prose, examples,
-tests, and implementation disagree, this document wins until it is deliberately
-changed through the process in §15.
-
-The terms **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** are
-normative.
+**Version:** 0.4.0
+**Status:** normative, pre-release
+**Last updated:** 2026-08-19
 
 ## 1. Product definition
 
-Jixu is an embeddable TypeScript runtime that owns the durable execution
-lifecycle of an AI agent run.
+Jixu is a small TypeScript **single-Agent Harness**. An application defines one
+Agent, creates or opens durable Threads, sends input, and observes model and Tool
+work through one coherent API.
 
-Jixu is not defined by a chat UI, a workflow editor, a hosted control plane, a
-memory product, or a new tool protocol. Applications bring those surfaces. Jixu
-provides the small execution kernel underneath them.
+Jixu is designed for developers who want the directness of a small agent loop
+without giving up durable execution, recovery, replay, or explicit side-effect
+boundaries. Those reliability mechanisms belong underneath the ordinary Agent
+experience; they are not extra frameworks that users must assemble.
 
 The public promise is:
 
-> A Jixu run can pause, survive interruption, resume, fork with explicit
-> lineage, and replay without repeating external side effects.
+> Define one Agent. Give it Tools and Skills. Continue its work in a durable
+> Thread.
+
+- **JX-PROD-001.** A Harness MUST own exactly one immutable Agent definition.
+- **JX-PROD-002.** A Thread MUST belong to that Agent for its entire lifetime.
+- **JX-PROD-003.** Ordinary input MUST continue the selected Thread and trigger
+  the Agent automatically.
+- **JX-PROD-004.** Durability features MUST use the same Thread execution model
+  as ordinary prompts; they MUST NOT introduce a workflow or orchestration
+  runtime beside it.
 
 ## 2. Goals
 
-- **JX-GOAL-001 — Small kernel.** The execution semantics MUST remain readable
-  and auditable without understanding provider, UI, database, or deployment
-  code.
-- **JX-GOAL-002 — Durable runs.** A committed run MUST be recoverable after
-  process interruption from its durable events.
-- **JX-GOAL-003 — Explicit effects.** Model calls, tool calls, approvals, and
-  timers MUST cross an explicit Effect/Driver boundary.
-- **JX-GOAL-004 — Safe replay.** Replaying a run MUST NOT call models, tools, or
-  other external systems.
-- **JX-GOAL-005 — Explicit forks.** Forking MUST create a new run with durable
-  parent lineage and an immutable fork point.
-- **JX-GOAL-006 — Ecosystem-native.** Jixu MUST support ordinary typed tools,
-  MCP tools, and Agent Skills without replacing their protocols.
-- **JX-GOAL-007 — Testability.** Complete agent behavior MUST be testable with
-  deterministic IDs, time, model outputs, and tool outputs.
-- **JX-GOAL-008 — Embeddability.** The core MUST NOT require a web server,
-  database service, container runtime, or Jixu cloud account.
+1. Make the common path as small as `createHarness`, `createThread`, and
+   `thread.send`.
+2. Preserve multi-turn Agent context across process restarts.
+3. Make externally observable work durable before dispatch.
+4. Keep model providers, Tools, Stores, and user interfaces replaceable.
+5. Support pause, continue, fork, clear, recovery, and replay without a second
+   source of truth.
+6. Keep the kernel deterministic, I/O-free, and easy to explain.
+7. Provide an excellent reference TUI without coupling the Harness to OpenTUI.
+8. Let the Agent create and revise a lightweight execution Plan when difficult
+   work benefits from one, without imposing planning overhead on simple work.
+9. Keep long-running work coherent across context windows through automatic,
+   inspectable Continuity Handoffs rather than opaque summary replacement.
 
-## 3. Non-goals for v0.1
+## 3. Non-goals
 
-- **JX-NOGOAL-001.** A drag-and-drop workflow or graph authoring product.
-- **JX-NOGOAL-002.** A vector database or autonomous long-term memory system.
-- **JX-NOGOAL-003.** A replacement for MCP, Agent Skills, provider SDKs, or
-  application-specific tools.
-- **JX-NOGOAL-004.** A hosted multi-tenant platform or observability SaaS.
-- **JX-NOGOAL-005.** Distributed active-active execution of one run.
-- **JX-NOGOAL-006.** General multi-agent planning. Future subagents will compose
-  the same Run primitive instead of adding a second execution model.
-- **JX-NOGOAL-007.** Exactly-once delivery across external systems that do not
-  support idempotency.
-- **JX-NOGOAL-008.** Provider-specific conversation state as runtime authority.
+Jixu does not provide:
 
-## 4. Design principles
+- multi-Agent orchestration, handoff, supervisors, swarms, or Agent graphs;
+- Agent-as-Tool as a special primitive;
+- a workflow DSL or a second execution engine for predetermined graphs;
+- a mandatory Plan for every prompt, a user-facing Plan Mode in core, or a Plan
+  that schedules Effects like a workflow;
+- hosted control planes, queues, schedulers, billing, or telemetry services;
+- hidden exactly-once claims;
+- provider-owned conversation state as canonical state;
+- provider-native compaction as the sole portable continuity record; or
+- a separate Memory, Session, Conversation, Run, Job, or Task object for the
+  same Thread lifecycle.
 
-### 4.1 One authority
+An application can call external systems through an ordinary Tool. That does
+not make those systems Jixu Agents and does not change the single-Agent model.
 
-The ordered durable event log is the sole authority for a Run. In-memory state,
-checkpoints, UI state, traces, and streamed tokens are projections or caches.
-They MUST NOT become competing sources of truth.
+## 4. Concept model
 
-### 4.2 One execution model
+### 4.1 Public mental model
 
-All externally observable work follows the same path:
+Normal developers need four concepts:
 
-```text
-Event -> Reducer -> Effect -> Driver -> Event
-```
-
-Special cases MUST NOT bypass this path for convenience.
-
-### 4.3 Plain data at boundaries
-
-Durable Events, State, Effect requests, and Effect outcomes MUST be serializable
-and schema-versioned. Runtime behavior MUST NOT depend on hidden closures or
-provider-owned mutable objects.
-
-### 4.4 Progressive complexity
-
-Developers SHOULD be able to run a simple tool-using Agent without learning
-event sourcing. Durability, fork, replay, custom stores, and policies become
-visible only when used.
-
-### 4.5 Honest guarantees
-
-Jixu MUST distinguish a guarantee it can enforce locally from a guarantee that
-requires cooperation from a Tool or provider. The runtime MUST expose an
-indeterminate outcome instead of claiming exactly-once execution when it cannot
-prove it.
-
-### 4.6 Executable acceptance
-
-A milestone that changes developer-facing behavior MUST provide a runnable
-acceptance path. Unit and contract tests are necessary evidence, but they do not
-by themselves prove that a developer can install, start, observe, and control a
-real Agent. Reference surfaces MAY expose advanced internals progressively;
-they MUST NOT introduce a second Agent type or a second execution model.
-
-## 5. Canonical terminology
-
-These terms are exclusive. New code and documentation MUST NOT introduce a
-synonym for an existing concept.
-
-| Term | Definition |
+| Concept | Meaning |
 | --- | --- |
-| **Agent** | An immutable definition containing instructions, model selection, Tools, Skills, and policy. It is configuration, not live execution. |
-| **Runtime** | The live coordinator that binds a Store and Drivers to the Kernel, starts and recovers Runs, and dispatches Effects. Runtime memory is not durable authority. |
-| **Run** | One durable execution instance of an Agent. Lifecycle, lineage, Events, and derived State belong to a Run. |
-| **Kernel** | The I/O-free domain logic that validates transitions, reduces Events, and determines Effects. |
-| **Event** | An immutable, durable fact already accepted by the Run. Events are authoritative and ordered. |
-| **Signal** | A transient observation such as a model token delta or progress update. Signals are not authoritative and are not required for recovery. |
-| **State** | The deterministic projection produced by reducing a Run's Events in order. State is derived, never independently authoritative. |
-| **Reducer** | A pure function that applies one Event to State and determines the next State and requested Effects. |
-| **Effect** | A serializable request for work outside the pure Reducer, such as a model call or Tool call. |
-| **Driver** | An adapter that performs one Effect and reports its outcome as a new Event. |
-| **Tool** | A typed capability an Agent may invoke. A Tool can act; it is not instructional context. |
-| **Skill** | Versioned instructional context and resources loaded progressively. A Skill does not execute actions. |
-| **Provider** | A model-specific Driver adapter. Provider conversation state is never Run authority. |
-| **Store** | A persistence adapter for durable Events and optional Checkpoints. |
-| **Checkpoint** | A disposable performance snapshot derived from Events. It may accelerate recovery but may always be rebuilt. |
-| **Policy** | Deterministic runtime rules for approval, retry, limits, and permission decisions. |
-| **Fork** | The operation that creates a new Run from the State at an Event in a parent Run. A fork is not a second kind of Run. |
-| **Replay** | Purely reducing recorded Events to reconstruct State and outputs. Replay performs no Effects. |
+| **Harness** | The configured entry point. It owns one Agent and binds that Agent to model Drivers, a Store, IDs, time, and Signals. |
+| **Agent** | Immutable instructions, model selection, Tools, and Skill-derived instructional context. It is configuration, not execution state. |
+| **Thread** | One durable, ordered history in which that Agent receives input, calls Tools, and replies over time. |
+| **Tool** | A typed capability the Agent can invoke to act outside the model. |
 
-The core MUST NOT use `session`, `thread`, `workflow`, `job`, or `task` as a
-synonym for Run. Applications MAY use those words for their own concepts if the
-mapping to Run is explicit at the boundary.
+`Skill` is an instructional input attached to the Agent. It does not own a
+lifecycle, status, event log, or durable identity in the kernel.
 
-## 6. Architecture
+### 4.2 Internal reliability model
 
-### 6.1 Dependency direction
+The implementation uses these supporting terms:
+
+| Term | Meaning |
+| --- | --- |
+| **Event** | An immutable durable fact accepted by a Thread. |
+| **State** | The deterministic projection of a Thread's ordered Events. |
+| **Reducer** | The pure function that maps State and Event to new State and Effects. |
+| **Effect** | A typed request for external work. |
+| **Driver** | An adapter that performs one Effect. |
+| **Store** | Durable Event, immutable Artifact, and optional Checkpoint storage ports. |
+| **Artifact** | Immutable content addressed by digest and referenced from an Event. |
+| **Plan** | Optional Event-backed coordination data for one current objective. |
+| **Continuity Handoff** | Immutable, validated context data accepted at a compaction boundary. |
+| **Context Manifest** | A redacted record of which versioned sources formed one model request and why. |
+| **Signal** | A transient observation such as a token delta or progress update. |
+| **Checkpoint** | A disposable State cache used only to accelerate recovery. |
+
+These terms are necessary to implement the guarantee, but ordinary callers MUST
+NOT construct Events, invoke Reducers, or dispatch Effects.
+
+### 4.3 Words that are not product concepts
+
+- A **turn** is the causal span from one accepted user input until the Thread is
+  ready for more input. It has no independent store, handle, or lifecycle.
+- **Context** is the model-facing projection of Thread State and versioned
+  sources. It is data, not a durable object or authority.
+- A **Plan**, **Continuity Handoff**, and **Context Manifest** are typed data
+  inside that model. They are not execution identities or public lifecycles.
+- **Transcript**, **activity**, and **inspection** are UI projections.
+- **Fork**, **replay**, **clear**, **pause**, and **continue** are operations on a
+  Thread, not new runtime entities.
+- `session`, `conversation`, `run`, `workflow`, `job`, and `task` MUST NOT be
+  used as synonyms for Thread in public APIs or project documentation.
+
+If a proposed noun overlaps an existing concept, simplify the design instead
+of adding the noun.
+
+## 5. Architecture
+
+### 5.1 Dependency direction
 
 ```text
-Application API
-      |
-      v
-Runtime / Agent / Run facade
-      |
-      v
-Jixu Kernel  <------- Testkit
-      |
-      +------ Store port ------ JSONL / SQLite
-      +------ Model port ------ OpenAI / Anthropic
-      +------ Tool port ------- Local Tool / MCP
-      +------ Runtime ports --- Clock / IDs / Signals
+Application / reference TUI
+            |
+      Harness / Thread API
+            |
+     deterministic Kernel
+       /            \
+  Store port       Effect ports
+                       |
+             model / Tool Drivers
 ```
 
-- The Kernel MAY depend only on core types and declared ports.
-- Adapters depend on the Kernel; the Kernel MUST NOT import adapters.
-- Provider, MCP, Skill loader, Store, CLI, and UI code MUST remain outside the
-  Kernel package.
-- The high-level API MAY compose adapters but MUST NOT weaken Kernel invariants.
-- A reference TUI MAY observe and control a Run only through public Runtime and
-  Run APIs. UI state is never Run authority.
+- Core defines domain data, the Reducer, ports, and the Harness/Thread API.
+- Adapters depend on core ports. Core never imports adapters.
+- A UI observes and controls Threads only through public APIs.
+- Harness memory, UI state, provider state, and traces are never authority.
 
-### 6.2 Kernel transition
+### 5.2 One authoritative path
 
-Conceptually, the Kernel exposes a pure transition:
+Externally observable work follows exactly one path:
 
-```ts
-type Transition = (
-  state: RunState,
-  event: RunEvent,
-) => {
-  state: RunState;
-  effects: EffectRequest[];
-};
+```text
+durable Event -> pure Reducer -> explicit Effect -> Driver -> durable Event
 ```
 
-The concrete API MAY differ, but the purity boundary MUST remain testable.
+- **JX-ARCH-001.** The ordered durable Event log is the sole authority for a
+  Thread.
+- **JX-ARCH-002.** State MUST be reproducible by reducing Events in order.
+- **JX-ARCH-003.** An external Effect MUST be durably requested before Driver
+  dispatch.
+- **JX-ARCH-004.** Reducers MUST NOT perform I/O, read clocks, generate IDs, or
+  call SDKs.
+- **JX-ARCH-005.** Unknown Event types or schema versions MUST fail closed.
+- **JX-ARCH-006.** Secrets MUST NOT enter Events, State, Checkpoints, errors, or
+  Signals.
 
-### 6.3 Runtime coordination
+### 5.3 Harness coordination
 
-For each accepted input or Effect outcome, the runtime MUST:
+The Harness is a coordinator, not durable authority. For each proposal it MUST:
 
-1. validate the proposed Event against its schema and current Run revision;
-2. append the Event durably;
-3. reduce the committed Event into State;
-4. identify newly requested Effects;
-5. append an Effect-requested Event before dispatching an external Effect;
-6. dispatch through the matching Driver; and
-7. append exactly one known outcome Event when the outcome is known.
+1. validate the Event against the schema and current Thread revision;
+2. append it with optimistic concurrency;
+3. reduce committed Events into State;
+4. expose committed Events and transient Signals to observers;
+5. durably append every Effect request;
+6. dispatch only accepted Effects; and
+7. append the typed Driver outcome.
 
-An external call MUST NOT occur before its request is durably represented.
+There MUST be only one Thread state machine and one Event history.
 
-### 6.4 Ready and pending Effects
+## 6. Thread lifecycle
 
-The derived `RunState` MUST distinguish two Effect states:
+### 6.1 Statuses
 
-- `readyEffects` are Effects deterministically produced by the latest committed
-  Event but not yet represented by a `*.requested` Event; and
-- `pendingEffects` are durably requested Effects without a known outcome Event.
-
-`readyEffects` are not a second queue or source of truth. They MUST be rebuilt
-by reducing Events. A matching request Event moves an Effect from ready to
-pending. A known outcome Event removes it from pending and MAY produce new ready
-Effects.
-
-- **JX-EFF-008.** Recovery after a stop between an outcome Event and the next
-  request Event MUST rediscover the same ready Effects from the Event log.
-- **JX-EFF-009.** Retrying one logical Effect MUST preserve its Effect ID and
-  idempotency key, increment `attempt`, and append another matching request
-  Event before dispatch.
-
-## 7. Run lifecycle
-
-### 7.1 Statuses
-
-A Run has exactly one status:
+A Thread has one status:
 
 | Status | Meaning |
 | --- | --- |
-| `created` | The Run exists durably but execution has not begun. |
-| `running` | The runtime may reduce Events and dispatch Effects. |
-| `waiting` | The Run requires an external input, approval, timer, or intervention before it can continue. |
-| `paused` | A user or controlling application intentionally stopped dispatch of new Effects. |
-| `completed` | The Run finished successfully. Terminal. |
-| `failed` | The Run ended with an unrecoverable error. Terminal. |
-| `cancelled` | The controlling application ended the Run. Terminal. |
+| `idle` | Durable and ready to accept ordinary user input. |
+| `running` | Processing accepted input or Tool results. |
+| `waiting` | Blocked on a named external decision or indeterminate Effect. |
+| `paused` | Administratively stopped at a safe dispatch boundary. |
 
-`waiting` and `paused` are not synonyms. A waiting Run is blocked on a named
-condition. A paused Run is administratively stopped even if inputs are
-available.
+When the accepted input queue is empty, the end of an Agent reply returns the
+Thread to `idle`; it does not complete the Thread. Model or Tool failures are
+durable turn outcomes and return the Thread to `idle` with `lastError`, unless an
+indeterminate external outcome requires `waiting`.
 
-### 7.2 Lifecycle requirements
+- **JX-THREAD-001.** Creating a Thread MUST durably record its Agent snapshot
+  before the Thread becomes visible.
+- **JX-THREAD-002.** `send(input)` MUST accept non-empty input while `idle` or
+  `running` and durably append it. Input accepted while `idle` starts the Agent
+  automatically; input accepted while `running` is queued in Event order.
+- **JX-THREAD-003.** A final model response with no Tool calls MUST start the
+  next queued input automatically, or return the same Thread to `idle` when the
+  queue is empty.
+- **JX-THREAD-004.** A later `send` MUST provide the model the current compiled
+  Thread context, logically representing prior accepted user, assistant, and
+  Tool work after the most recent clear boundary according to §10.
+- **JX-THREAD-005.** Concurrent state-changing operations on one Thread MUST be
+  serialized or rejected with a typed error.
+- **JX-THREAD-006.** `wait()` MUST resolve whenever the Thread is no longer
+  `running`.
+- **JX-THREAD-007.** Opening a Thread with a different Agent snapshot MUST fail
+  closed.
+- **JX-THREAD-008.** A failed turn MUST NOT silently discard the Thread's
+  earlier context or create a replacement Thread.
+- **JX-THREAD-013.** Accepted queued input MUST survive restart and be activated
+  once in derived State in durable Event order; its external Effects retain the
+  delivery guarantees in §8. `send` while `waiting` or `paused` MUST fail with a
+  typed status error unless a separately specified operation satisfies the wait
+  or continues the Thread.
 
-- **JX-RUN-001.** Every status change MUST be caused by a durable Event.
-- **JX-RUN-002.** Terminal Runs MUST reject new execution inputs. They MAY be
-  replayed or used as fork parents.
-- **JX-RUN-003.** Pausing MUST stop dispatch of new Effects after the current
-  atomic append/dispatch boundary. It MUST NOT erase pending Effects.
-- **JX-RUN-004.** Resuming MUST rebuild State from the latest valid Checkpoint
-  plus later Events, or from all Events when no Checkpoint exists.
-- **JX-RUN-005.** Cancellation MUST request cancellation from active Drivers,
-  but MUST record outcomes that arrive after cancellation as late outcomes
-  without returning the Run to `running`.
-- **JX-RUN-006.** A Run MUST expose why it is `waiting` using a stable reason
-  code and associated Effect or approval identifier.
-- **JX-RUN-007.** `runtime.run()` MUST resolve after `run.created` and the
-  initial `input.received` Event commit. Execution MAY continue asynchronously.
-  `run.wait()` MUST resolve when the Run becomes terminal, `paused`, or
-  `waiting`, and MUST reject when the local execution coordinator stops on an
-  infrastructure error.
+`waiting` and `paused` are not synonyms. Waiting records a named condition;
+paused records an explicit administrative stop.
 
-## 8. Event model
+### 6.2 Context clear
 
-### 8.1 Event envelope
+- **JX-THREAD-009.** `clear()` MUST retain the Thread ID and durable Event
+  history while resetting model-facing messages, the active Plan, accepted
+  Handoff projection, last result, and last error.
+- **JX-THREAD-010.** Clear MUST be a durable Event and replay deterministically.
+- **JX-THREAD-011.** Clear MUST be accepted only while `idle`.
+- **JX-THREAD-012.** Clear MUST NOT create, fork, delete, or replace a Thread.
 
-Every durable Event MUST contain:
+## 7. Event, State, and observation
+
+### 7.1 Event envelope
+
+Every Event contains:
 
 ```ts
-interface RunEvent<TType extends string, TPayload> {
+interface ThreadEvent<TType extends string, TPayload> {
   id: string;
-  runId: string;
+  threadId: string;
   sequence: number;
   type: TType;
-  timestamp: string;
   schemaVersion: number;
+  timestamp: string;
   causationId?: string;
   correlationId?: string;
   payload: TPayload;
 }
 ```
 
-- **JX-EVT-001.** `sequence` MUST be contiguous and strictly increasing within
-  one Run.
+- **JX-EVT-001.** `(threadId, sequence)` MUST be unique and contiguous from 1.
 - **JX-EVT-002.** Event IDs MUST be globally unique within one Store.
-- **JX-EVT-003.** An Event MUST be immutable after append.
-- **JX-EVT-004.** Event appends MUST use expected-revision concurrency control.
-- **JX-EVT-005.** Unknown event types or unsupported schema versions MUST fail
-  closed with a diagnostic; they MUST NOT be silently ignored.
-- **JX-EVT-006.** Durable payloads MUST be serializable without executable
-  closures, streams, SDK clients, or secret-bearing runtime objects.
+- **JX-EVT-003.** Persisted payloads MUST be JSON-serializable and versioned.
+- **JX-EVT-004.** Events MUST be immutable after append.
+- **JX-EVT-005.** Correlation metadata MAY group work but MUST NOT replace
+  Thread or Event identity.
 
-### 8.2 Event families
+The v0.4 families are:
 
-The v0.1 event vocabulary will include these stable families:
+- `thread.created`
+- `thread.forked`
+- `thread.pause_requested`
+- `thread.paused`
+- `thread.continued`
+- `thread.waiting`
+- `input.received`
+- `plan.updated`
+- `context.cleared`
+- `context.compaction_requested`
+- `context.compacted`
+- `context.compaction_failed`
+- `model.requested`
+- `model.completed`
+- `model.failed`
+- `tool.requested`
+- `tool.completed`
+- `tool.failed`
 
-```text
-run.*
-input.*
-model.*
-tool.*
-approval.*
-timer.*
-```
+### 7.2 Signals
 
-Concrete events include request and known outcome pairs such as
-`model.requested` / `model.completed` / `model.failed` and
-`tool.requested` / `tool.completed` / `tool.failed`.
+- **JX-SIG-001.** Signals MUST NOT affect State or correctness.
+- **JX-SIG-002.** Signals MAY be dropped, duplicated, or reordered.
+- **JX-SIG-003.** Provider token deltas and Tool progress MUST be Signals, not
+  durable Events.
+- **JX-SIG-004.** A live Thread stream MUST expose committed Events and Signals
+  through one ordered observation surface without claiming Signals are durable.
 
-Event names describe facts in past tense. An imperative such as `tool.execute`
-is an Effect type, not an Event type.
+## 8. Effects and Drivers
 
-M2 adds these Run lifecycle Events:
+Every Effect carries `id`, `threadId`, `type`, `input`, and idempotency metadata.
 
-```text
-run.pause_requested
-run.paused
-run.resumed
-run.waiting
-run.forked
-```
+- **JX-EFF-001.** The Reducer emits typed Effects but never executes them.
+- **JX-EFF-002.** Drivers return typed success, failure, cancellation, or
+  indeterminate outcomes.
+- **JX-EFF-003.** Every outcome Event MUST causally reference its request.
+- **JX-EFF-004.** A retry of the same logical Effect MUST preserve its
+  idempotency identity.
+- **JX-EFF-005.** Exactly-once behavior MUST NOT be claimed without an
+  enforceable downstream idempotency contract.
+- **JX-EFF-006.** Semantic context compaction MUST be a typed Effect handled by
+  a compatible model or compaction Driver; it MUST NOT perform hidden I/O inside
+  the Reducer or Context Compiler.
 
-- `run.pause_requested` records durable control intent without discarding
-  already requested Effects.
-- `run.paused` records that the Runtime reached an append/dispatch boundary and
-  will dispatch no new Effect.
-- `run.resumed` returns an explicitly paused Run to `running` before dispatch.
-- `run.waiting` records a stable reason code and related Effect identity.
-- `run.forked` records parent lineage after the copied parent Event prefix.
+Jixu provides at-least-once dispatch for Effects declared idempotent. For
+non-idempotent Effects whose durable outcome is unknown, recovery MUST enter
+`waiting` rather than guess or silently repeat the action.
 
-### 8.3 Signals
+## 9. Continuity operations
 
-- **JX-SIG-001.** Model token deltas, Tool progress, and runtime diagnostics MAY
-  be emitted as Signals.
-- **JX-SIG-002.** A Reducer MUST NOT require a Signal to reconstruct State.
-- **JX-SIG-003.** Losing, duplicating, or reconnecting a Signal stream MUST NOT
-  change Run correctness.
-- **JX-SIG-004.** Final authoritative model and Tool outputs MUST be Events even
-  when their intermediate data was streamed as Signals.
-- **JX-SIG-005.** A live Run stream MUST expose committed Events and transient
-  Signals as a single discriminated observation stream without making that
-  stream a second durable history. Reconnecting MAY replay durable Events;
-  Signals missed while disconnected are not recoverable.
+### 9.1 Pause and continue
 
-## 9. Effects and Drivers
+- **JX-CONT-001.** `pause()` MUST record intent and resolve only at a safe
+  append/dispatch boundary.
+- **JX-CONT-002.** `continue()` MUST accept only a paused Thread and durably
+  return it to `running` before dispatch.
+- **JX-CONT-003.** Opening an `idle` or `waiting` Thread MUST NOT append a
+  continue Event.
+- **JX-CONT-004.** An explicit pause MUST survive restart.
 
-### 9.1 Effect envelope
+The word `resume` is reserved for selecting and opening a previous Thread in
+the reference application. It is not a Thread lifecycle method.
 
-Every Effect request MUST include:
+### 9.2 Fork
 
-```ts
-interface EffectRequest<TType extends string, TInput> {
-  id: string;
-  runId: string;
-  type: TType;
-  input: TInput;
-  idempotencyKey: string;
-  requestedByEventId: string;
-  attempt: number;
-}
-```
+- **JX-FORK-001.** Fork MUST create a new Thread ID.
+- **JX-FORK-002.** The child MUST record parent Thread ID, parent Event ID, and
+  parent sequence.
+- **JX-FORK-003.** The parent MUST remain immutable.
+- **JX-FORK-004.** The child MUST begin from the exact deterministic State at
+  the selected Event, then reset in-flight work before accepting child input.
+- **JX-FORK-005.** Child creation MUST be atomic; partial children MUST NOT
+  become listable.
 
-The initial v0.1 Effect types are:
+### 9.3 Replay
 
-- `model.generate`
-- `tool.execute`
-- `approval.await`
-- `timer.sleep`
+- **JX-REPLAY-001.** Replay MUST reduce durable Events only.
+- **JX-REPLAY-002.** Replay MUST dispatch zero live Drivers.
+- **JX-REPLAY-003.** Replay MUST reproduce the same State for the same supported
+  Event sequence and Reducer version.
+- **JX-REPLAY-004.** Re-execution with different inputs or models is a Fork,
+  not replay.
 
-### 9.2 Effect requirements
+## 10. Context engineering and continuity
 
-- **JX-EFF-001.** Every Effect MUST be caused by a committed Event.
-- **JX-EFF-002.** A Driver MUST receive a stable idempotency key across retries
-  of the same logical Effect.
-- **JX-EFF-003.** A Driver MUST return a typed success, typed failure, or explicit
-  indeterminate outcome.
-- **JX-EFF-004.** An indeterminate side-effecting Tool call MUST NOT retry
-  automatically unless its Tool declares compatible idempotency semantics.
-- **JX-EFF-005.** Driver exceptions MUST be converted into typed outcomes at the
-  Driver boundary; they MUST NOT mutate State directly.
-- **JX-EFF-006.** Retry Policy MUST be deterministic from recorded data,
-  including attempt count, error class, and declared idempotency.
-- **JX-EFF-007.** Replay MUST replace all Drivers with a no-dispatch replay
-  implementation that consumes recorded outcome Events only.
+Context is a bounded projection compiled for one model request. It is not the
+Event log, a provider conversation, or another durable authority.
 
-### 9.3 Delivery guarantee
+### 10.1 Autonomous execution Plan
 
-Jixu guarantees durable intent before dispatch and stable idempotency identity.
-It does not claim universal exactly-once execution. When a process stops after
-an external system acts but before the outcome Event commits, Jixu can prove
-that the outcome is unknown, not whether the external action happened.
+An execution Plan helps the one Agent coordinate non-trivial work while the
+ordinary model/Tool loop continues. It is distinct from a user-selected Plan
+Mode, which is a surface policy outside the core specification.
 
-## 10. Pause, resume, fork, and replay
+- **JX-PLAN-001.** A Plan MUST be an optional projection of `plan.updated`
+  Events inside one Thread State. It MUST NOT own a separate store, state
+  machine, execution identity, or public lifecycle.
+- **JX-PLAN-002.** Planning policy MUST support both direct execution with no
+  Plan and autonomous Plan creation for work with dependent stages, material
+  uncertainty, long recovery horizons, or explicit verification boundaries. A
+  turn alone MUST NOT cause a ceremonial Plan to be created.
+- **JX-PLAN-003.** Each Plan snapshot MUST be revisioned and contain one
+  objective, acceptance criteria, a bounded ordered step list, step statuses,
+  evidence references, assumptions or blockers, the next safe action, and one
+  of `active`, `completed`, `superseded`, or `abandoned`. Step status MUST be
+  `pending`, `in_progress`, `completed`, `blocked`, or `skipped`.
+- **JX-PLAN-004.** A Thread MUST have at most one active Plan and one active
+  step. New evidence MAY revise that Plan; a materially changed objective MUST
+  supersede it instead of silently rewriting its history.
+- **JX-PLAN-005.** A Plan MUST NOT authorize an action, widen user scope,
+  dispatch or schedule an Effect, reserve compute, or bypass Policy. Only the
+  ordinary Event/Reducer/Effect/Driver path may act.
+- **JX-PLAN-006.** A model-proposed Plan change MUST be validated and committed
+  as `plan.updated` before the new Plan projection is exposed to context or a
+  surface and before Effects proposed by the same model output are dispatched.
+- **JX-PLAN-007.** The active Plan MUST survive recovery and be eligible for
+  every subsequent model context and Continuity Handoff. Completed,
+  superseded, and abandoned Plans remain inspectable in Events but MUST be
+  excluded from default model context.
 
-### 10.1 Pause and resume
+### 10.2 Context compilation and manifest
 
-- **JX-CONT-001.** `pause()` MUST durably request a pause and resolve only after
-  the Run reaches `paused` or a terminal status.
-- **JX-CONT-002.** `resume()` MUST reject non-paused Runs and MUST durably record
-  the resumption before new Effect dispatch.
-- **JX-CONT-003.** Recovery after process interruption is not called resume
-  unless the Run was explicitly paused. A previously `running` Run is recovered.
-- **JX-CONT-004.** A pause request MAY arrive while a Driver is active. Its known
-  outcome MUST still be recorded. Effects produced by that outcome remain ready
-  and MUST NOT be requested until a durable resume.
-- **JX-CONT-005.** A selected batch of Effect requests and their Driver
-  invocation form one pause boundary. A concurrent pause MAY take effect after
-  that selected batch, but MUST prevent selection of the next batch.
+The Context Compiler selects from immutable Agent material, Thread Events after
+the active clear boundary, the active Plan, the latest accepted Continuity
+Handoff after that boundary, activated Skills, exposed Tool schemas, immutable
+Artifacts or workspace snapshots, and external knowledge already materialized
+through an Effect.
 
-### 10.2 Fork
+- **JX-CTX-001.** Compilation MUST be deterministic for the same Agent revision,
+  Thread State and source revisions, model capability profile, Context Policy,
+  token budget, and compiler version.
+- **JX-CTX-002.** Every candidate source MUST carry provenance, version or
+  digest, trust and sensitivity metadata, priority, estimated cost, and causal
+  source. Secret values MUST NOT be context metadata.
+- **JX-CTX-003.** Every `model.requested` Event MUST contain a redacted Context
+  Manifest that records included and excluded source identities and reasons,
+  active clear boundary, Agent and compiler versions, active Plan revision,
+  accepted Handoff digest, recent raw-tail boundary, activated Skills, exposed
+  Tool schemas, input and output budgets, and a logical request digest.
+- **JX-CTX-004.** Deterministic hygiene MAY deduplicate content, omit stale
+  capability metadata, or replace large Tool output with an Artifact reference.
+  It MUST NOT mutate or delete the source Event or Artifact.
 
-- **JX-FORK-001.** `fork({ at })` MUST create a new Run ID.
-- **JX-FORK-002.** The new Run MUST record `parentRunId`, `parentEventId`, and the
-  parent sequence at the fork point.
-- **JX-FORK-003.** The parent Event prefix MUST remain immutable.
-- **JX-FORK-004.** A fork MUST begin from the State reconstructed at the selected
-  parent Event, not from the parent's latest State.
-- **JX-FORK-005.** New input and configuration overrides MUST be recorded in the
-  child Run, never written retroactively into the parent.
-- **JX-FORK-006.** Storage MAY share immutable event prefixes internally, but
-  the observable semantics MUST match a complete independent history.
-- **JX-FORK-007.** v0.1 Stores MUST create a Fork atomically by copying the
-  parent prefix through the selected Event into a new Run with new Run, Event,
-  Effect, causation, and idempotency identities, then appending `run.forked` and
-  the child input. A partial child Run MUST NOT become visible.
-- **JX-FORK-008.** Reducing the copied child prefix through the fork point MUST
-  produce a State equivalent to the parent State at that point except for
-  rebound Run and Effect identities. `run.forked` then clears inherited
-  operational Effects and makes the child ready to accept its own recorded
-  input.
+### 10.3 Adaptive compaction and Continuity Handoff
 
-### 10.3 Replay
+Compaction is an automatic representation change, not an ordinary chat summary.
+It hands enough verified work state to a future model request that execution can
+continue safely without treating the compacted text as Thread authority.
 
-- **JX-REPLAY-001.** Replay MUST be read-only.
-- **JX-REPLAY-002.** Replay MUST perform zero model, Tool, approval, timer, or
-  network Effects.
-- **JX-REPLAY-003.** Replaying the same supported Event sequence with the same
-  reducer version MUST produce structurally equal State.
-- **JX-REPLAY-004.** Replaying MAY emit derived State snapshots for debugging,
-  but those snapshots are not Events.
-- **JX-REPLAY-005.** Re-executing with a different model is a new forked Run,
-  never a replay.
-- **JX-REPLAY-006.** `run.replay()` MUST read and reduce supported Events without
-  registering or invoking live Drivers and MUST NOT append Events or
-  Checkpoints.
+- **JX-CTX-005.** Before each model request, Context Policy MUST estimate
+  assembled input, projected next model and Tool material, reserved model
+  output, and a safety margin against the model context limit. If the budget is
+  at risk after hygiene, it MUST request compaction at the next safe boundary.
+  It MAY compact at a completed phase boundary when expected savings justify
+  the cost.
+- **JX-CTX-006.** A compaction boundary MUST NOT split a model item, Tool
+  call/result pair, approval, or other causally complete operation.
+- **JX-CTX-007.** `context.compaction_requested` MUST durably request a typed
+  compaction Effect before Driver dispatch. Success or failure MUST be recorded
+  as `context.compacted` or `context.compaction_failed`.
+- **JX-CTX-008.** A Continuity Handoff MUST be immutable, schema-versioned,
+  redacted, source-linked, and validated before acceptance. Its Artifact MUST
+  exist and verify by digest before `context.compacted` references it.
+- **JX-CTX-009.** An accepted Handoff MUST preserve the current objective and
+  acceptance criteria; scope, constraints, and permissions; active Plan and
+  completed-step evidence; current State, pending Effects, waits, approvals,
+  and unresolved questions; decisions and rejected alternatives; failures,
+  attempted approaches, and do-not-retry guidance; relevant files, Artifacts,
+  snapshots, and validation; blockers and exact next safe action; and source
+  Event range, clear boundary, schema/compiler/model versions, and digests.
+  Authorization-related fields MUST reference committed Policy decisions; the
+  Handoff's semantic body MUST NOT grant permission.
+- **JX-CTX-010.** Context after compaction MUST contain immutable Agent material,
+  the latest accepted Handoff, the active Plan, and a bounded tail of recent
+  complete raw operations, plus other currently relevant sources. The raw tail
+  MUST preserve complete Tool call/result pairs.
+- **JX-CTX-011.** A failed, invalid, missing, or digest-mismatched Handoff MUST
+  leave the previous context projection active. Compaction MUST NOT delete or
+  rewrite raw Events or Artifacts.
+- **JX-CTX-012.** Repeated compaction MUST merge, deduplicate, and reconcile
+  source-linked facts rather than summarize an untraceable summary. A
+  provider-native opaque compaction item MAY be retained as an optimization but
+  MUST NOT be the sole portable Handoff or Thread authority.
+- **JX-CTX-013.** Clear and compaction MUST remain distinct. Clear advances the
+  explicit model-visible boundary inside the same Thread; compaction preserves
+  the current objective while changing only its representation.
 
-## 11. Tools, MCP, Skills, and providers
+## 11. Agent capabilities
 
 ### 11.1 Tools
 
-- **JX-TOOL-001.** A Tool MUST declare a stable name, description, versioned
-  input schema, and versioned output schema.
-- **JX-TOOL-002.** Tool inputs and final outputs MUST be validated at the Driver
-  boundary.
-- **JX-TOOL-003.** Tool execution context MUST expose `runId`, `effectId`,
-  `idempotencyKey`, cancellation, and a Signal emitter.
-- **JX-TOOL-004.** Side-effecting Tools MUST declare their idempotency behavior.
-- **JX-TOOL-005.** Approval Policy is owned by the runtime. A Tool MUST NOT grant
-  its own approval.
-- **JX-TOOL-006.** The first-party Node Tool package MUST provide opt-in `read`,
-  `write`, `edit`, and `bash` Tools using the same canonical Tool interface as
-  application and MCP Tools.
-- **JX-TOOL-007.** File Tools MUST resolve paths against an explicit workspace
-  root and reject resolved paths outside it. `bash` MUST be documented as a
-  host-shell capability, not a security sandbox, even when its working directory
-  is the workspace root.
+- **JX-TOOL-001.** Tool names MUST be unique within the Agent.
+- **JX-TOOL-002.** Tool inputs and outputs MUST be schema-versioned and
+  JSON-serializable at the durable boundary.
+- **JX-TOOL-003.** Tool execution occurs only through a Driver.
+- **JX-TOOL-004.** Tool implementations MUST declare idempotency honestly.
+- **JX-TOOL-005.** Credentials remain behind the Driver boundary.
 
-### 11.2 MCP
+### 11.2 Skills
 
-- **JX-MCP-001.** MCP support MUST be an adapter from discovered MCP Tools to
-  the canonical Jixu Tool interface.
-- **JX-MCP-002.** MCP transport lifecycle and credentials MUST stay outside
-  durable Event payloads.
-- **JX-MCP-003.** MCP errors MUST use the same typed Tool outcome path as local
-  Tools.
-- **JX-MCP-004.** Jixu MUST NOT extend the MCP wire protocol to express Run
-  lifecycle semantics.
+- **JX-SKILL-001.** Skills supply instructional context; they do not execute
+  Effects.
+- **JX-SKILL-002.** The Agent snapshot MUST record the Skill catalogue metadata
+  and digests required to detect incompatible recovery, without storing secrets
+  or eagerly embedding every Skill body.
+- **JX-SKILL-003.** Skill content MUST be activated progressively. Its version
+  and digest MUST be materialized before the content enters a model request or
+  Continuity Handoff.
 
-### 11.3 Skills
+### 11.3 MCP and providers
 
-- **JX-SKILL-001.** A Skill loader MUST treat `SKILL.md` and referenced resources
-  as instructional context, not executable code.
-- **JX-SKILL-002.** Skill discovery and progressive loading decisions that
-  affect model context MUST be represented in durable Events at the level needed
-  to reproduce the final model request.
-- **JX-SKILL-003.** A Skill MAY refer to Tools, but loading a Skill MUST NOT grant
-  Tool permission.
-- **JX-SKILL-004.** Jixu MUST consume the existing Agent Skills convention rather
-  than inventing a Jixu-only skill format.
-
-### 11.4 Providers
-
-- **JX-PROV-001.** OpenAI and Anthropic adapters MUST implement the same
-  canonical model Effect contract.
-- **JX-PROV-002.** Provider-specific request and response fields MAY be retained
-  in typed metadata but MUST NOT leak into Kernel control flow.
-- **JX-PROV-003.** The authoritative final model output MUST be normalized into a
-  durable Event.
-- **JX-PROV-004.** Provider-side conversation or response IDs MAY be stored as
-  correlation metadata; they MUST NOT replace Jixu Run or Event identity.
-- **JX-PROV-005.** The first-party OpenAI Driver MUST use the official OpenAI
-  SDK, translate canonical Tools and messages at the adapter boundary, emit
-  streamed deltas as Signals, and return only canonical typed outcomes to core.
-- **JX-PROV-006.** `ModelDriver` is the one canonical provider-neutral LLM
-  contract. The `@jixu/llm` package MAY expose a unified adapter facade and
-  provider factories, but MUST NOT introduce provider branches into core or a
-  second model execution contract.
-- **JX-PROV-007.** The first-party OpenRouter factory MUST support its stateless
-  Responses API through the same canonical full-history request and outcome
-  mapping as OpenAI. OpenRouter compatibility MUST have independent contract
-  tests because its Responses surface may differ or evolve independently.
-- **JX-PROV-008.** The unified LLM package MUST provide an OpenAI-compatible
-  Driver factory that accepts a caller-supplied API format, Base URL, API Key,
-  and model ID. The supported API formats are `/v1/responses` and
-  `/v1/chat/completions`; format selection MUST be explicit and MUST NOT be
-  inferred by dispatching a fallback model request. Both formats MUST translate
-  the same canonical full-history messages, Tools, streamed Signals, and typed
-  outcomes without adding a provider branch to core.
+- MCP Tools MUST adapt to ordinary Tool descriptors and Driver execution.
+- Model providers MUST adapt to the model Driver port.
+- Neither MCP nor a provider may introduce a second Thread state machine.
+- Provider conversation IDs MAY be correlation metadata only.
 
 ## 12. Storage and recovery
 
-### 12.1 Store contract
+The Store contract supports:
 
-The core Store port MUST support:
+- atomic Thread creation;
+- optimistic Event append;
+- ordered Event reads;
+- listing Thread IDs;
+- atomic Fork creation;
+- immutable Artifact writes and digest-verified reads; and
+- optional Checkpoint reads and writes.
 
-- creating a Run;
-- appending Events with expected revision;
-- reading Events by Run and sequence;
-- listing recoverable non-terminal Runs;
-- writing and reading optional Checkpoints; and
-- preserving fork lineage.
+- **JX-STORE-001.** Thread State recovery MUST work from Events alone.
+  Referenced Artifact bytes are verified separately and MUST NOT decide State.
+- **JX-STORE-002.** Checkpoints MUST be disposable and validated against their
+  matching Event and State digest.
+- **JX-STORE-003.** Missing, stale, corrupt, or incompatible Checkpoints MUST be
+  ignored in favor of Event replay.
+- **JX-STORE-004.** Event append MUST reject revision conflicts.
+- **JX-STORE-005.** Thread listing MUST be derived from the Store; the reference
+  application MUST NOT maintain a second conversation/session index.
+- **JX-STORE-006.** Recovery MUST distinguish ready Effects from already
+  dispatched pending Effects.
+- **JX-STORE-007.** Unknown persisted data MUST fail closed with a typed error.
+- **JX-STORE-008.** An Event that references an Artifact MUST be appended only
+  after that Artifact exists durably and verifies under the recorded digest.
 
-The Store port MUST expose an atomic `createFork` operation for an already
-validated, complete child Event history. It MUST also expose optional
-Checkpoint read/write operations. Store adapters MAY offer a `close()` method,
-but Runtime correctness MUST NOT depend on it.
+## 13. Public API
 
-### 12.2 Requirements
-
-- **JX-STORE-001.** v0.1 MUST ship an in-memory Store for tests, a JSONL Store
-  for inspectability, and a SQLite Store for local durability.
-- **JX-STORE-002.** A Store MUST reject stale expected revisions.
-- **JX-STORE-003.** A Checkpoint MUST identify the exact last Event sequence and
-  reducer/schema version used to produce it.
-- **JX-STORE-004.** An invalid or incompatible Checkpoint MUST be discarded and
-  rebuilt from Events.
-- **JX-STORE-005.** Store implementations MUST preserve Event ordering and
-  atomic append semantics documented by the Store.
-- **JX-STORE-006.** v0.1 assumes one active runtime process for a local Store.
-  Distributed leases and active-active execution are out of scope.
-- **JX-STORE-007.** Recovery MUST inspect requested Effects without known
-  outcomes and resolve them according to idempotency and retry Policy.
-- **JX-STORE-008.** A Checkpoint contains `runId`, the exact last Event ID and
-  sequence, Event schema version, Reducer version, derived State, and a
-  deterministic State digest used to detect accidental corruption.
-- **JX-STORE-009.** Runtime MUST validate a Checkpoint against the matching Event
-  prefix before using it. Missing, malformed, incompatible, or structurally
-  incorrect Checkpoints MUST be ignored and the State rebuilt from Events.
-- **JX-STORE-010.** On recovery, a pending `model.generate` MAY retry with the
-  same idempotency identity. A pending `tool.execute` MAY retry automatically
-  only when its Tool declares `idempotent`; otherwise the Run MUST durably enter
-  `waiting` with reason `effect_outcome_unknown` and MUST NOT call the Tool.
-- **JX-STORE-011.** JSONL and SQLite Store implementations MUST pass the same
-  Store contract suite as the in-memory Store, including stale revision,
-  immutable reads, globally unique Event IDs, atomic Fork creation, Checkpoint
-  round-trip, and non-terminal listing.
-
-## 13. Public API target
-
-The ergonomic API MUST keep immutable Agent definition separate from live
-Runtime configuration, without exposing the Reducer to normal users:
+The target API is intentionally small:
 
 ```ts
-const runtime = createRuntime({
-  store,
-  clock,
-  ids,
-  signals,
-});
-
 const agent = defineAgent({
-  model,
-  instructions,
-  tools,
-  skills,
-  policy,
+  instructions: "Be precise.",
+  model: { provider: "provider", model: "model-name" },
+  tools: [readFile],
 });
 
-const run = await runtime.run(agent, input);
+const harness = createHarness({
+  agent,
+  modelDrivers: { provider: modelDriver },
+  store,
+});
 
-await run.wait();
-await run.state();
-await run.pause();
-await run.resume();
-await run.cancel();
-await run.fork({ at: eventId, input, overrides });
-await run.replay();
+const thread = await harness.createThread();
+await thread.send("Compare these three companies.");
+await thread.send("Now challenge the strongest assumption.");
 
-for await (const item of run.stream({ signal })) {
-  // item.kind is "event" or "signal"
-}
+const reopened = await harness.openThread(thread.id);
+const threads = await harness.listThreads();
 ```
 
-- **JX-API-001.** Simple usage MUST provide safe defaults for IDs, time, Store,
-  retry Policy, and Signal streaming.
-- **JX-API-002.** Advanced ports MUST remain injectable for deterministic tests
-  and production adapters.
-- **JX-API-003.** Event and Signal stream items MUST be discriminated by `kind`.
-- **JX-API-004.** Public errors MUST be typed and include Run and Effect identity
-  when applicable.
-- **JX-API-005.** The normal user API MUST NOT require writing a Reducer,
-  constructing Events, or manually dispatching Effects.
-- **JX-API-006.** `runtime.recover(agent, runId)` MUST validate that the supplied
-  Agent snapshot matches the durable Run, rebuild State, and continue only
-  Effects allowed by recovery Policy.
-- **JX-API-007.** `run.fork({ at, input })` MUST require a child input in v0.1.
-  Configuration overrides remain planned until a compatibility contract is
-  specified.
-- **JX-API-008.** `run.stream()` MUST first make the selected durable Event
-  prefix observable, then continue with newly committed Events and live Signals
-  without duplicating a durable Event. Consumers MUST be able to stop a stream
-  with an `AbortSignal`.
+The public Harness exposes:
 
-### 13.2 Reference TUI
+- `createThread()`
+- `openThread(id)`
+- `listThreads()`
 
-The `jixu` package ships one reference OpenTUI surface for experiential
-acceptance. It is an application of the public API, not a new Agent subtype.
+A Thread exposes:
 
-- **JX-TUI-001.** The TUI MUST run an ordinary immutable `Agent` and MUST NOT
-  define `CodingAgent`, `TuiAgent`, or any other parallel Agent concept.
-- **JX-TUI-002.** A developer MUST be able to submit one prompt, observe model
-  and Tool activity, inspect current State and Events, and invoke pause, resume,
-  replay, and fork controls where the Run status permits them.
-- **JX-TUI-002A.** The reference TUI MUST connect to a caller-supplied
-  OpenAI-compatible Base URL instead of requiring a bundled provider catalogue.
-  The developer MUST explicitly select Responses or Chat Completions format
-  without changing the Agent or Run lifecycle. Shell capability copy MUST say
-  `Local shell · unsandboxed`; it MUST NOT rely on the ambiguous phrase
-  `host shell` as its user-facing safety explanation.
-- **JX-TUI-002B.** API format, Base URL, credential, and model configuration
-  MUST be completable inside the TUI before the first Run. Environment variables
-  and CLI flags MAY prefill that form but MUST NOT be required to enter it.
-  Model configuration MUST accept a free-form model ID rather than depend on a
-  bundled model catalogue. The Base URL is the API root to which the selected
-  format appends `/responses` or `/chat/completions`.
-- **JX-TUI-002C.** The reference TUI MUST persist global user configuration
-  under `~/.jixu/`: API format, Base URL, and model ID in `settings.json`, and
-  the API Key in `auth.json`. A complete saved connection MUST allow a later
-  launch to enter the Agent without re-entry, while `/config` MUST allow
-  replacement inside the TUI.
-- **JX-TUI-002D.** `auth.json` MUST use an explicit versioned schema, reside
-  outside the workspace and Run Store, and be atomically replaced. On POSIX,
-  its directory and file modes MUST be restricted to `0700` and `0600`.
-  Credentials MUST NOT enter Events, State, checkpoints, workspace files,
-  activity output, or raw TUI display.
-- **JX-TUI-003.** OpenTUI and React dependencies MUST stay in the `jixu` package;
-  importing headless core or adapter packages MUST NOT initialize a renderer or
-  require Bun.
-- **JX-TUI-004.** Source development and TUI tests use the OpenTUI-supported Bun
-  runtime. Release builds SHOULD compile target-specific standalone executables
-  so end users do not need Bun installed.
-- **JX-TUI-005.** The reference theme MUST centralize these tokens: background
-  `#141414`, text `#F5F3EF`, secondary `#9C9892`, brand `#D05A6E`, success
-  `#6D9F71`, warning `#D8A34A`, and info `#6E93B8`. Brand color is a restrained
-  identity accent, not a large-area background or generic status color.
-- **JX-TUI-006.** The primary working surface MUST be one chronological
-  transcript. User input, model output, Tool activity, and lifecycle feedback
-  that matters to the developer MUST appear at their causal position in that
-  transcript. The reference TUI MUST NOT reserve a permanent side panel or
-  empty pane for activity, State, or Events; durable inspection remains
-  available on demand through the controls in JX-TUI-002.
-- **JX-TUI-007.** The transcript and composer MUST retain a readable bounded
-  measure on wide terminals and remain usable at `80x24`. Narrow layouts MUST
-  collapse secondary metadata instead of introducing a horizontal dashboard or
-  hiding the prompt. Empty state, active execution, failure, and completed
-  execution MUST use the same primary layout.
-- **JX-TUI-008.** The composer MUST be a compact persistent surface expressed in
-  user language such as `Ask Jixu`; it MUST NOT label every prompt as `New Run`.
-  Provider, model, workspace, safety, and control hints MUST be compressed into
-  adjacent context or status lines. JIXU identity MUST remain visible, with the
-  brand token used for the wordmark and small interaction accents rather than
-  full-screen chrome.
+- `id`
+- `send(input)`
+- `clear()`
+- `events()`
+- `state()`
+- `stream()`
+- `wait()`
+- `pause()`
+- `continue()`
+- `fork({ at, input })`
+- `replay()`
 
-The JX-TUI-006 through JX-TUI-008 change is confined to the reference
-application. It does not alter Agent, Run, Event, Runtime, provider, Tool, or
-configuration semantics and requires no public API migration.
+- **JX-API-001.** The ordinary path MUST NOT expose Store transactions, Event
+  construction, Reducers, or Effect dispatch.
+- **JX-API-002.** Harness configuration MUST bind exactly one Agent.
+- **JX-API-003.** Public errors MUST be typed and include Thread and Effect
+  identity where relevant.
+- **JX-API-004.** Observation APIs MUST be usable without a UI framework.
+- **JX-API-005.** No compatibility alias for Runtime, Run, Session, or
+  Conversation may be introduced during the pre-release rename.
 
-The `0.2.6` reference configuration replaces the pre-release provider-indexed
-`settings.json` and `auth.json` version 1 shape with one version 2 compatible
-connection. The TUI MUST read a complete version 1 OpenAI or OpenRouter
-configuration as Responses format with the corresponding historical Base URL;
-the next explicit save writes version 2. Unknown or mixed schema versions fail
-closed. This migration changes only reference application configuration and
-does not change durable Run Events.
+## 14. Reference TUI
 
-### 13.1 M1 compatibility note
+The TUI is a first-party application of the same public Harness API. It does
+not own execution truth.
 
-Before M2, `runtime.run()` resolved only after deterministic execution reached a
-terminal State. M2 changes it to resolve after durable initial acceptance so a
-caller can pause a live Run. Pre-release callers that need the old completion
-behavior MUST add `await run.wait()`.
+- **JX-TUI-001.** First launch without credentials MUST enter the ordinary
+  workspace and show `Model not configured` plus `use /config`; it MUST NOT
+  force a setup page.
+- **JX-TUI-002.** A non-command prompt without a complete model configuration
+  MUST be rejected without creating a Thread.
+- **JX-TUI-003.** Typing `/` or a command prefix MUST open a filtered menu above
+  the composer. Up/Down select, Enter accepts, and Escape closes it.
+- **JX-TUI-004.** Command metadata MUST have one typed source of truth shared by
+  help, completion, and dispatch.
+- **JX-TUI-005.** The composer help area MAY use multiple lines and Nippon-color
+  tokens to express hierarchy instead of compressing unrelated information.
+- **JX-TUI-006.** Normal input MUST call `send` on the selected Thread.
+- **JX-TUI-007.** `/clear` MUST clear the selected Thread's context and visible
+  transcript without changing its ID.
+- **JX-TUI-008.** `/new` MUST create and select one empty Thread.
+- **JX-TUI-009.** `/resume` MUST open a keyboard-selectable list from
+  `harness.listThreads()` and select a compatible Thread. It MUST NOT continue a
+  paused Thread.
+- **JX-TUI-010.** `/continue` MUST continue only a paused Thread.
+- **JX-TUI-011.** `/fork` MUST create and select a distinct child Thread with
+  explicit lineage.
+- **JX-TUI-012.** `/events`, `/state`, and `/replay` MUST inspect durable data
+  through Thread APIs.
+- **JX-TUI-013.** TUI orchestration, command metadata, transcript projection,
+  screen layout, and configuration MUST remain separate modules; no catch-all
+  UI source file may own all of them.
 
-## 14. Security and data handling
+Configuration stores credentials separately from non-secret settings, uses
+restrictive POSIX permissions, and never records secrets in Thread data.
 
-- **JX-SEC-001.** Provider keys, MCP credentials, bearer tokens, and raw secrets
-  MUST NOT be written to durable Events or Checkpoints.
-- **JX-SEC-002.** Adapters MUST support configurable redaction before durable
-  append and diagnostic emission.
-- **JX-SEC-003.** Tool permission and approval decisions MUST be represented by
-  durable Events.
-- **JX-SEC-004.** Untrusted Tool outputs and Skill content MUST be treated as
-  data, never as authority to change runtime Policy.
-- **JX-SEC-005.** Cancellation and timeout MUST be propagated to Drivers using a
-  standard cancellation signal.
-- **JX-SEC-006.** Large or binary Tool outputs SHOULD be persisted outside the
-  Event log and referenced by a typed content-addressed reference.
-- **JX-SEC-007.** Enabling a host-shell Tool is an explicit application choice.
-  A workspace working directory, path validation in sibling file Tools, or a UI
-  warning MUST NOT be represented as process isolation. Strong isolation
-  requires an application-supplied sandbox Driver outside core.
+## 15. Security
 
-## 15. Specification-driven change process
+- **JX-SEC-001.** Secrets MUST remain behind configuration and Driver
+  boundaries.
+- **JX-SEC-002.** Errors MUST be sanitized before durable append.
+- **JX-SEC-003.** Unknown Tools are rejected before dispatch.
+- **JX-SEC-004.** Local file Tools MUST enforce their documented workspace
+  boundary.
+- **JX-SEC-005.** Unsandboxed shell execution MUST be opt-in and visibly
+  disclosed.
+- **JX-SEC-006.** Stored credentials MUST be written atomically and, on POSIX,
+  with user-only permissions.
 
-### 15.1 Source of truth
+## 16. Package boundaries
 
-This specification defines behavior and architecture. `AGENTS.md` defines the
-repository working rules. Architecture Decision Records MAY explain a choice but
-MUST NOT contradict this specification.
+| Package | Responsibility |
+| --- | --- |
+| `@jixu/core` | Agent definition, deterministic kernel, ports, Harness, and Thread API. |
+| `@jixu/llm` | Model Driver adapters. |
+| `@jixu/store-jsonl` | Inspectable local JSONL Store. |
+| `@jixu/store-sqlite` | Local SQLite Store. |
+| `@jixu/tools-node` | Opt-in Node file and shell Tools. |
+| `@jixu/testkit` | Store and Driver contract suites. |
+| `jixu` | Public facade, CLI, configuration, and reference TUI. |
 
-### 15.2 Required workflow
+Core MUST remain free of provider SDKs, MCP SDKs, database drivers, web
+frameworks, and UI frameworks.
 
-Any change to public behavior, lifecycle semantics, canonical terminology,
-durability guarantees, package boundaries, or normative types MUST:
+## 17. Acceptance criteria
 
-1. modify this specification first;
-2. add or update stable requirement IDs;
-3. state migration and compatibility impact;
-4. add tests that cite the affected acceptance criteria; and
-5. implement only after the proposed semantics are internally consistent.
+- **JX-AC-001 — Single-turn success.** One input durably requests a model,
+  executes requested Tools, records outcomes, returns a final reply, and leaves
+  the same Thread `idle`.
+- **JX-AC-002 — Multi-turn continuity.** Two sequential `send` calls use one
+  Thread ID; the second model request represents the first complete turn either
+  as raw context or through an accepted Handoff and raw tail.
+- **JX-AC-003 — Durable clear.** After `clear`, the Thread ID and old Events
+  remain, while subsequent model context excludes messages, Plan, and Handoff
+  projection from before the clear.
+- **JX-AC-004 — Crash recovery.** Recovery after an accepted Effect request
+  resumes only work allowed by its delivery contract.
+- **JX-AC-005 — Indeterminate Tool outcome.** An unknown non-idempotent outcome
+  enters `waiting` and is not repeated automatically.
+- **JX-AC-006 — Fork.** Forking at Event N creates an atomic child Thread with
+  exact parent State at N and leaves the parent unchanged.
+- **JX-AC-007 — Replay safety.** Replay invokes zero live Drivers and reproduces
+  State.
+- **JX-AC-008 — Checkpoint disposal.** Missing, stale, corrupt, and incompatible
+  Checkpoints all recover the same State from Events.
+- **JX-AC-009 — Pause and continue.** Pause settles at a safe boundary,
+  survives restart, and only explicit continue restarts dispatch.
+- **JX-AC-010 — Failed turn continuity.** A typed model or Tool failure is
+  durable and does not erase earlier Thread context.
+- **JX-AC-011 — Unknown Event.** Unsupported persisted data fails closed.
+- **JX-AC-012 — Concurrency rejection.** Conflicting writers cannot both commit
+  the same next sequence.
+- **JX-AC-013 — Store contracts.** Every Store adapter passes the same creation,
+  append, list, read, Fork, immutable Artifact, and Checkpoint contract suite.
+- **JX-AC-014 — Minimal public path.** A developer can define one Agent, create
+  one Harness, create one Thread, define one Tool, and complete two messages
+  without constructing internal runtime objects.
+- **JX-AC-015 — Runnable reference Harness.** The TUI runs the same public
+  Agent/Harness/Thread path with live Signals and first-party Node Tools.
+- **JX-AC-016 — Provider boundary.** Responses- and Chat-Completions-compatible
+  endpoints map into the same model Driver contract without fallback duplicate
+  dispatch.
+- **JX-AC-017 — Package portability.** Clean npm, pnpm, Yarn, and Bun consumers
+  import the same artifacts and execute the documented public path on Node.
+- **JX-AC-018 — TUI Thread controls.** Slash completion, multi-turn send,
+  `/clear`, `/new`, `/resume`, `/continue`, `/fork`, and inspection commands
+  exercise the public Thread API with keyboard-accessible interaction.
+- **JX-AC-019 — Single-Agent boundary.** No public API, Event, State, package, or
+  reference UI introduces multi-Agent orchestration or Agent handoff.
+- **JX-AC-020 — Input during execution.** Input sent while a Thread is running
+  is durable before acknowledgement, survives restart, and starts automatically
+  in Event order after the current turn reaches a safe boundary.
+- **JX-AC-021 — Adaptive Plan lifecycle.** A deterministic scenario can proceed
+  with no Plan, while a non-trivial scenario can create, revise, complete, and
+  supersede a Plan through `plan.updated`; no State can contain two active Plans
+  or two active steps.
+- **JX-AC-022 — Plan safety and recovery.** Plan changes dispatch no Effects and
+  grant no permission. An active Plan survives recovery and enters context and
+  a Handoff; historical inactive Plans remain inspectable but leave default
+  context.
+- **JX-AC-023 — Safe automatic compaction.** Budget pressure requests compaction
+  before context exhaustion, never splits a complete model or Tool operation,
+  and resumes with the accepted Handoff plus a bounded complete raw tail.
+- **JX-AC-024 — Handoff fidelity.** Across at least two compactions, objective,
+  constraints, decisions, completed evidence, failures and do-not-retry notes,
+  active Plan, pending Effects, relevant Artifacts, validation, and next action
+  remain source-linked and usable.
+- **JX-AC-025 — Compaction failure safety.** Driver failure, invalid schema,
+  missing Artifact, or digest mismatch records a typed failure and leaves the
+  previous context projection active with all raw Events intact.
+- **JX-AC-026 — Portable continuity.** When a provider emits an opaque
+  compaction item, a compatible different model Driver can still reconstruct
+  the logical working set from Jixu's structured Handoff, Events, and Artifacts.
+- **JX-AC-027 — Context explainability.** Every model request has a redacted
+  Context Manifest that accounts for included, transformed, and excluded
+  sources, Plan and Handoff revisions, raw-tail boundary, schema versions,
+  budgets, and logical request digest.
 
-Pure refactors that preserve all observable behavior MAY cite existing
-requirements without changing this file.
+The minimum validation for a code change is targeted tests, typecheck, lint, and
+`git diff --check`. Release work also runs the complete acceptance suite and
+package portability checks.
 
-### 15.3 Concept discipline
+## 18. Compatibility and migration
 
-- One concept MUST have one canonical name.
-- A new concept MUST define its authority, lifecycle, serialization boundary,
-  and relationship to Run/Event/State/Effect.
-- A new abstraction MUST remove more complexity than it adds.
-- Application concepts MUST NOT leak into Kernel terminology.
-- Examples MUST NOT imply guarantees stronger than normative requirements.
+This is an intentional pre-release breaking correction. The old public model
+treated one prompt as a terminal Run and then attempted to add Conversation and
+Session objects around it. That produced duplicate lifecycle concepts and did
+not match normal Agent interaction.
 
-## 16. v0.1 package boundaries
+The migration is:
 
-The intended package layout is:
+| Removed | Replacement |
+| --- | --- |
+| `Runtime` | `Harness` |
+| `Run` / `RunHandle` | `Thread` |
+| `runtime.run(agent, input)` | `harness.createThread()` then `thread.send(input)` |
+| `runtime.recover(agent, id)` | `harness.openThread(id)` |
+| `run.resume()` | `thread.continue()` |
+| `Conversation` or `Session` index | `harness.listThreads()` from the Store |
 
-```text
-packages/
-  jixu/                # Public facade and CLI entry point
-  core/                 # Kernel, canonical types, and ports
-  llm/                  # Unified ModelDriver facade and provider factories
-  tools-node/            # Opt-in read/write/edit/bash Tools for Node hosts
-  mcp/                  # MCP Tool adapter
-  skills/               # Agent Skills discovery and progressive loading
-  store-jsonl/          # Inspectable local Event Store
-  store-sqlite/         # Durable local Event Store
-  testkit/              # Deterministic ports, fixtures, failure injection
-examples/
-  research-agent/
-  approval-agent/
-  recovery-agent/
-```
+Existing `JX-RUN-*` requirements are deprecated and replaced by
+`JX-THREAD-*`. Existing `run.*` Event names and `runId` fields are pre-release
+data and are replaced by `thread.*` and `threadId`; no automatic migration is
+promised before the first published stable version.
 
-- **JX-PKG-001.** `core` MUST NOT depend on a provider package, MCP SDK, database
-  driver, web framework, or CLI framework.
-- **JX-PKG-002.** Adapters MUST depend inward on canonical ports and types.
-- **JX-PKG-003.** Example applications MUST consume public package APIs only.
-- **JX-PKG-004.** The unscoped `jixu` package MAY compose defaults and expose
-  CLI commands, but lifecycle logic and canonical types MUST remain in `core`.
-- **JX-PKG-005.** Headless packages and the public library API MUST support Node
-  `>=22.18.0`. Package manifests MUST remain installable by npm, pnpm, Yarn, and
-  Bun without requiring a package-manager-specific runtime path.
-- **JX-PKG-006.** OpenTUI's runtime requirement applies only to the reference
-  TUI source and its build pipeline. It MUST NOT raise the Node requirement or
-  add import-time native initialization for headless packages.
-- **JX-PKG-007.** Packed headless release candidates MUST expose compiled ESM
-  JavaScript and matching TypeScript declarations. Runtime exports MUST NOT
-  point at TypeScript source under `node_modules`, and cross-package imports
-  MUST resolve through declared package dependencies rather than monorepo source
-  paths.
-- **JX-PKG-008.** One package-candidate build MUST produce the exact tarball set
-  used by every package-manager fixture. Packed manifests MUST contain ordinary
-  version ranges instead of workspace-only protocols. The candidate build and
-  consumer verification MUST use temporary directories and MUST NOT add a
-  second repository lockfile.
+The previously drafted `JX-TUI-010A` Conversation index is withdrawn. It was
+never an accepted architectural requirement and MUST NOT be implemented.
 
-The `0.2.7` packaging boundary advances package-manager verification ahead of
-the full developer release. Source development continues to use the canonical
-pnpm workspace and lockfile. Release candidates are derived artifacts; this
-change neither publishes them to a registry nor commits generated package
-output. Existing source-checkout consumers require no migration. Published
-package consumers do not yet exist because Jixu remains unpublished.
+Version 0.4 adds `plan.updated` and the `context.compaction_*` Event family,
+Context Manifests, immutable Handoff Artifacts, and running-input queue semantics
+to the pre-release design. These are not aliases for old Run or Session data.
+Persisted 0.3 drafts without explicit compatible upcasters MUST fail closed; no
+automatic migration is promised before the first stable release.
 
-## 17. v0.1 acceptance criteria
+## 19. Implementation order
 
-Every criterion is release-blocking.
+1. Reconcile public and durable Runtime/Run remnants to Harness/Thread and keep
+   exactly one Agent and one Event authority.
+2. Complete Thread creation, ordered running-input queueing, durable clear,
+   Store-backed listing, and open/recovery.
+3. Add the revisioned active Plan projection and typed model control output,
+   without adding a public Plan lifecycle or Effect scheduler.
+4. Add versioned context sources, deterministic compilation, Context Manifests,
+   immutable Handoff Artifacts, and adaptive safe-boundary compaction.
+5. Align progressive Skills, Tool disclosure, policy, model adapters, and the
+   reference TUI with the same Context and Thread path.
+6. Run targeted acceptance, Store and Driver contracts, typecheck, lint,
+   package portability, and the ordinary public Harness path.
 
-- **JX-AC-001 — Basic loop.** Given a deterministic model response containing a
-  Tool call, Jixu validates and executes the Tool, records request and outcome
-  Events, returns the Tool result to the model, and completes the Run.
-- **JX-AC-002 — Streaming separation.** Model deltas are observable as Signals,
-  while deleting every Signal still allows identical State reconstruction from
-  Events.
-- **JX-AC-003 — Crash recovery.** Inject a process stop after a non-idempotent
-  Tool request Event commits. Recovery appends `run.waiting` with
-  `effect_outcome_unknown` and invokes the Tool zero additional times.
-- **JX-AC-004 — Cooperative idempotency.** With an idempotent Tool Driver, a stop
-  after external completion but before outcome append recovers using the same
-  idempotency key and produces one externally observable action.
-- **JX-AC-005 — Pause/resume.** Pause while a Driver is active, record its known
-  outcome, dispatch no newly ready Effect while paused, and reach the same
-  result after resume as an uninterrupted deterministic baseline.
-- **JX-AC-006 — Fork.** Forking at Event N atomically creates a new Run whose
-  copied prefix State matches the parent at N except rebound identities and
-  whose later Events cannot mutate the parent.
-- **JX-AC-007 — Replay safety.** Replaying a completed Run invokes zero live
-  Drivers and reconstructs structurally equal State.
-- **JX-AC-008 — Checkpoint disposal.** Recover the same Run from a valid,
-  deleted, malformed, incompatible, and structurally incorrect Checkpoint; only
-  recovery work changes, never reconstructed State.
-- **JX-AC-009 — Provider portability.** The same Agent definition runs through
-  OpenAI and Anthropic adapters without provider-specific Kernel branches.
-- **JX-AC-010 — MCP parity.** A local Tool and equivalent MCP Tool produce the
-  same canonical request/outcome Event shapes.
-- **JX-AC-011 — Skills compatibility.** A standard `SKILL.md` can be discovered
-  and loaded progressively without granting Tool permissions.
-- **JX-AC-012 — Concurrency rejection.** Two writers appending at the same Run
-  revision cannot both commit.
-- **JX-AC-013 — Secret handling.** Fixture secrets present in adapter credentials
-  do not appear in Events, Checkpoints, errors, or Signals.
-- **JX-AC-014 — Five-minute start.** A new TypeScript project can install Jixu,
-  define one Tool, and complete one Run using documented code in under five
-  minutes, excluding model credential acquisition.
-- **JX-AC-015 — Runnable Agent.** A developer can launch the reference TUI,
-  configure Responses or Chat Completions format, a compatible Base URL, a
-  persisted credential, and a free-form model ID without leaving the TUI,
-  relaunch without re-entering complete saved configuration, then submit one
-  prompt that invokes at least one of `read`, `write`, `edit`, or `bash`, observe
-  discriminated Event/Signal activity, and inspect the terminal Run State.
-  Fixture credentials never appear outside the restricted global `auth.json`
-  credential store.
-- **JX-AC-016 — Headless runtime boundary.** On Node `22.18.0` or newer, a clean
-  process can import and execute the headless public API without Bun or OpenTUI
-  native initialization.
-- **JX-AC-017 — Package-manager portability.** One set of packed release
-  candidates installs in isolated npm, pnpm, Yarn, and Bun consumer fixtures.
-  Each fixture executes the documented `@jixu/core` headless entry point on
-  Node, completes an ordinary deterministic Agent Run, and imports the shipped
-  first-party headless adapters. Packed manifests contain no `workspace:`
-  dependency and runtime exports resolve only compiled JavaScript. Repository
-  development retains one canonical lockfile.
-- **JX-AC-018 — TUI lifecycle and harness surface.** OpenTUI renderer ownership
-  is released after normal quit, handled failure, and repeated cleanup;
-  in-memory renderer tests at `80x24` and a wide terminal verify a bounded
-  single transcript, causally inline activity, a compact persistent composer,
-  status and command surfaces, and the absence of a permanent activity panel.
-- **JX-AC-019 — Unified LLM adapter.** The same Agent and deterministic Tool
-  fixtures run through Responses and Chat Completions compatible clients using
-  one `ModelDriver` contract, with wire-format request details confined to
-  `@jixu/llm`. Contract tests verify both endpoint paths, full-history Tool
-  mapping, streamed text Signals, final Tool calls, and credential redaction.
-
-## 18. Implementation sequence
-
-1. **M0 — Specification and repository rules.** Establish this baseline,
-   `AGENTS.md`, contribution workflow, and architectural tests.
-2. **M1 — Deterministic Kernel.** Implement canonical types, Reducer, in-memory
-   Store, mock Drivers, and the basic loop.
-3. **M2 — Continuity.** Implement JSONL/SQLite, checkpoints, recovery,
-   pause/resume, fork, and replay.
-4. **M2.1 — Experiential gate.** Before accepting M2, implement the narrowest
-   real vertical slice: live Run observation, the OpenAI Driver, opt-in Node
-   Tools, and the reference OpenTUI surface. This dependency advance exists
-   because continuity tests alone did not provide a developer-runnable
-   acceptance path; it does not mark the full adapter milestone complete.
-5. **M2.2 — Package portability gate.** Before M3, build compiled headless
-   package candidates once and verify that the same tarballs install and run in
-   isolated npm, pnpm, Yarn, and Bun consumers. This advances `JX-AC-017`
-   because workspace-source execution cannot reveal broken packed exports or
-   monorepo-only imports. Registry publication, release versioning, and
-   standalone executables remain M4 work.
-6. **M3 — Ecosystem adapters.** Complete Anthropic, MCP, and Skills adapters and
-   provider portability acceptance.
-7. **M4 — Developer release.** Complete registry publication and versioning,
-   standalone executable packaging, examples, failure-injection suite, API
-   documentation, and v0.1 release checks.
-
-Implementation MUST proceed in this order unless this specification is updated
-with the reason and changed dependencies.
+Later capabilities such as more model adapters, MCP Tools, approvals, richer
+observation, and deployment coordinators MUST extend this same single-Agent
+Thread model.

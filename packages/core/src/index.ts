@@ -3,7 +3,7 @@ export {
   defineSchema,
   defineTool,
 } from "./agent.ts";
-export { decodeCheckpoint, decodeRunEvent } from "./codec.ts";
+export { decodeCheckpoint, decodeThreadEvent } from "./codec.ts";
 export type {
   AgentConfig,
   AgentDefinition,
@@ -15,7 +15,7 @@ export type {
   ToolExecutionContext,
 } from "./agent.ts";
 export {
-  createInitialRunState,
+  createInitialThreadState,
   parseModelResponse,
 } from "./domain.ts";
 export type {
@@ -27,8 +27,9 @@ export type {
   ModelMessage,
   ModelRef,
   ModelResponse,
-  RunState,
-  RunStatus,
+  QueuedInput,
+  ThreadState,
+  ThreadStatus,
   ToolCall,
   ToolDescriptor,
   ToolIdempotency,
@@ -55,18 +56,18 @@ export {
   InvalidTransitionError,
   JixuError,
   RevisionConflictError,
-  RunAlreadyExistsError,
-  RunNotFoundError,
+  ThreadAlreadyExistsError,
+  ThreadNotFoundError,
   SchemaValidationError,
   UnsupportedEventError,
 } from "./errors.ts";
-export { createRunEvent } from "./events.ts";
+export { createThreadEvent } from "./events.ts";
 export type {
-  AnyRunEvent,
-  RunEvent,
-  RunEventInput,
-  RunEventPayloads,
-  RunEventType,
+  AnyThreadEvent,
+  ThreadEvent,
+  ThreadEventInput,
+  ThreadEventPayloads,
+  ThreadEventType,
 } from "./events.ts";
 export {
   assertJsonValue,
@@ -85,17 +86,13 @@ export type {
   IdGenerator,
   ModelDriver,
   ModelDriverContext,
-  RunStreamItem,
+  ThreadStreamItem,
   Signal,
   SignalSink,
 } from "./ports.ts";
 export { REDUCER_VERSION, reduce, replayEvents } from "./reducer.ts";
 export type { TransitionResult } from "./reducer.ts";
-export { createRuntime, Runtime } from "./runtime.ts";
-export type {
-  ForkOptions,
-  RunHandle,
-  RunStreamOptions,
-  RuntimeConfig,
-} from "./runtime.ts";
+export { createHarness, Harness } from "./harness.ts";
+export type { HarnessConfig } from "./harness.ts";
+export type { ForkOptions, Thread, ThreadStreamOptions } from "./thread.ts";
 export { InMemoryEventStore } from "./store.ts";

@@ -13,7 +13,7 @@ function context(cancellation = new AbortController().signal): ToolExecutionCont
     cancellation,
     effectId: "effect-1",
     idempotencyKey: "effect-1",
-    runId: "run-1",
+    threadId: "run-1",
     signals: { emit() {} },
   };
 }

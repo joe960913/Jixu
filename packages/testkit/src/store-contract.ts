@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  createRunEvent,
+  createThreadEvent,
   jsonDigest,
   REDUCER_VERSION,
   replayEvents,
 } from "@jixu/core";
 import type {
-  AnyRunEvent,
+  AnyThreadEvent,
   EventStore,
 } from "@jixu/core";
 
@@ -27,14 +27,14 @@ const snapshot = {
   tools: [],
 } as const;
 
-function created(runId: string, eventId: string): AnyRunEvent {
-  return createRunEvent({
+function created(threadId: string, eventId: string): AnyThreadEvent {
+  return createThreadEvent({
     id: eventId,
     payload: { agent: snapshot },
-    runId,
+    threadId,
     sequence: 1,
     timestamp: "2026-01-01T00:00:00.000Z",
-    type: "run.created",
+    type: "thread.created",
   });
 }
 
@@ -53,10 +53,10 @@ export function defineStoreContract(
     const fixture = await factory();
     try {
       const { store } = fixture;
-      await store.createRun("run-contract");
+      await store.createThread("run-contract");
       await assert.rejects(
-        store.createRun("run-contract"),
-        hasErrorCode("run_already_exists"),
+        store.createThread("run-contract"),
+        hasErrorCode("thread_already_exists"),
       );
       const first = created("run-contract", "event-contract-1");
       await store.append("run-contract", 0, first);
@@ -67,14 +67,14 @@ export function defineStoreContract(
       };
       mutable.payload.agent.instructions = "mutated outside Store";
       const stored = (await store.read("run-contract"))[0];
-      assert.equal(stored?.type, "run.created");
-      assert.ok(stored !== undefined && stored.type === "run.created");
+      assert.equal(stored?.type, "thread.created");
+      assert.ok(stored !== undefined && stored.type === "thread.created");
       assert.equal(stored.payload.agent.instructions, "Be precise.");
 
-      const competing = createRunEvent({
+      const competing = createThreadEvent({
         id: "event-contract-2",
         payload: { content: "stale" },
-        runId: "run-contract",
+        threadId: "run-contract",
         sequence: 2,
         timestamp: "2026-01-01T00:00:00.000Z",
         type: "input.received",
@@ -106,7 +106,7 @@ export function defineStoreContract(
       const event = created("fork-contract", "fork-event-1");
       await store.createFork("fork-contract", [event]);
       assert.deepEqual(await store.read("fork-contract"), [event]);
-      assert.deepEqual(await store.listNonTerminalRuns(), ["fork-contract"]);
+      assert.deepEqual(await store.listThreads(), ["fork-contract"]);
 
       const invalid = {
         ...created("partial-fork", "partial-event-1"),
@@ -115,7 +115,7 @@ export function defineStoreContract(
       await assert.rejects(store.createFork("partial-fork", [invalid]));
       await assert.rejects(
         store.read("partial-fork"),
-        hasErrorCode("run_not_found"),
+        hasErrorCode("thread_not_found"),
       );
     } finally {
       await fixture.cleanup?.();
@@ -126,7 +126,7 @@ export function defineStoreContract(
     const fixture = await factory();
     try {
       const { store } = fixture;
-      await store.createRun("checkpoint-contract");
+      await store.createThread("checkpoint-contract");
       const event = created("checkpoint-contract", "checkpoint-event-1");
       await store.append("checkpoint-contract", 0, event);
       const state = replayEvents("checkpoint-contract", [event]);
@@ -134,7 +134,7 @@ export function defineStoreContract(
         eventId: event.id,
         eventSchemaVersion: 1,
         reducerVersion: REDUCER_VERSION,
-        runId: "checkpoint-contract",
+        threadId: "checkpoint-contract",
         sequence: 1,
         state,
         stateDigest: jsonDigest(state),
@@ -146,12 +146,12 @@ export function defineStoreContract(
     }
   });
 
-  test(`JX-AC-012 ${name}: Event IDs are unique across Runs`, async () => {
+  test(`JX-AC-012 ${name}: Event IDs are unique across Threads`, async () => {
     const fixture = await factory();
     try {
       const { store } = fixture;
-      await store.createRun("global-id-a");
-      await store.createRun("global-id-b");
+      await store.createThread("global-id-a");
+      await store.createThread("global-id-b");
       await store.append("global-id-a", 0, created("global-id-a", "global-event"));
       await assert.rejects(
         store.append("global-id-b", 0, created("global-id-b", "global-event")),

@@ -2,56 +2,65 @@
 
 **Agents that continue.**
 
-Jixu is a small, event-sourced TypeScript runtime for agents that can pause,
-resume, fork, and replay.
+Jixu is a small, event-sourced TypeScript Agent Harness. Define one Agent, give
+it Tools, and continue its work in a durable Thread.
 
-> **Project status:** M2 continuity, the M2.1 experiential gate, and the M2.2
-> package portability gate are implemented locally. M2.2 is awaiting maintainer
-> acceptance. Packages remain unpublished and the public API is pre-release.
+> **Project status:** pre-release. Packages are not published yet and the public
+> API may still change before the first stable version.
 
 ## Why Jixu
 
-Most agent libraries begin with prompts, tools, or workflow graphs. Jixu begins
-with the lifetime of a run:
+Jixu treats the Harness as the durable operating layer around one capable Agent:
 
-- What survives a process crash?
-- What is authoritative after a tool call?
-- How can a human pause and resume work safely?
-- How can a run fork without copying an opaque conversation?
-- How can developers replay behavior without repeating side effects?
+- a Thread continues naturally across messages and process restarts;
+- external work is durably requested before dispatch;
+- pause, continue, clear, fork, recovery, and replay use the same lifecycle;
+- model providers, Tools, Stores, and interfaces remain replaceable; and
+- the reference TUI consumes the same public API as any other application.
 
-Jixu answers those questions with one compact execution model:
+The compact execution model is:
 
 ```text
 durable Event -> pure Reducer -> explicit Effect -> Driver -> durable Event
 ```
 
-Streaming model tokens and progress updates are non-authoritative `Signal`s.
-The durable event log is the only source of truth.
+Signals such as streamed model tokens are observable but non-authoritative. The
+ordered Event log remains the source of truth; Checkpoints are disposable caches.
 
-## Design commitments
+The normative product and architecture contracts live in [SPEC.md](./SPEC.md)
+and [ARCHITECTURE.md](./ARCHITECTURE.md).
 
-- A small, readable kernel.
-- Plain TypeScript and serializable state.
-- MCP, Agent Skills, and ordinary typed tools instead of replacement protocols.
-- Provider, storage, and UI independence.
-- Replay never repeats external side effects.
-- Fork creates a new run with explicit lineage.
-- Checkpoints accelerate recovery but never become a second source of truth.
+## Public Harness API
 
-## Acceptance-driven development
+```ts
+import { createHarness, defineAgent } from "@jixu/core";
+import { SqliteEventStore } from "@jixu/store-sqlite";
 
-Jixu evolves through explicit behavior contracts and acceptance evidence.
-Every behavior change must:
+const agent = defineAgent({
+  instructions: "Be precise.",
+  model: { provider: "provider", model: "model-name" },
+  tools: [yourTool],
+});
 
-1. identify the observable contract it changes;
-2. preserve the canonical terminology and architectural invariants;
-3. include tests mapped to stable requirement or acceptance IDs; and
-4. keep adapter details out of the kernel.
+const harness = createHarness({
+  agent,
+  modelDrivers: { provider: yourModelDriver },
+  store: new SqliteEventStore("./jixu.db"),
+});
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for the contribution workflow.
+const thread = await harness.createThread();
+await thread.send("Compare these three companies.");
+await thread.send("Now challenge the strongest assumption.");
 
-## Try the reference TUI
+const reopened = await harness.openThread(thread.id);
+const threads = await harness.listThreads();
+```
+
+A Thread also exposes `clear`, `events`, `state`, `stream`, `wait`, `pause`,
+`continue`, `fork`, and side-effect-free `replay`. Input accepted while a Thread
+is running is durably queued and starts automatically after the current turn.
+
+## Reference TUI
 
 Prerequisites: Node.js 22.18+ for the workspace and Bun 1.3+ for the source TUI.
 
@@ -60,114 +69,45 @@ pnpm install
 pnpm dev
 ```
 
-Setup happens inside the TUI:
+The first launch enters the ordinary workspace even without credentials. It
+shows `Model not configured` and `use /config`; setup is never a forced gate.
+The endpoint can implement either `/v1/responses` or `/v1/chat/completions`.
+Jixu stores credentials separately in `~/.jixu/auth.json` and non-secret settings
+in `~/.jixu/settings.json` with restrictive POSIX permissions.
 
-1. choose the endpoint API format: Responses or Chat Completions;
-2. enter a compatible Base URL, such as `https://api.example.com/v1`;
-3. enter its API Key; and
-4. enter any valid model ID as free-form text.
+Normal prompts continue the selected Thread. Useful controls are:
 
-Jixu works with endpoints that implement either `/v1/responses` or
-`/v1/chat/completions`. The selected format is explicit and Jixu does not retry
-the same request through the other API, avoiding accidental duplicate work or
-charges.
+- `/new` creates and selects an empty Thread;
+- `/clear` clears the selected Thread context without changing its ID;
+- `/resume` opens a keyboard-selectable list of previous Threads;
+- `/pause` and `/continue` control a Thread at durable dispatch boundaries;
+- `/fork <event-id> <input>` creates a child Thread with explicit lineage;
+- `/events`, `/state`, and `/replay` inspect durable behavior; and
+- `/config`, `/help`, and `/quit` manage the local application.
 
-Jixu stores the endpoint API Key in `~/.jixu/auth.json` and non-secret defaults in
-`~/.jixu/settings.json`. On POSIX systems the directory is restricted to `0700`
-and the files to `0600`. A complete saved configuration reconnects on the next
-launch; use `/config` to replace it without leaving the TUI. Environment
-variables and CLI flags are optional prefill mechanisms, not prerequisites.
+Typing `/` or a command prefix opens a filtered menu above the composer. Use Up
+and Down to select, Escape to close, and Enter to invoke or insert a command.
 
-Each prompt starts an ordinary durable `Agent` Run. The reference Agent exposes
-the built-in `read`, `write`, `edit`, and `bash` Tools. File Tools stay inside
-the selected workspace; `bash` is a local unsandboxed shell running with the
-Jixu process permissions.
+The first-party Agent exposes workspace-bounded `read`, `write`, and `edit`
+Tools plus an explicitly unsandboxed local `bash` Tool.
 
-Useful controls:
-
-- `/events`, `/state`, and `/replay` inspect durable behavior;
-- `/pause` and `/resume` control the current Run at dispatch boundaries;
-- `/fork <event-id> <input>` starts a new Run from an earlier Event;
-- `/config` changes the API format, Base URL, credentials, and model ID; and
-- `/help` shows the complete command list.
-
-The source checkout retains one canonical pnpm lockfile. Package portability is
-verified separately against derived release candidates:
+## Validation
 
 ```bash
+pnpm run check
 pnpm run test:packages
 ```
 
-That acceptance command compiles one set of ESM JavaScript and TypeScript
-declaration tarballs, then installs those exact local files in isolated npm,
-pnpm, Yarn, and Bun consumers. Every consumer executes the same documented
-`@jixu/core` Agent Run on Node and imports the first-party headless adapters.
-Generated packages, consumer lockfiles, and caches remain in temporary
-directories. Registry publication and release versioning remain M4 work, so
-this is not yet a public npm availability claim.
+`check` runs the build, typecheck, lint, core acceptance tests, and the OpenTUI
+smoke path. `test:packages` additionally verifies the same compiled artifacts in
+clean npm, pnpm, Yarn, and Bun consumers. Generated packages and consumer
+lockfiles remain temporary.
 
-## Implemented through M2.2
+The JSONL Store is intended for one active local process. The SQLite adapter uses
+Node's built-in `node:sqlite`, which remains experimental in the supported Node
+runtime.
 
-- Deterministic Event → Reducer → Effect → Driver execution.
-- Recovery from the durable Event log, with ready and pending Effects kept
-  distinct.
-- Idempotent retry identity and safe waiting for unknown non-idempotent Tool
-  outcomes.
-- Durable pause/resume, atomic Fork, and side-effect-free Replay.
-- Disposable, validated Checkpoints.
-- In-memory, inspectable JSONL, and local SQLite Store adapters sharing one
-  contract suite.
-- Live Event and Signal observation through `run.stream()`.
-- One unified `@jixu/llm` adapter boundary for Responses- and Chat
-  Completions-compatible endpoints, plus OpenAI and OpenRouter convenience
-  factories.
-- Opt-in, workspace-bounded Node `read`, `write`, and `edit` Tools plus an
-  explicitly unsandboxed local `bash` Tool.
-- A reference OpenTUI application that runs the same ordinary `Agent`, persists
-  credentials separately, and exposes continuity controls.
-- Compiled package candidates whose manifests contain no workspace-only paths,
-  verified from the same tarballs in clean npm, pnpm, Yarn, and Bun consumers.
-
-The JSONL Store is intended for one active local process. The SQLite adapter
-uses Node's built-in `node:sqlite`, which is still marked experimental by the
-supported Node 24 runtime.
-
-## Current kernel API
-
-```ts
-import { createRuntime, defineAgent } from "@jixu/core";
-import { SqliteEventStore } from "@jixu/store-sqlite";
-
-const runtime = createRuntime({
-  modelDrivers: { provider: yourModelDriver },
-  store: new SqliteEventStore("./jixu.db"),
-});
-
-const agent = defineAgent({
-  instructions: "Be precise.",
-  model: { provider: "provider", model: "model-name" },
-  tools: [yourTool],
-});
-
-const run = await runtime.run(agent, "Compare these three companies.");
-const completed = await run.wait();
-
-const forkPoint = (await run.events()).at(-1);
-if (forkPoint === undefined) throw new Error("Run has no Events");
-
-const alternative = await run.fork({
-  at: forkPoint.id,
-  input: "Re-evaluate using a different assumption.",
-});
-
-const replay = await run.replay();
-const recovered = await runtime.recover(agent, run.id);
-```
-
-Live Runs also expose `pause()` and `resume()` at durable dispatch boundaries.
-Anthropic, MCP, Agent Skills, cancellation, registry publication and versioning,
-standalone executables, and release examples remain planned for later
-milestones.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the contribution workflow.
 
 ## License
 

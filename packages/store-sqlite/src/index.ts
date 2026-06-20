@@ -4,15 +4,15 @@ import { DatabaseSync } from "node:sqlite";
 
 import {
   decodeCheckpoint,
-  decodeRunEvent,
+  decodeThreadEvent,
   InvalidTransitionError,
   replayEvents,
   RevisionConflictError,
-  RunAlreadyExistsError,
-  RunNotFoundError,
+  ThreadAlreadyExistsError,
+  ThreadNotFoundError,
 } from "@jixu/core";
 import type {
-  AnyRunEvent,
+  AnyThreadEvent,
   Checkpoint,
   EventStore,
 } from "@jixu/core";
@@ -49,21 +49,21 @@ export class SqliteEventStore implements EventStore {
     this.#database.exec("PRAGMA journal_mode = WAL");
     this.#database.exec("PRAGMA foreign_keys = ON");
     this.#database.exec(`
-      CREATE TABLE IF NOT EXISTS runs (
-        run_id TEXT PRIMARY KEY
+      CREATE TABLE IF NOT EXISTS threads (
+        thread_id TEXT PRIMARY KEY
       ) STRICT;
       CREATE TABLE IF NOT EXISTS events (
-        run_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
         sequence INTEGER NOT NULL,
         event_id TEXT NOT NULL UNIQUE,
         event_json TEXT NOT NULL,
-        PRIMARY KEY (run_id, sequence),
-        FOREIGN KEY (run_id) REFERENCES runs(run_id)
+        PRIMARY KEY (thread_id, sequence),
+        FOREIGN KEY (thread_id) REFERENCES threads(thread_id)
       ) STRICT;
       CREATE TABLE IF NOT EXISTS checkpoints (
-        run_id TEXT PRIMARY KEY,
+        thread_id TEXT PRIMARY KEY,
         checkpoint_json TEXT NOT NULL,
-        FOREIGN KEY (run_id) REFERENCES runs(run_id)
+        FOREIGN KEY (thread_id) REFERENCES threads(thread_id)
       ) STRICT;
     `);
   }
@@ -72,17 +72,17 @@ export class SqliteEventStore implements EventStore {
     this.#database.close();
   }
 
-  #hasRun(runId: string): boolean {
+  #hasThread(threadId: string): boolean {
     return this.#database
-      .prepare("SELECT 1 AS present FROM runs WHERE run_id = ?")
-      .get(runId) !== undefined;
+      .prepare("SELECT 1 AS present FROM threads WHERE thread_id = ?")
+      .get(threadId) !== undefined;
   }
 
-  #revision(runId: string): number {
+  #revision(threadId: string): number {
     const row = record(
       this.#database
-        .prepare("SELECT COUNT(*) AS revision FROM events WHERE run_id = ?")
-        .get(runId),
+        .prepare("SELECT COUNT(*) AS revision FROM events WHERE thread_id = ?")
+        .get(threadId),
       "revision row",
     );
     return number(row.revision, "revision");
@@ -100,32 +100,34 @@ export class SqliteEventStore implements EventStore {
     }
   }
 
-  async createRun(runId: string): Promise<void> {
+  async createThread(threadId: string): Promise<void> {
     this.#transaction(() => {
-      if (this.#hasRun(runId)) {
-        throw new RunAlreadyExistsError(runId);
+      if (this.#hasThread(threadId)) {
+        throw new ThreadAlreadyExistsError(threadId);
       }
-      this.#database.prepare("INSERT INTO runs(run_id) VALUES (?)").run(runId);
+      this.#database
+        .prepare("INSERT INTO threads(thread_id) VALUES (?)")
+        .run(threadId);
     });
   }
 
   async createFork(
-    runId: string,
-    events: readonly AnyRunEvent[],
+    threadId: string,
+    events: readonly AnyThreadEvent[],
   ): Promise<void> {
     this.#transaction(() => {
-      if (this.#hasRun(runId)) {
-        throw new RunAlreadyExistsError(runId);
+      if (this.#hasThread(threadId)) {
+        throw new ThreadAlreadyExistsError(threadId);
       }
       if (events.length === 0) {
-        throw new InvalidTransitionError(`Fork ${runId} must contain Events`);
+        throw new InvalidTransitionError(`Fork ${threadId} must contain Events`);
       }
       const localIds = new Set<string>();
       const validated = events.map((event, index) => {
-        const decoded = decodeRunEvent(event);
-        if (decoded.runId !== runId || decoded.sequence !== index + 1) {
+        const decoded = decodeThreadEvent(event);
+        if (decoded.threadId !== threadId || decoded.sequence !== index + 1) {
           throw new InvalidTransitionError(
-            `Fork Event ${decoded.id} is not contiguous for Run ${runId}`,
+            `Fork Event ${decoded.id} is not contiguous for Thread ${threadId}`,
           );
         }
         if (localIds.has(decoded.id)) {
@@ -134,38 +136,40 @@ export class SqliteEventStore implements EventStore {
         localIds.add(decoded.id);
         return decoded;
       });
-      replayEvents(runId, validated);
-      this.#database.prepare("INSERT INTO runs(run_id) VALUES (?)").run(runId);
+      replayEvents(threadId, validated);
+      this.#database
+        .prepare("INSERT INTO threads(thread_id) VALUES (?)")
+        .run(threadId);
       const insert = this.#database.prepare(
-        "INSERT INTO events(run_id, sequence, event_id, event_json) VALUES (?, ?, ?, ?)",
+        "INSERT INTO events(thread_id, sequence, event_id, event_json) VALUES (?, ?, ?, ?)",
       );
       for (const event of validated) {
-        insert.run(runId, event.sequence, event.id, JSON.stringify(event));
+        insert.run(threadId, event.sequence, event.id, JSON.stringify(event));
       }
     });
   }
 
   async append(
-    runId: string,
+    threadId: string,
     expectedRevision: number,
-    event: AnyRunEvent,
+    event: AnyThreadEvent,
   ): Promise<void> {
     this.#transaction(() => {
-      if (!this.#hasRun(runId)) {
-        throw new RunNotFoundError(runId);
+      if (!this.#hasThread(threadId)) {
+        throw new ThreadNotFoundError(threadId);
       }
-      const actualRevision = this.#revision(runId);
+      const actualRevision = this.#revision(threadId);
       if (actualRevision !== expectedRevision) {
         throw new RevisionConflictError(
-          runId,
+          threadId,
           expectedRevision,
           actualRevision,
         );
       }
-      const decoded = decodeRunEvent(event);
-      if (decoded.runId !== runId || decoded.sequence !== expectedRevision + 1) {
+      const decoded = decodeThreadEvent(event);
+      if (decoded.threadId !== threadId || decoded.sequence !== expectedRevision + 1) {
         throw new InvalidTransitionError(
-          `Event ${decoded.id} does not continue Run ${runId}`,
+          `Event ${decoded.id} does not continue Thread ${threadId}`,
         );
       }
       if (
@@ -177,57 +181,54 @@ export class SqliteEventStore implements EventStore {
       }
       this.#database
         .prepare(
-          "INSERT INTO events(run_id, sequence, event_id, event_json) VALUES (?, ?, ?, ?)",
+          "INSERT INTO events(thread_id, sequence, event_id, event_json) VALUES (?, ?, ?, ?)",
         )
-        .run(runId, decoded.sequence, decoded.id, JSON.stringify(decoded));
+        .run(threadId, decoded.sequence, decoded.id, JSON.stringify(decoded));
     });
   }
 
   async read(
-    runId: string,
+    threadId: string,
     fromSequence = 1,
-  ): Promise<readonly AnyRunEvent[]> {
-    if (!this.#hasRun(runId)) {
-      throw new RunNotFoundError(runId);
+  ): Promise<readonly AnyThreadEvent[]> {
+    if (!this.#hasThread(threadId)) {
+      throw new ThreadNotFoundError(threadId);
     }
     return this.#database
       .prepare(
-        "SELECT event_json FROM events WHERE run_id = ? AND sequence >= ? ORDER BY sequence",
+        "SELECT event_json FROM events WHERE thread_id = ? AND sequence >= ? ORDER BY sequence",
       )
-      .all(runId, fromSequence)
+      .all(threadId, fromSequence)
       .map((value) => {
         const row = record(value, "Event row");
-        return decodeRunEvent(JSON.parse(string(row.event_json, "event_json")) as unknown);
+        return decodeThreadEvent(JSON.parse(string(row.event_json, "event_json")) as unknown);
       });
   }
 
-  async listNonTerminalRuns(): Promise<readonly string[]> {
+  async listThreads(): Promise<readonly string[]> {
     const rows = this.#database
-      .prepare("SELECT run_id FROM runs ORDER BY run_id")
+      .prepare("SELECT thread_id FROM threads ORDER BY thread_id")
       .all();
     const result: string[] = [];
     for (const value of rows) {
-      const row = record(value, "Run row");
-      const runId = string(row.run_id, "run_id");
-      const events = await this.read(runId);
+      const row = record(value, "Thread row");
+      const threadId = string(row.thread_id, "thread_id");
+      const events = await this.read(threadId);
       if (events.length === 0) {
         continue;
       }
-      const status = replayEvents(runId, events).status;
-      if (status !== "cancelled" && status !== "completed" && status !== "failed") {
-        result.push(runId);
-      }
+      result.push(threadId);
     }
     return result;
   }
 
-  async readCheckpoint(runId: string): Promise<Checkpoint | null> {
-    if (!this.#hasRun(runId)) {
-      throw new RunNotFoundError(runId);
+  async readCheckpoint(threadId: string): Promise<Checkpoint | null> {
+    if (!this.#hasThread(threadId)) {
+      throw new ThreadNotFoundError(threadId);
     }
     const value = this.#database
-      .prepare("SELECT checkpoint_json FROM checkpoints WHERE run_id = ?")
-      .get(runId);
+      .prepare("SELECT checkpoint_json FROM checkpoints WHERE thread_id = ?")
+      .get(threadId);
     if (value === undefined) {
       return null;
     }
@@ -239,16 +240,16 @@ export class SqliteEventStore implements EventStore {
 
   async writeCheckpoint(checkpoint: Checkpoint): Promise<void> {
     this.#transaction(() => {
-      if (!this.#hasRun(checkpoint.runId)) {
-        throw new RunNotFoundError(checkpoint.runId);
+      if (!this.#hasThread(checkpoint.threadId)) {
+        throw new ThreadNotFoundError(checkpoint.threadId);
       }
       const decoded = decodeCheckpoint(checkpoint);
       this.#database
         .prepare(`
-          INSERT INTO checkpoints(run_id, checkpoint_json) VALUES (?, ?)
-          ON CONFLICT(run_id) DO UPDATE SET checkpoint_json = excluded.checkpoint_json
+          INSERT INTO checkpoints(thread_id, checkpoint_json) VALUES (?, ?)
+          ON CONFLICT(thread_id) DO UPDATE SET checkpoint_json = excluded.checkpoint_json
         `)
-        .run(decoded.runId, JSON.stringify(decoded));
+        .run(decoded.threadId, JSON.stringify(decoded));
     });
   }
 }

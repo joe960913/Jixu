@@ -324,7 +324,7 @@ export class OpenResponsesModelDriver implements ModelDriver {
                 sequence: event.sequence_number,
               },
               kind: "signal",
-              runId: effect.runId,
+              threadId: effect.threadId,
               type: "model.output_text.delta",
             });
             break;
@@ -336,7 +336,7 @@ export class OpenResponsesModelDriver implements ModelDriver {
                 sequence: event.sequence_number,
               },
               kind: "signal",
-              runId: effect.runId,
+              threadId: effect.threadId,
               type: "model.tool_arguments.delta",
             });
             break;
@@ -490,7 +490,7 @@ export class OpenChatCompletionsModelDriver implements ModelDriver {
                 sequence: signalSequence,
               },
               kind: "signal",
-              runId: effect.runId,
+              threadId: effect.threadId,
               type: "model.output_text.delta",
             });
             signalSequence += 1;
@@ -529,7 +529,7 @@ export class OpenChatCompletionsModelDriver implements ModelDriver {
                   sequence: signalSequence,
                 },
                 kind: "signal",
-                runId: effect.runId,
+                threadId: effect.threadId,
                 type: "model.tool_arguments.delta",
               });
               signalSequence += 1;

@@ -16,7 +16,7 @@ specification already defines it.
 
 ## 2. Sources of truth
 
-- The ordered durable Event log is the sole authority for a Run.
+- The ordered durable Event log is the sole authority for a Thread.
 - State is derived from Events.
 - A Checkpoint is a disposable performance cache.
 - A Signal is transient and non-authoritative.
@@ -25,16 +25,17 @@ specification already defines it.
 - `SPEC.md` is the authority for public semantics and package boundaries at the
   current commit. It is a living specification, not an immutable artifact.
 
-Never introduce a second run-state machine, a second event history, or a second
-component that can independently decide canonical Run status.
+Never introduce a second Thread state machine, a second Event history, or a
+second component that can independently decide canonical Thread status.
 
 ## 3. Canonical concepts
 
 Use the terminology in `SPEC.md` exactly:
 
-- `Agent` is immutable configuration.
-- `Runtime` binds Stores and Drivers to the Kernel but is not durable authority.
-- `Run` is one durable execution.
+- `Harness` owns exactly one immutable Agent and binds Stores and Drivers to the
+  Kernel, but is not durable authority.
+- `Agent` is immutable configuration and never hands work to another Agent.
+- `Thread` is one durable, multi-turn history for that Agent.
 - `Kernel` is I/O-free domain logic.
 - `Event` is an immutable durable fact.
 - `Signal` is a transient observation.
@@ -45,11 +46,14 @@ Use the terminology in `SPEC.md` exactly:
 - `Tool` acts.
 - `Skill` supplies instructional context.
 - `Checkpoint` accelerates recovery but is not authority.
-- `Fork` creates a new Run.
+- `Fork` creates a new Thread.
 - `Replay` performs no Effects.
 
-Do not use `session`, `thread`, `workflow`, `job`, or `task` as a synonym for
-Run. Application layers may own those concepts only through an explicit mapping.
+Do not introduce `session`, `conversation`, `run`, `workflow`, `job`, or `task`
+as a synonym or wrapper for Thread. Multi-Agent orchestration, handoff,
+supervisors, swarms, Agent graphs, and Agent-as-Tool are outside the Jixu core
+model. If an application needs a different Agent, it creates a different
+Harness rather than adding Agent routing to one Harness.
 
 If a proposed concept overlaps an existing term, stop and simplify instead of
 adding another noun.
@@ -64,7 +68,7 @@ All implementation must preserve these invariants:
 3. Reducers do not perform I/O, read clocks, generate random IDs, or call SDKs.
 4. Adapters depend on core ports; core never imports adapters.
 5. Replay is read-only and never dispatches a live Driver.
-6. Fork creates a new Run with explicit parent lineage.
+6. Fork creates a new Thread with explicit parent lineage.
 7. Unknown event types and schema versions fail closed.
 8. Secrets never enter Events, Checkpoints, errors, or Signals.
 9. Exactly-once behavior is never claimed without an enforceable idempotency
@@ -196,6 +200,30 @@ instead of silently shipping the shortcut.
 - Do not add a dependency when a small local implementation is clearer, but do
   not recreate an ecosystem protocol that Jixu should adapt to.
 
+### UI architecture and iteration discipline
+
+- Prefer the framework's maintained native component and focus model when they
+  directly implement the required interaction. Reject a native primitive only
+  for a verified behavioral or compatibility constraint, not an assumed one.
+- A UI source file MUST NOT become a catch-all for application orchestration,
+  screen-specific state, forms, transcript rendering, command metadata, and
+  keyboard interaction. Split these responsibilities before adding behavior;
+  a thousand-line UI module is an architecture failure, not an acceptable
+  intermediate state.
+- Keep command metadata and other reusable behavior in one typed source of
+  truth. Views render that model; they do not duplicate command lists or grow a
+  second interaction state machine.
+- Use normal layout flow for ordinary page structure and reserve overlays,
+  absolute positioning, negative margins, opacity stacking, and forced remount
+  keys for requirements that demonstrably need them.
+- After two failed attempts at the same UI interaction, stop editing production
+  code. Re-check the current framework API and reduce the problem to one
+  isolated proof before choosing the final implementation. Remove exploratory
+  code before resuming the release path.
+- Choose and explain the smallest release-quality design before implementation.
+  Do not make the maintainer pay for repeated speculative production patches or
+  for avoidable architectural churn.
+
 ## 9. Testing rules
 
 Tests must focus on load-bearing behavior, failure paths, and regressions.
@@ -212,12 +240,19 @@ Tests must focus on load-bearing behavior, failure paths, and regressions.
 - Provider tests distinguish mocked contract tests from explicitly enabled live
   probes.
 - Do not add low-value tests that only repeat TypeScript or library behavior.
+- Add the minimum test surface that proves the user-visible contract. Extend an
+  existing acceptance or smoke test when the behavior belongs to that same
+  public path; create a new test file only for an independent unit or contract
+  with a distinct failure boundary.
+- One user-visible behavior MUST NOT be scattered across multiple new test
+  files. Temporary harnesses and spike tests MUST be removed once the behavior
+  is covered through the ordinary public path.
 
 A milestone with a developer-facing surface is not complete until its documented
 acceptance path can be run by a maintainer. Internal tests alone cannot close
 that milestone. The runnable path MUST exercise the ordinary public concepts;
 do not invent a demo-only Agent subtype, state machine, or bypass around the
-Runtime.
+Harness.
 
 The minimum validation for a code change is targeted tests, typecheck, lint, and
 `git diff --check`. Release work also runs the full acceptance suite.
@@ -231,7 +266,7 @@ The minimum validation for a code change is targeted tests, typecheck, lint, and
   distributed durability beyond what `SPEC.md` guarantees.
 - Update README examples when a public API changes.
 
-### Private stage records
+### Stage records
 
 After each implementation stage passes its required validation, create one
 Chinese retrospective in `docs/stages/` before reporting the stage complete.
@@ -244,10 +279,11 @@ Use the local template in that directory and record:
 - validation evidence, failures encountered, and lessons learned;
 - known limitations, deferred work, and the next stage boundary.
 
-These records are private working assets, not normative project documentation.
-`SPEC.md` remains authoritative. The repository-local `.git/info/exclude` MUST
-exclude `/docs/`; never force-add, commit, push, or quote private stage records
-in a public PR or Issue.
+These records are repository documentation and MAY be tracked, committed, and
+published with the rest of the project. They are explanatory rather than
+normative; `SPEC.md` remains authoritative. Do not exclude `/docs/` through
+`.gitignore` or `.git/info/exclude` unless the maintainer explicitly changes
+that policy.
 
 ## 11. Change discipline
 

@@ -38,7 +38,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createRuntime, defineAgent } from "@jixu/core";
+import { createHarness, defineAgent } from "@jixu/core";
 import { createOpenAICompatibleModelDriver } from "@jixu/llm";
 import { JsonlEventStore } from "@jixu/store-jsonl";
 import { SqliteEventStore } from "@jixu/store-sqlite";
@@ -53,17 +53,17 @@ try {
   const model = new SequenceModelDriver([
     { status: "succeeded", value: { content: "portable", toolCalls: [] } },
   ]);
-  const runtime = createRuntime({ modelDrivers: { fixture: model } });
   const agent = defineAgent({
     instructions: "Prove the installed package can execute.",
     model: { provider: "fixture", model: "deterministic" },
     tools: [],
   });
-  const run = await runtime.run(agent, "package portability");
-  assert.equal((await run.wait()).status, "completed");
+  const harness = createHarness({ agent, modelDrivers: { fixture: model } });
+  const thread = await harness.createThread();
+  assert.equal((await thread.send("package portability")).status, "idle");
 
   const jsonl = new JsonlEventStore(join(root, "jsonl"));
-  await jsonl.createRun("jsonl-import-smoke");
+  await jsonl.createThread("jsonl-import-smoke");
   const sqlite = new SqliteEventStore(join(root, "sqlite.db"));
   sqlite.close();
   assert.equal(createNodeTools({ root }).all.length, 4);
@@ -77,7 +77,7 @@ try {
     }).generate,
     "function",
   );
-  console.log("JX-AC-017 ${manager}: installed package Run completed on Node ${nodeFloorVersion}");
+  console.log("JX-AC-017 ${manager}: installed package Thread replied on Node ${nodeFloorVersion}");
 } finally {
   await rm(root, { force: true, recursive: true });
 }
@@ -86,7 +86,7 @@ try {
 
 function typeConsumer() {
   return `
-import { createRuntime, defineAgent, type ModelDriver } from "@jixu/core";
+import { createHarness, defineAgent, type ModelDriver } from "@jixu/core";
 import { createOpenAICompatibleModelDriver } from "@jixu/llm";
 import { JsonlEventStore } from "@jixu/store-jsonl";
 import { SqliteEventStore } from "@jixu/store-sqlite";
@@ -96,14 +96,14 @@ import { createNodeTools } from "@jixu/tools-node";
 import { JixuConfigStore } from "jixu";
 
 const fixture: ModelDriver = new SequenceModelDriver([]);
-const runtime = createRuntime({ modelDrivers: { fixture } });
 const agent = defineAgent({
   instructions: "Type-check the installed public API.",
   model: { provider: "fixture", model: "deterministic" },
   tools: [],
 });
+const harness = createHarness({ agent, modelDrivers: { fixture } });
 
-void runtime;
+void harness;
 void agent;
 void JsonlEventStore;
 void SqliteEventStore;

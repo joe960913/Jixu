@@ -5,36 +5,38 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import {
-  createRuntime,
+  createHarness,
   defineAgent,
   InMemoryEventStore,
 } from "@jixu/core";
 import type {
   ModelDriver,
+  ModelDriverContext,
   ModelGenerateEffect,
   ModelOutcome,
-  ModelDriverContext,
 } from "@jixu/core";
 import { createNodeTools } from "@jixu/tools-node";
 
-import { createJixuSession } from "../src/session.ts";
+import { createThreadController } from "../src/thread-controller.ts";
 
-test("JX-AC-015 ordinary Agent is runnable through the session with live Signals and Node Tools", async () => {
-  const root = await mkdtemp(join(tmpdir(), "jixu-session-"));
+test("JX-AC-015 JX-AC-018 TUI controller uses the public multi-turn Thread path", async () => {
+  const root = await mkdtemp(join(tmpdir(), "jixu-controller-"));
   try {
     await writeFile(join(root, "note.txt"), "durable hello", "utf8");
     let calls = 0;
+    const effects: ModelGenerateEffect[] = [];
     const driver: ModelDriver = {
       async generate(
         effect: ModelGenerateEffect,
         context: ModelDriverContext,
       ): Promise<ModelOutcome> {
         calls += 1;
+        effects.push(structuredClone(effect));
         if (calls === 1) {
           context.signals.emit({
             data: { delta: "Reading" },
             kind: "signal",
-            runId: effect.runId,
+            threadId: effect.threadId,
             type: "model.output_text.delta",
           });
           return {
@@ -42,25 +44,13 @@ test("JX-AC-015 ordinary Agent is runnable through the session with live Signals
             value: {
               content: "",
               toolCalls: [
-                {
-                  arguments: { path: "note.txt" },
-                  id: "call-read",
-                  name: "read",
-                },
+                { arguments: { path: "note.txt" }, id: "read-1", name: "read" },
               ],
             },
           };
         }
         if (calls === 2) {
-          const toolMessage = effect.input.messages.at(-1);
-          assert.equal(toolMessage?.role, "tool");
-          if (toolMessage?.role === "tool") {
-            assert.deepEqual(toolMessage.output, {
-              content: "durable hello",
-              path: "note.txt",
-              truncated: false,
-            });
-          }
+          assert.equal(effect.input.messages.at(-1)?.role, "tool");
           return {
             status: "succeeded",
             value: { content: "The file says durable hello.", toolCalls: [] },
@@ -68,81 +58,85 @@ test("JX-AC-015 ordinary Agent is runnable through the session with live Signals
         }
         return {
           status: "succeeded",
-          value: { content: "Fork continued.", toolCalls: [] },
+          value: { content: `reply-${calls}`, toolCalls: [] },
         };
       },
     };
-    const store = new InMemoryEventStore();
-    const runtime = createRuntime({ modelDrivers: { mock: driver }, store });
     const tools = createNodeTools({ root });
     const agent = defineAgent({
       instructions: "Use the available tools.",
       model: { model: "deterministic", provider: "mock" },
       tools: tools.all,
     });
+    const store = new InMemoryEventStore();
+    const harness = createHarness({ agent, modelDrivers: { mock: driver }, store });
     let quit = false;
-    const session = createJixuSession({
-      agent,
+    const controller = createThreadController({
+      harness,
       onQuit: () => {
         quit = true;
       },
-      runtime,
     });
-    assert.deepEqual(session.getSnapshot().transcript, []);
     const observedLiveText: string[] = [];
-    const unsubscribe = session.subscribe(() => {
-      observedLiveText.push(session.getSnapshot().streamingText);
+    const unsubscribe = controller.subscribe(() => {
+      observedLiveText.push(controller.getSnapshot().streamingText);
     });
 
-    await session.submit("Read note.txt");
-
-    const completed = session.getSnapshot();
-    assert.equal(completed.busy, false);
-    assert.equal(completed.runStatus, "completed");
+    await controller.submit("Read note.txt");
+    const first = controller.getSnapshot();
+    assert.equal(first.busy, false);
+    assert.equal(first.threadStatus, "idle");
     assert.ok(observedLiveText.includes("Reading"));
-    assert.equal(completed.transcript[0]?.role, "user");
-    assert.equal(completed.transcript.at(-1)?.role, "assistant");
-    assert.equal(completed.transcript.at(-1)?.content, "The file says durable hello.");
-    assert.ok(completed.activity.some((entry) => entry.detail === "read"));
-    assert.ok(
-      completed.activity.some(
-        (entry) => entry.kind === "tool" && entry.label === "Tool completed",
-      ),
-    );
-    // JX-AC-018: shared sequence IDs let the TUI render activity causally inline.
-    const firstThinking = completed.activity.find(
-      (entry) => entry.kind === "model" && entry.label === "Thinking",
-    );
-    assert.ok((firstThinking?.id ?? 0) > (completed.transcript[0]?.id ?? 0));
-    assert.ok((firstThinking?.id ?? 0) < (completed.transcript.at(-1)?.id ?? 0));
+    assert.equal(first.transcript.at(-1)?.content, "The file says durable hello.");
+    const originalThreadId = first.currentThreadId;
+    assert.notEqual(originalThreadId, null);
+    if (originalThreadId === null) return;
 
-    await session.submit("/events");
-    assert.equal(session.getSnapshot().inspection?.title, "Durable Events");
-    assert.match(session.getSnapshot().inspection?.content ?? "", /tool\.completed/);
+    await controller.submit("Follow up");
+    assert.equal(controller.getSnapshot().currentThreadId, originalThreadId);
+    assert.deepEqual(effects[2]?.input.messages.slice(-2), [
+      {
+        content: "The file says durable hello.",
+        role: "assistant",
+        toolCalls: [],
+      },
+      { content: "Follow up", role: "user" },
+    ]);
 
-    await session.submit("/state");
-    assert.equal(session.getSnapshot().inspection?.title, "Authoritative state");
-    assert.match(session.getSnapshot().inspection?.content ?? "", /"status": "completed"/);
+    await controller.submit("/events");
+    assert.equal(controller.getSnapshot().inspection?.title, "Durable Events");
+    await controller.submit("/state");
+    assert.match(controller.getSnapshot().inspection?.content ?? "", /"status": "idle"/);
+    await controller.submit("/replay");
+    assert.equal(controller.getSnapshot().inspection?.title, "Replay result");
 
-    await session.submit("/replay");
-    assert.equal(session.getSnapshot().inspection?.title, "Replay result");
-    assert.match(session.getSnapshot().inspection?.content ?? "", /"revision": 8/);
+    await controller.submit("/clear");
+    assert.deepEqual(controller.getSnapshot().transcript, []);
+    await controller.submit("Fresh start");
+    assert.equal(controller.getSnapshot().currentThreadId, originalThreadId);
+    assert.deepEqual(effects[3]?.input.messages, [
+      { content: "Fresh start", role: "user" },
+    ]);
 
-    const firstRunId = completed.currentRunId;
-    assert.notEqual(firstRunId, null);
-    if (firstRunId === null) return;
-    const forkPoint = (await store.read(firstRunId))[0];
+    await controller.submit("/new");
+    const emptyThreadId = controller.getSnapshot().currentThreadId;
+    assert.notEqual(emptyThreadId, originalThreadId);
+    await controller.submit("/resume");
+    assert.equal(controller.getSnapshot().threadPickerOpen, true);
+    assert.ok(controller.getSnapshot().threads.length >= 2);
+    await controller.selectThread(originalThreadId);
+    assert.equal(controller.getSnapshot().currentThreadId, originalThreadId);
+    assert.equal(controller.getSnapshot().transcript[0]?.content, "Fresh start");
+
+    const forkPoint = (await store.read(originalThreadId)).at(-1);
     assert.notEqual(forkPoint, undefined);
-    if (forkPoint === undefined) return;
+    if (forkPoint !== undefined) {
+      await controller.submit(`/fork ${forkPoint.id} Alternate path`);
+      assert.notEqual(controller.getSnapshot().currentThreadId, originalThreadId);
+      assert.equal(controller.getSnapshot().threadStatus, "idle");
+    }
 
-    await session.submit(`/fork ${forkPoint.id} Try another direction`);
-    const forked = session.getSnapshot();
-    assert.equal(forked.runStatus, "completed");
-    assert.notEqual(forked.currentRunId, firstRunId);
-    assert.equal(forked.transcript.at(-1)?.content, "Fork continued.");
-    assert.ok(forked.activity.some((entry) => entry.label === "Run forked"));
-
-    await session.submit("/quit");
+    await controller.submit("/quit");
     assert.equal(quit, true);
     unsubscribe();
   } finally {

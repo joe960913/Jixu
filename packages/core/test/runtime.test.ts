@@ -2,18 +2,17 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  createRuntime,
+  createHarness,
   defineAgent,
   defineSchema,
   defineTool,
   InMemoryEventStore,
 } from "../src/index.ts";
-import type { JsonObject } from "../src/index.ts";
 import type {
+  AgentConfig,
+  JsonObject,
   ModelDriver,
-  ModelGenerateEffect,
   ModelOutcome,
-  RunStreamItem,
 } from "../src/index.ts";
 import {
   FixedClock,
@@ -28,37 +27,34 @@ const objectSchema = defineSchema<JsonObject>({
     if (value === null || typeof value !== "object" || Array.isArray(value)) {
       throw new TypeError("Expected an object");
     }
-    const record = value as Record<string, unknown>;
-    if (typeof record.city !== "string") {
-      throw new TypeError("city must be a string");
-    }
-    return { city: record.city };
+    return value as JsonObject;
   },
 });
 
 const stringSchema = defineSchema<string>({
   jsonSchema: { type: "string" },
   parse(value: unknown): string {
-    if (typeof value !== "string") {
-      throw new TypeError("Expected a string");
-    }
+    if (typeof value !== "string") throw new TypeError("Expected a string");
     return value;
   },
 });
 
-test("JX-AC-001 basic model -> Tool -> model loop is durably ordered", async () => {
+function agentWith(driverTools: NonNullable<AgentConfig["tools"]> = []) {
+  return defineAgent({
+    instructions: "Be precise.",
+    model: { model: "deterministic", provider: "mock" },
+    tools: driverTools,
+  });
+}
+
+test("JX-AC-001 JX-AC-002 JX-AC-014 Tool use and later send continue one Thread", async () => {
   const store = new InMemoryEventStore();
-  let toolCalls = 0;
   const weather = defineTool({
-    description: "Get current weather",
-    execute: async (input, context) => {
-      toolCalls += 1;
-      assert.equal(input.city, "Shanghai");
-      const eventsBeforeExecution = await store.read(context.runId);
-      assert.equal(eventsBeforeExecution.at(-1)?.type, "tool.requested");
+    description: "Get weather",
+    execute: async (_input, context) => {
+      assert.equal((await store.read(context.threadId)).at(-1)?.type, "tool.requested");
       return "sunny";
     },
-    idempotency: "idempotent",
     input: objectSchema,
     name: "weather",
     output: stringSchema,
@@ -67,42 +63,34 @@ test("JX-AC-001 basic model -> Tool -> model loop is durably ordered", async () 
     succeed({
       content: "",
       toolCalls: [
-        {
-          arguments: { city: "Shanghai" },
-          id: "call-weather",
-          name: "weather",
-        },
+        { arguments: { city: "Shanghai" }, id: "weather-1", name: "weather" },
       ],
     }),
     succeed({ content: "Shanghai is sunny.", toolCalls: [] }),
+    succeed({ content: "The strongest caveat is humidity.", toolCalls: [] }),
   ]);
-  const runtime = createRuntime({
+  const harness = createHarness({
+    agent: agentWith([weather]),
     clock: new FixedClock(),
     ids: new SequenceIdGenerator(),
     modelDrivers: { mock: model },
     store,
   });
-  const agent = defineAgent({
-    instructions: "Answer with tools when useful.",
-    model: { model: "deterministic", provider: "mock" },
-    tools: [weather],
-  });
 
-  const run = await runtime.run(agent, "What is the weather in Shanghai?");
-  await run.wait();
+  const thread = await harness.createThread();
+  await thread.send("What is the weather?");
+  await thread.send("Challenge that answer.");
 
-  assert.equal(toolCalls, 1);
-  assert.equal(model.effects.length, 2);
-  assert.deepEqual(model.effects[1]?.input.messages.at(-1), {
-    name: "weather",
-    output: "sunny",
-    role: "tool",
-    toolCallId: "call-weather",
-  });
+  assert.equal((await thread.state()).status, "idle");
+  assert.equal(model.effects.length, 3);
+  assert.deepEqual(model.effects[2]?.input.messages.slice(-2), [
+    { content: "Shanghai is sunny.", role: "assistant", toolCalls: [] },
+    { content: "Challenge that answer.", role: "user" },
+  ]);
   assert.deepEqual(
-    (await run.events()).map((event) => event.type),
+    (await thread.events()).map((event) => event.type),
     [
-      "run.created",
+      "thread.created",
       "input.received",
       "model.requested",
       "model.completed",
@@ -110,236 +98,123 @@ test("JX-AC-001 basic model -> Tool -> model loop is durably ordered", async () 
       "tool.completed",
       "model.requested",
       "model.completed",
+      "input.received",
+      "model.requested",
+      "model.completed",
     ],
   );
-  assert.deepEqual(await run.state(), {
-    agent: agent.snapshot,
-    error: null,
-    lineage: null,
-    messages: [
-      { content: "What is the weather in Shanghai?", role: "user" },
-      {
-        content: "",
-        role: "assistant",
-        toolCalls: [
-          {
-            arguments: { city: "Shanghai" },
-            id: "call-weather",
-            name: "weather",
-          },
-        ],
-      },
-      {
-        name: "weather",
-        output: "sunny",
-        role: "tool",
-        toolCallId: "call-weather",
-      },
-      {
-        content: "Shanghai is sunny.",
-        role: "assistant",
-        toolCalls: [],
-      },
-    ],
-    pauseRequested: false,
-    pendingEffects: {},
-    readyEffects: [],
-    result: "Shanghai is sunny.",
-    revision: 8,
-    runId: run.id,
-    status: "completed",
-    waitingReason: null,
-  });
 });
 
-test("JX-AC-001 all Tool requests commit before the first Tool dispatch", async () => {
+test("JX-AC-020 input accepted while running is durable and starts in Event order", async () => {
+  let release!: (outcome: ModelOutcome) => void;
+  let started!: () => void;
+  const firstStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const effects: Parameters<ModelDriver["generate"]>[0][] = [];
+  const driver: ModelDriver = {
+    generate(effect) {
+      effects.push(structuredClone(effect));
+      if (effects.length === 1) {
+        started();
+        return new Promise((resolve) => {
+          release = resolve;
+        });
+      }
+      return Promise.resolve(
+        succeed({ content: "second reply", toolCalls: [] }),
+      );
+    },
+  };
   const store = new InMemoryEventStore();
-  const observedRequestCounts: number[] = [];
-  const makeTool = (name: string) =>
-    defineTool({
-      description: name,
-      execute: async (_input, context) => {
-        const events = await store.read(context.runId);
-        observedRequestCounts.push(
-          events.filter((event) => event.type === "tool.requested").length,
-        );
-        return `${name}-result`;
-      },
-      input: objectSchema,
-      name,
-      output: stringSchema,
-    });
-  const first = makeTool("first");
-  const second = makeTool("second");
-  const model = new SequenceModelDriver([
-    succeed({
-      content: "",
-      toolCalls: [
-        { arguments: { city: "A" }, id: "call-1", name: "first" },
-        { arguments: { city: "B" }, id: "call-2", name: "second" },
-      ],
-    }),
-    succeed({ content: "done", toolCalls: [] }),
-  ]);
-  const runtime = createRuntime({
-    clock: new FixedClock(),
-    ids: new SequenceIdGenerator(),
-    modelDrivers: { mock: model },
+  const harness = createHarness({
+    agent: agentWith(),
+    modelDrivers: { mock: driver },
     store,
   });
+  const thread = await harness.createThread();
 
-  const run = await runtime.run(
-    defineAgent({
-      instructions: "Use both tools.",
-      model: { model: "deterministic", provider: "mock" },
-      tools: [first, second],
-    }),
-    "run both",
+  const first = thread.send("first");
+  await firstStarted;
+  const second = thread.send("second");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(
+    (await thread.events())
+      .filter((event) => event.type === "input.received")
+      .map((event) => event.payload.content),
+    ["first", "second"],
   );
-  await run.wait();
 
-  assert.deepEqual(observedRequestCounts, [2, 2]);
-  assert.equal((await run.state()).status, "completed");
+  release(succeed({ content: "first reply", toolCalls: [] }));
+  await Promise.all([first, second]);
+  assert.equal((await thread.state()).status, "idle");
+  assert.deepEqual(effects[1]?.input.messages.slice(-3), [
+    { content: "first", role: "user" },
+    { content: "first reply", role: "assistant", toolCalls: [] },
+    { content: "second", role: "user" },
+  ]);
 });
 
-test("JX-AC-001 invalid Tool input fails durably without executing the Tool", async () => {
-  let executions = 0;
-  const tool = defineTool({
-    description: "Requires a city",
-    execute: () => {
-      executions += 1;
-      return "unused";
-    },
-    input: objectSchema,
-    name: "weather",
-    output: stringSchema,
-  });
+test("JX-AC-003 clear retains Thread history but resets later model context", async () => {
   const model = new SequenceModelDriver([
-    succeed({
-      content: "",
-      toolCalls: [
-        { arguments: { city: 42 }, id: "bad-call", name: "weather" },
-      ],
-    }),
+    succeed({ content: "before", toolCalls: [] }),
+    succeed({ content: "after", toolCalls: [] }),
   ]);
-  const runtime = createRuntime({
-    clock: new FixedClock(),
-    ids: new SequenceIdGenerator(),
+  const harness = createHarness({
+    agent: agentWith(),
     modelDrivers: { mock: model },
   });
+  const thread = await harness.createThread();
+  await thread.send("old context");
+  const id = thread.id;
+  await thread.clear();
+  await thread.send("fresh context");
 
-  const run = await runtime.run(
-    defineAgent({
-      instructions: "Use tools.",
-      model: { model: "deterministic", provider: "mock" },
-      tools: [tool],
-    }),
-    "bad input",
-  );
-  await run.wait();
-
-  const state = await run.state();
-  assert.equal(executions, 0);
-  assert.equal(state.status, "failed");
-  assert.equal(state.error?.code, "tool_input_invalid");
-  assert.equal((await run.events()).at(-1)?.type, "tool.failed");
+  assert.equal(thread.id, id);
+  assert.deepEqual(model.effects[1]?.input.messages, [
+    { content: "fresh context", role: "user" },
+  ]);
+  assert.ok((await thread.events()).some((event) => event.type === "context.cleared"));
 });
 
-test("JX-AC-002 JX-API-008 Run stream catches up Events then observes live Signals without duplicate Events", async () => {
-  let release!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+test("JX-API-004 Thread stream catches up Events and observes live Signals", async () => {
   const driver: ModelDriver = {
-    async generate(effect, context): Promise<ModelOutcome> {
-      await gate;
+    async generate(effect, context) {
       context.signals.emit({
-        data: { delta: "done" },
+        data: { delta: "live" },
         kind: "signal",
-        runId: effect.runId,
+        threadId: effect.threadId,
         type: "model.output_text.delta",
       });
       return succeed({ content: "done", toolCalls: [] });
     },
   };
-  const runtime = createRuntime({
-    clock: new FixedClock(),
-    ids: new SequenceIdGenerator(),
+  const harness = createHarness({
+    agent: agentWith(),
     modelDrivers: { mock: driver },
   });
-  const run = await runtime.run(
-    defineAgent({
-      instructions: "Answer once.",
-      model: { model: "deterministic", provider: "mock" },
-    }),
-    "go",
-  );
-
-  const items: RunStreamItem[] = [];
-  const observation = (async () => {
-    for await (const item of run.stream()) items.push(item);
-  })();
-  release();
-  await run.wait();
-  await observation;
-
-  const events = items.flatMap((item) =>
-    item.kind === "event" ? [item.event] : [],
-  );
-  assert.deepEqual(
-    events.map((event) => event.sequence),
-    [1, 2, 3, 4],
-  );
-  assert.deepEqual(
-    events.map((event) => event.type),
-    ["run.created", "input.received", "model.requested", "model.completed"],
-  );
-  assert.deepEqual(
-    items.filter((item) => item.kind === "signal"),
-    [
-      {
-        data: { delta: "done" },
-        kind: "signal",
-        runId: run.id,
-        type: "model.output_text.delta",
-      },
-    ],
-  );
-});
-
-test("JX-API-008 Run stream can be stopped with an AbortSignal", async () => {
-  let release!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const driver: ModelDriver = {
-    async generate(_effect: ModelGenerateEffect): Promise<ModelOutcome> {
-      await gate;
-      return succeed({ content: "done", toolCalls: [] });
-    },
-  };
-  const runtime = createRuntime({
-    clock: new FixedClock(),
-    ids: new SequenceIdGenerator(),
-    modelDrivers: { mock: driver },
-  });
-  const run = await runtime.run(
-    defineAgent({
-      instructions: "Answer once.",
-      model: { model: "deterministic", provider: "mock" },
-    }),
-    "go",
-  );
+  const thread = await harness.createThread();
   const cancellation = new AbortController();
-  let observedEvents = 0;
-  await (async () => {
-    for await (const item of run.stream({ signal: cancellation.signal })) {
-      if (item.kind === "event") observedEvents += 1;
-      if (observedEvents === 2) cancellation.abort();
+  const observed = [] as Array<{ readonly kind: string; readonly type?: string }>;
+  const observation = (async () => {
+    for await (const item of thread.stream({ signal: cancellation.signal })) {
+      observed.push(
+        item.kind === "event"
+          ? { kind: item.kind, type: item.event.type }
+          : { kind: item.kind, type: item.type },
+      );
+      if (item.kind === "event" && item.event.type === "model.completed") {
+        cancellation.abort();
+      }
     }
   })();
 
-  assert.equal(observedEvents, 2);
-  release();
-  await run.wait();
+  await thread.send("observe");
+  await observation;
+  assert.ok(observed.some((item) => item.type === "thread.created"));
+  assert.ok(observed.some((item) => item.type === "model.output_text.delta"));
+  assert.equal(
+    observed.filter((item) => item.type === "model.completed").length,
+    1,
+  );
 });

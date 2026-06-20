@@ -45,7 +45,7 @@ export class SequenceIdGenerator implements IdGenerator {
     this.#sequence = initialSequence;
   }
 
-  next(prefix: "event" | "run"): string {
+  next(prefix: "event" | "thread"): string {
     this.#sequence += 1;
     return `${prefix}-${this.#sequence.toString().padStart(4, "0")}`;
   }
