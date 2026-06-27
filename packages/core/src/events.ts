@@ -9,12 +9,12 @@ import type {
 } from "./effects.ts";
 import type { JsonValue } from "./json.ts";
 import type { ModelAccounting } from "./metrics.ts";
-import type { PlanSnapshot } from "./plan.ts";
+import type { PlanSnapshot, PlanUpdateProposal } from "./plan.ts";
 
-export const CURRENT_EVENT_SCHEMA_VERSION = 2;
+export const CURRENT_EVENT_SCHEMA_VERSION = 5;
 
 export function isSupportedEventSchemaVersion(value: number): boolean {
-  return value === 1 || value === CURRENT_EVENT_SCHEMA_VERSION;
+  return value === CURRENT_EVENT_SCHEMA_VERSION;
 }
 
 export interface ThreadEvent<TType extends string, TPayload> {
@@ -44,6 +44,11 @@ export interface ThreadEventPayloads {
     readonly error: DriverError;
   };
   readonly "model.requested": { readonly effect: ModelGenerateEffect };
+  readonly "plan.rejected": {
+    readonly effectId: string;
+    readonly error: DriverError;
+    readonly proposals: readonly PlanUpdateProposal[];
+  };
   readonly "plan.updated": { readonly plan: PlanSnapshot };
   readonly "thread.created": { readonly agent: AgentSnapshot };
   readonly "thread.forked": {

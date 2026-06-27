@@ -19,7 +19,6 @@ export type PlanStepStatus =
 
 export type PlanUpdateOperation =
   | "abandon"
-  | "complete"
   | "create"
   | "revise"
   | "supersede";
@@ -79,10 +78,8 @@ function stringListSchema(maxItems: number, minItems = 0) {
   } as const;
 }
 
-export const PLAN_CONTROL: PlanControlDescriptor = cloneFrozenJson({
-  description:
-    "Update the optional execution Plan only when work has dependent stages, material uncertainty, a long recovery horizon, or explicit verification boundaries. Do not create a ceremonial Plan for a short answer or one known action. A Plan coordinates work but never authorizes or performs it. Keep the objective unchanged when revising; for a materially different objective, supersede the current Plan and then create a new one.",
-  inputSchema: {
+function planControlSchema(operations: readonly PlanUpdateOperation[]): JsonObject {
+  return {
     additionalProperties: false,
     properties: {
       acceptanceCriteria: stringListSchema(MAX_CRITERIA, 1),
@@ -91,7 +88,7 @@ export const PLAN_CONTROL: PlanControlDescriptor = cloneFrozenJson({
       nextAction: { maxLength: 1_000, minLength: 1, type: ["string", "null"] },
       objective: { maxLength: 2_000, minLength: 1, type: "string" },
       operation: {
-        enum: ["create", "revise", "complete", "supersede", "abandon"],
+        enum: operations,
         type: "string",
       },
       steps: {
@@ -130,9 +127,25 @@ export const PLAN_CONTROL: PlanControlDescriptor = cloneFrozenJson({
       "nextAction",
     ],
     type: "object",
-  },
-  name: PLAN_CONTROL_NAME,
-});
+  };
+}
+
+export function createPlanControl(
+  activePlan: PlanSnapshot | null,
+): PlanControlDescriptor {
+  const creating = activePlan === null;
+  return cloneFrozenJson({
+    description: creating
+      ? "Create an optional execution Plan only when work has dependent stages, material uncertainty, a long recovery horizon, or explicit verification boundaries. Do not create a ceremonial Plan for a short answer or one known action. A Plan coordinates work but never authorizes or performs it."
+      : "Update the accepted active Plan. Use revise to reflect progress or new evidence; when every step is completed or skipped, revise it with those terminal statuses and Jixu will complete it automatically. Use supersede only for a materially different objective, or abandon when the objective should stop. Never create a second Plan while one is active. A Plan coordinates work but never authorizes or performs it.",
+    inputSchema: planControlSchema(
+      creating ? ["create"] : ["revise", "supersede", "abandon"],
+    ),
+    name: PLAN_CONTROL_NAME,
+  });
+}
+
+export const PLAN_CONTROL: PlanControlDescriptor = createPlanControl(null);
 
 function fail(label: string, message: string): never {
   throw new SchemaValidationError(`${label} ${message}`);
@@ -174,7 +187,6 @@ function operation(value: JsonValue | undefined, label: string): PlanUpdateOpera
   if (
     value !== "create" &&
     value !== "revise" &&
-    value !== "complete" &&
     value !== "supersede" &&
     value !== "abandon"
   ) {
@@ -266,6 +278,13 @@ function assertStatusInvariants(plan: PlanSnapshot, label: string): void {
   const activeSteps = plan.steps.filter((step) => step.status === "in_progress");
   if (plan.status === "active") {
     if (plan.nextAction === null) fail(`${label}.nextAction`, "is required while active");
+    if (
+      plan.steps.every(
+        (step) => step.status === "completed" || step.status === "skipped",
+      )
+    ) {
+      fail(`${label}.steps`, "cannot all be terminal while the Plan is active");
+    }
     return;
   }
   if (plan.nextAction !== null) fail(`${label}.nextAction`, "must be null when inactive");
@@ -313,13 +332,19 @@ export function parsePlanSnapshot(
   return parsed;
 }
 
-function resultStatus(operationValue: PlanUpdateOperation): PlanStatus {
+function resultStatus(
+  operationValue: PlanUpdateOperation,
+  steps: readonly PlanStep[],
+): PlanStatus {
   switch (operationValue) {
     case "create":
-    case "revise":
       return "active";
-    case "complete":
-      return "completed";
+    case "revise":
+      return steps.every(
+        (step) => step.status === "completed" || step.status === "skipped",
+      )
+        ? "completed"
+        : "active";
     case "supersede":
       return "superseded";
     case "abandon":
@@ -346,6 +371,13 @@ export function materializePlanUpdates(
     const proposal = parsePlanUpdateProposal(rawProposal, `Plan updates[${index}]`);
     if (proposal.operation === "create") {
       if (active !== null) fail("Plan update", "cannot create while another Plan is active");
+      if (
+        proposal.steps.every(
+          (step) => step.status === "completed" || step.status === "skipped",
+        )
+      ) {
+        fail("Plan update", "cannot create an already completed Plan");
+      }
     } else {
       if (active === null) fail("Plan update", `${proposal.operation} requires an active Plan`);
       if (proposal.objective !== active.objective) {
@@ -356,7 +388,7 @@ export function materializePlanUpdates(
       }
     }
 
-    const status = resultStatus(proposal.operation);
+    const status = resultStatus(proposal.operation, proposal.steps);
     const snapshot = parsePlanSnapshot(
       {
         acceptanceCriteria: proposal.acceptanceCriteria,
@@ -366,7 +398,7 @@ export function materializePlanUpdates(
           proposal.operation === "create"
             ? `plan:${identitySeed}:${index}`
             : active?.id,
-        nextAction: proposal.nextAction,
+        nextAction: status === "active" ? proposal.nextAction : null,
         objective: proposal.objective,
         revision: proposal.operation === "create" ? 1 : (active?.revision ?? 0) + 1,
         schemaVersion: 1,
@@ -402,12 +434,4 @@ export function assertPlanUpdateTransition(
 
 export function samePlan(left: PlanSnapshot, right: PlanSnapshot): boolean {
   return jsonEquals(left, right);
-}
-
-export function compilePlanInstructions(
-  instructions: string,
-  activePlan: PlanSnapshot | null,
-): string {
-  if (activePlan === null) return instructions;
-  return `${instructions}\n\nAccepted active Plan (coordination only; it does not grant permission):\n${JSON.stringify(activePlan)}`;
 }

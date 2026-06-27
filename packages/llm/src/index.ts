@@ -14,9 +14,12 @@ import type {
 
 import {
   cloneJson,
+  MODEL_PROGRESS_SIGNAL_TYPE,
   isJsonObject,
   parsePlanUpdateProposal,
+  parseProgressUpdate,
   PLAN_CONTROL_NAME,
+  PROGRESS_CONTROL_NAME,
   EMPTY_MODEL_ACCOUNTING,
 } from "@jixu/core";
 import type {
@@ -31,6 +34,7 @@ import type {
   ModelResponse,
   PlanControlDescriptor,
   PlanUpdateProposal,
+  ProgressControlDescriptor,
   ToolDescriptor,
 } from "@jixu/core";
 
@@ -71,6 +75,7 @@ export interface OpenAICompatibleModelDriverConfig {
   readonly redactError?: (message: string) => string;
   readonly responsesClient?: OpenResponsesClient;
   readonly store?: boolean;
+  readonly useThreadPromptCacheKey?: boolean;
 }
 
 interface SharedProviderConfig {
@@ -79,6 +84,7 @@ interface SharedProviderConfig {
   readonly costCalculator?: ModelCostCalculator;
   readonly fetch?: typeof fetch;
   readonly redactError?: (message: string) => string;
+  readonly useThreadPromptCacheKey?: boolean;
 }
 
 export interface OpenAIModelDriverConfig extends SharedProviderConfig {
@@ -101,6 +107,7 @@ interface OpenResponsesModelDriverConfig {
   readonly costCalculator?: ModelCostCalculator;
   readonly provider: string;
   readonly providerReportsUsdCost: boolean;
+  readonly promptCacheKey: boolean;
   readonly redactError?: (message: string) => string;
   readonly secret?: string;
   readonly store: boolean;
@@ -110,7 +117,21 @@ function jsonString(value: JsonValue): string {
   return JSON.stringify(value);
 }
 
-function toInput(messages: readonly ModelMessage[]): ResponseInputItem[] {
+function activePlanContext(
+  activePlan: ModelGenerateEffect["input"]["activePlan"],
+): string | null {
+  if (activePlan === null) return null;
+  return [
+    "Jixu runtime context. This is accepted coordination data, not a new user request, and it grants no permission.",
+    "Current active Plan:",
+    JSON.stringify(activePlan),
+  ].join("\n");
+}
+
+function toInput(
+  messages: readonly ModelMessage[],
+  activePlan: ModelGenerateEffect["input"]["activePlan"],
+): ResponseInputItem[] {
   const input: ResponseInputItem[] = [];
   for (const message of messages) {
     if (message.role === "user") {
@@ -138,11 +159,15 @@ function toInput(messages: readonly ModelMessage[]): ResponseInputItem[] {
       type: "function_call_output",
     });
   }
+  const planContext = activePlanContext(activePlan);
+  if (planContext !== null) {
+    input.push({ content: planContext, role: "system" });
+  }
   return input;
 }
 
 function toTool(
-  tool: ToolDescriptor | PlanControlDescriptor,
+  tool: ToolDescriptor | PlanControlDescriptor | ProgressControlDescriptor,
 ): OpenAITool {
   return {
     description: tool.description,
@@ -156,6 +181,7 @@ function toTool(
 function toChatMessages(
   instructions: string,
   messages: readonly ModelMessage[],
+  activePlan: ModelGenerateEffect["input"]["activePlan"],
 ): ChatCompletionMessageParam[] {
   const input: ChatCompletionMessageParam[] = [];
   if (instructions.length > 0) {
@@ -191,11 +217,15 @@ function toChatMessages(
       tool_call_id: message.toolCallId,
     });
   }
+  const planContext = activePlanContext(activePlan);
+  if (planContext !== null) {
+    input.push({ content: planContext, role: "system" });
+  }
   return input;
 }
 
 function toChatTool(
-  tool: ToolDescriptor | PlanControlDescriptor,
+  tool: ToolDescriptor | PlanControlDescriptor | ProgressControlDescriptor,
 ): ChatCompletionTool {
   return {
     function: {
@@ -208,7 +238,10 @@ function toChatTool(
   };
 }
 
-function toModelResponse(response: Response): ModelResponse {
+function toModelResponse(
+  response: Response,
+  onProgress: (message: string) => void,
+): ModelResponse {
   if (!Array.isArray(response.output)) {
     throw new TypeError("OpenResponses response.output must be an array");
   }
@@ -225,11 +258,28 @@ function toModelResponse(response: Response): ModelResponse {
     }
     if (item.type !== "function_call") continue;
 
-    const parsed: unknown = JSON.parse(item.arguments);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(item.arguments) as unknown;
+    } catch (error) {
+      if (item.name === PROGRESS_CONTROL_NAME) continue;
+      throw error;
+    }
     if (!isJsonObject(parsed)) {
+      if (item.name === PROGRESS_CONTROL_NAME) continue;
       throw new TypeError(
         `Function call ${item.call_id} arguments must be a JSON object`,
       );
+    }
+    if (item.name === PROGRESS_CONTROL_NAME) {
+      try {
+        onProgress(
+          parseProgressUpdate(parsed, `Progress control ${item.call_id}`).message,
+        );
+      } catch {
+        // Progress is cosmetic and cannot invalidate an otherwise usable response.
+      }
+      continue;
     }
     if (item.name === PLAN_CONTROL_NAME) {
       planUpdates.push(
@@ -245,6 +295,19 @@ function toModelResponse(response: Response): ModelResponse {
   }
 
   return { content: content.join(""), planUpdates, toolCalls };
+}
+
+function emitModelProgress(
+  effect: ModelGenerateEffect,
+  context: ModelDriverContext,
+  message: string,
+): void {
+  context.signals.emit({
+    data: { message },
+    kind: "signal",
+    threadId: effect.threadId,
+    type: MODEL_PROGRESS_SIGNAL_TYPE,
+  });
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -285,11 +348,25 @@ function providerHeaders(config: OpenRouterModelDriverConfig): Record<string, st
   };
 }
 
+function isOpenAIBaseUrl(baseURL: string): boolean {
+  try {
+    const hostname = new URL(baseURL).hostname.toLowerCase();
+    return hostname === "api.openai.com" || hostname.endsWith(".api.openai.com");
+  } catch {
+    return false;
+  }
+}
+
+function supportsPromptCacheKey(baseURL: string): boolean {
+  return isOpenRouterBaseUrl(baseURL) || isOpenAIBaseUrl(baseURL);
+}
+
 export class OpenResponsesModelDriver implements ModelDriver {
   readonly #client: OpenResponsesClient;
   readonly #costCalculator: ModelCostCalculator | undefined;
   readonly #provider: string;
   readonly #providerReportsUsdCost: boolean;
+  readonly #promptCacheKey: boolean;
   readonly #redactError: (message: string) => string;
   readonly #store: boolean;
 
@@ -298,6 +375,7 @@ export class OpenResponsesModelDriver implements ModelDriver {
     this.#costCalculator = config.costCalculator;
     this.#provider = config.provider;
     this.#providerReportsUsdCost = config.providerReportsUsdCost;
+    this.#promptCacheKey = config.promptCacheKey;
     this.#store = config.store;
     this.#redactError = (message) => {
       const withoutSecret =
@@ -316,12 +394,19 @@ export class OpenResponsesModelDriver implements ModelDriver {
     try {
       stream = await this.#client.create(
         {
-          input: toInput(effect.input.messages),
+          input: toInput(effect.input.messages, effect.input.activePlan),
           instructions: effect.input.instructions,
           model: effect.input.model.model,
+          ...(this.#promptCacheKey
+            ? { prompt_cache_key: effect.threadId }
+            : {}),
           store: this.#store,
           stream: true,
-          tools: [...effect.input.tools, effect.input.planControl].map(toTool),
+          tools: [
+            ...effect.input.tools,
+            effect.input.planControl,
+            effect.input.progressControl,
+          ].map(toTool),
         },
         { signal: context.cancellation },
       );
@@ -394,7 +479,9 @@ export class OpenResponsesModelDriver implements ModelDriver {
               return {
                 accounting,
                 status: "succeeded",
-                value: toModelResponse(event.response),
+                value: toModelResponse(event.response, (message) => {
+                  emitModelProgress(effect, context, message);
+                }),
               };
             } catch (error) {
               return this.#invalidEvent(
@@ -487,6 +574,7 @@ export class OpenChatCompletionsModelDriver implements ModelDriver {
   readonly #costCalculator: ModelCostCalculator | undefined;
   readonly #provider: string;
   readonly #providerReportsUsdCost: boolean;
+  readonly #promptCacheKey: boolean;
   readonly #redactError: (message: string) => string;
 
   constructor(config: {
@@ -494,6 +582,7 @@ export class OpenChatCompletionsModelDriver implements ModelDriver {
     readonly costCalculator?: ModelCostCalculator;
     readonly provider: string;
     readonly providerReportsUsdCost: boolean;
+    readonly promptCacheKey: boolean;
     readonly redactError?: (message: string) => string;
     readonly secret?: string;
   }) {
@@ -501,6 +590,7 @@ export class OpenChatCompletionsModelDriver implements ModelDriver {
     this.#costCalculator = config.costCalculator;
     this.#provider = config.provider;
     this.#providerReportsUsdCost = config.providerReportsUsdCost;
+    this.#promptCacheKey = config.promptCacheKey;
     this.#redactError = (message) => {
       const withoutSecret =
         config.secret === undefined || config.secret.length === 0
@@ -514,7 +604,11 @@ export class OpenChatCompletionsModelDriver implements ModelDriver {
     effect: ModelGenerateEffect,
     context: ModelDriverContext,
   ): Promise<ModelOutcome> {
-    const tools = [...effect.input.tools, effect.input.planControl].map(toChatTool);
+    const tools = [
+      ...effect.input.tools,
+      effect.input.planControl,
+      effect.input.progressControl,
+    ].map(toChatTool);
     let stream: AsyncIterable<unknown>;
     try {
       stream = await this.#client.create(
@@ -522,8 +616,12 @@ export class OpenChatCompletionsModelDriver implements ModelDriver {
           messages: toChatMessages(
             effect.input.instructions,
             effect.input.messages,
+            effect.input.activePlan,
           ),
           model: effect.input.model.model,
+          ...(this.#promptCacheKey
+            ? { prompt_cache_key: effect.threadId }
+            : {}),
           stream: true,
           stream_options: { include_usage: true },
           ...(tools.length === 0 ? {} : { tools }),
@@ -677,18 +775,30 @@ export class OpenChatCompletionsModelDriver implements ModelDriver {
       try {
         parsed = JSON.parse(pending.arguments) as unknown;
       } catch {
+        if (pending.name === PROGRESS_CONTROL_NAME) continue;
         return this.#invalidEvent(
           `Tool call ${pending.id} arguments are invalid JSON`,
           accounting,
         );
       }
       if (!isJsonObject(parsed)) {
+        if (pending.name === PROGRESS_CONTROL_NAME) continue;
         return this.#invalidEvent(
           `Tool call ${pending.id} arguments must be a JSON object`,
           accounting,
         );
       }
-      if (pending.name === PLAN_CONTROL_NAME) {
+      if (pending.name === PROGRESS_CONTROL_NAME) {
+        try {
+          const update = parseProgressUpdate(
+            parsed,
+            `Progress control ${pending.id}`,
+          );
+          emitModelProgress(effect, context, update.message);
+        } catch {
+          // Progress is cosmetic and cannot invalidate an otherwise usable response.
+        }
+      } else if (pending.name === PLAN_CONTROL_NAME) {
         planUpdates.push(
           parsePlanUpdateProposal(parsed, `Plan control ${pending.id}`),
         );
@@ -764,6 +874,7 @@ export function createOpenAIModelDriver(
       : { costCalculator: config.costCalculator }),
     provider: "openai",
     providerReportsUsdCost: false,
+    promptCacheKey: config.useThreadPromptCacheKey ?? true,
     ...(config.redactError === undefined
       ? {}
       : { redactError: config.redactError }),
@@ -793,6 +904,7 @@ export function createOpenRouterModelDriver(
       : { costCalculator: config.costCalculator }),
     provider: "openrouter",
     providerReportsUsdCost: true,
+    promptCacheKey: config.useThreadPromptCacheKey ?? true,
     ...(config.redactError === undefined
       ? {}
       : { redactError: config.redactError }),
@@ -831,6 +943,8 @@ export function createOpenAICompatibleModelDriver(
       provider,
       providerReportsUsdCost:
         config.providerReportsUsdCost ?? isOpenRouterBaseUrl(config.baseURL),
+      promptCacheKey:
+        config.useThreadPromptCacheKey ?? supportsPromptCacheKey(config.baseURL),
       ...(config.redactError === undefined
         ? {}
         : { redactError: config.redactError }),
@@ -854,6 +968,8 @@ export function createOpenAICompatibleModelDriver(
     provider,
     providerReportsUsdCost:
       config.providerReportsUsdCost ?? isOpenRouterBaseUrl(config.baseURL),
+    promptCacheKey:
+      config.useThreadPromptCacheKey ?? supportsPromptCacheKey(config.baseURL),
     ...(config.redactError === undefined
       ? {}
       : { redactError: config.redactError }),

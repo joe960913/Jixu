@@ -230,7 +230,7 @@ test("JX-AC-028 Thread metrics durably project tokens, USD cost, and Tool effici
   assert.deepEqual((await thread.replay()).metrics, state.metrics);
 });
 
-test("JX-AC-021 adaptive Plan lifecycle commits one active Plan without scheduling work", async () => {
+test("JX-AC-021 JX-AC-035 adaptive Plan lifecycle keeps instructions stable without scheduling work", async () => {
   const store = new InMemoryEventStore();
   const inspect = defineTool({
     description: "Inspect state",
@@ -261,7 +261,7 @@ test("JX-AC-021 adaptive Plan lifecycle commits one active Plan without scheduli
     succeed({
       content: "Repository update verified.",
       planUpdates: [
-        planUpdate("complete", firstObjective, ["completed", "completed"], null),
+        planUpdate("revise", firstObjective, ["completed", "completed"], null),
       ],
       toolCalls: [],
     }),
@@ -326,6 +326,19 @@ test("JX-AC-021 adaptive Plan lifecycle commits one active Plan without scheduli
     events.findIndex((event) => event.type === "plan.updated") <
       events.findIndex((event) => event.type === "tool.requested"),
   );
+  assert.ok(
+    model.effects.every(
+      (effect) => effect.input.instructions === "Be precise.",
+    ),
+  );
+  const firstPlanEffects = model.effects.filter(
+    (effect) => effect.input.activePlan?.objective === firstObjective,
+  );
+  assert.ok(firstPlanEffects.length >= 2);
+  assert.deepEqual(
+    firstPlanEffects[1]?.input.planControl,
+    firstPlanEffects[0]?.input.planControl,
+  );
 
   const forkPoint = events.at(-1);
   assert.notEqual(forkPoint, undefined);
@@ -335,6 +348,66 @@ test("JX-AC-021 adaptive Plan lifecycle commits one active Plan without scheduli
     assert.equal(childState.activePlan?.id, plans.at(-1)?.id);
     assert.equal(model.effects.at(-1)?.input.activePlan?.id, plans.at(-1)?.id);
   }
+});
+
+test("JX-AC-031 invalid Plan metadata preserves the model response and Tool path", async () => {
+  let executions = 0;
+  const inspect = defineTool({
+    description: "Inspect state",
+    execute: () => {
+      executions += 1;
+      return "inspected";
+    },
+    idempotency: "idempotent",
+    input: objectSchema,
+    name: "inspect",
+    output: stringSchema,
+  });
+  const objective = "Inspect and explain the repository";
+  const model = new SequenceModelDriver([
+    succeed({
+      content: "Plan ready.",
+      planUpdates: [planUpdate("create", objective, ["in_progress"], "Inspect")],
+      toolCalls: [],
+    }),
+    succeed({
+      content: "Starting inspection.",
+      planUpdates: [
+        planUpdate("create", "Duplicate Plan", ["in_progress"], "Inspect"),
+      ],
+      toolCalls: [{ arguments: {}, id: "inspect-1", name: "inspect" }],
+    }),
+    succeed({ content: "Inspection complete.", toolCalls: [] }),
+  ]);
+  const thread = await createHarness({
+    agent: agentWith([inspect]),
+    modelDrivers: { mock: model },
+  }).createThread();
+
+  await thread.send("Make a Plan");
+  const acceptedPlan = (await thread.state()).activePlan;
+  const state = await thread.send("Execute it");
+  const events = await thread.events();
+  const rejected = events.find((event) => event.type === "plan.rejected");
+  const rejectedIndex = events.findIndex((event) => event.type === "plan.rejected");
+
+  assert.equal(executions, 1);
+  assert.equal(state.result, "Inspection complete.");
+  assert.equal(state.activePlan?.id, acceptedPlan?.id);
+  assert.equal(events.some((event) => event.type === "model.failed"), false);
+  assert.equal(rejected?.payload.error.code, "plan_update_invalid");
+  assert.equal(events[rejectedIndex - 1]?.type, "model.completed");
+  assert.ok(
+    rejectedIndex < events.findIndex((event) => event.type === "tool.requested"),
+  );
+  assert.match(
+    JSON.stringify(model.effects[0]?.input.planControl.inputSchema),
+    /"enum":\["create"\]/,
+  );
+  assert.doesNotMatch(
+    JSON.stringify(model.effects[1]?.input.planControl.inputSchema),
+    /"create"/,
+  );
 });
 
 test("JX-AC-020 input accepted while running is durable and starts in Event order", async () => {
