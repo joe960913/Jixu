@@ -101,7 +101,6 @@ export type {
   TokenMetrics,
 } from "./metrics.ts";
 export {
-  compilePlanInstructions,
   materializePlanUpdates,
   parsePlanSnapshot,
   parsePlanUpdateProposal,
@@ -118,6 +117,16 @@ export type {
   PlanUpdateOperation,
   PlanUpdateProposal,
 } from "./plan.ts";
+export {
+  MODEL_PROGRESS_SIGNAL_TYPE,
+  parseProgressUpdate,
+  PROGRESS_CONTROL,
+  PROGRESS_CONTROL_NAME,
+} from "./progress.ts";
+export type {
+  ProgressControlDescriptor,
+  ProgressUpdate,
+} from "./progress.ts";
 export type {
   Clock,
   EventStore,

@@ -1,6 +1,11 @@
 import type { AnyThreadEvent, PlanSnapshot } from "@jixu/core";
 
-import type { ActivityEntry, TranscriptEntry } from "./tui-model.ts";
+import { toolOperationForRequest } from "./work-status.ts";
+import type {
+  ActivityEntry,
+  ToolOperation,
+  TranscriptEntry,
+} from "./tui-model.ts";
 
 export function eventActivity(
   event: AnyThreadEvent,
@@ -62,7 +67,15 @@ export function eventActivity(
               ? "brand"
               : event.payload.plan.status === "superseded"
                 ? "info"
-                : "success",
+              : "success",
+      };
+    case "plan.rejected":
+      return {
+        ...base,
+        detail: event.payload.error.message,
+        kind: "control",
+        label: "Plan kept steady",
+        tone: "warning",
       };
     case "tool.requested":
       return {
@@ -109,6 +122,7 @@ export interface ProjectedThread {
   readonly activePlan: PlanSnapshot | null;
   readonly activity: readonly ActivityEntry[];
   readonly nextId: number;
+  readonly toolOperations: readonly ToolOperation[];
   readonly transcript: readonly TranscriptEntry[];
 }
 
@@ -116,6 +130,7 @@ export function projectThread(
   events: readonly AnyThreadEvent[],
 ): ProjectedThread {
   const activity: ActivityEntry[] = [];
+  const toolOperations: ToolOperation[] = [];
   const transcript: TranscriptEntry[] = [];
   let activePlan: PlanSnapshot | null = null;
   let nextId = 1;
@@ -123,12 +138,14 @@ export function projectThread(
   for (const event of events) {
     if (event.type === "context.cleared") {
       transcript.splice(0);
+      toolOperations.splice(0);
       activePlan = null;
     }
     if (event.type === "plan.updated") {
       activePlan = event.payload.plan.status === "active" ? event.payload.plan : null;
     }
     if (event.type === "input.received") {
+      toolOperations.splice(0);
       transcript.push({
         content: event.payload.content,
         id: nextId++,
@@ -140,12 +157,29 @@ export function projectThread(
 
     activity.push({ ...eventActivity(event), id: nextId++ });
 
-    if (
-      event.type === "model.completed" &&
-      event.payload.response.toolCalls.length === 0
-    ) {
+    if (event.type === "tool.requested") {
+      toolOperations.push(toolOperationForRequest(event));
+    }
+    if (event.type === "tool.completed" || event.type === "tool.failed") {
+      const operationIndex = toolOperations.findIndex(
+        (operation) => operation.effectId === event.payload.effectId,
+      );
+      const operation = toolOperations[operationIndex];
+      if (operation !== undefined) {
+        toolOperations[operationIndex] = {
+          ...operation,
+          status: event.type === "tool.completed" ? "succeeded" : "failed",
+        };
+      }
+    }
+
+    if (event.type === "model.completed") {
+      const content = event.payload.response.content;
+      if (content.length === 0 && event.payload.response.toolCalls.length > 0) {
+        continue;
+      }
       transcript.push({
-        content: event.payload.response.content || "(reply without text)",
+        content: content || "(reply without text)",
         id: nextId++,
         label: "JIXU",
         role: "assistant",
@@ -158,6 +192,7 @@ export function projectThread(
     activePlan,
     activity: Object.freeze(activity),
     nextId,
+    toolOperations: Object.freeze(toolOperations),
     transcript: Object.freeze(transcript),
   };
 }

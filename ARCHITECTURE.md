@@ -256,14 +256,19 @@ A Plan is a compact, revisioned snapshot containing:
 One Thread may retain multiple historical Plans, but has at most one active Plan
 and one active step. New evidence revises the current Plan; a materially changed
 objective supersedes it. Completed and superseded Plans stay in Events for audit
-and recovery but leave the default working context.
+and recovery but leave the default working context. A revision whose steps are
+all completed or skipped becomes completed directly; completion is derived
+rather than requiring a second ceremonial model operation.
 
-The model proposes Plan changes as typed control output. The Kernel validates
-the shape and scope, and the coordinator commits one `plan.updated` Event before
-the new projection is exposed or Effects from the same model output are
-dispatched. Plan changes do not call a Tool, authorize an Effect, reserve
-compute, or widen user scope. The same Reducer, Policy, and Effect protocol
-remain the only way to act.
+The model proposes Plan changes as typed control output derived from current
+State: `create` is exposed only without an active Plan, while an active Plan may
+be revised, superseded, or abandoned. The Kernel validates shape and scope. A
+valid change is committed as `plan.updated` before the new projection is exposed
+or Effects from the same model output are dispatched. An invalid change is
+committed as `plan.rejected`; it preserves the last valid Plan and cannot turn
+otherwise valid response content or Tool calls into a model failure. Plan
+changes do not call a Tool, authorize an Effect, reserve compute, or widen user
+scope. The same Reducer, Policy, and Effect protocol remain the only way to act.
 
 This placement gives each concern one owner:
 
@@ -271,7 +276,7 @@ This placement gives each concern one owner:
 | --- | --- |
 | Decide whether planning is useful and propose revisions | The one Agent through an ordinary Model Effect |
 | Validate lifecycle invariants and derive the active Plan | Kernel and Reducer |
-| Persist and recover Plan revisions | Thread Events |
+| Persist accepted and rejected Plan proposals | Thread Events |
 | Select the active Plan into model-visible context | Context Engine |
 | Render progress or allow inspection | Surface projection |
 
@@ -339,6 +344,42 @@ The compiler is deterministic for the same:
 - model capability profile;
 - Context Policy and budget; and
 - compiler version.
+
+The assembled request has one deliberate cache boundary:
+
+```text
+stable prefix
+  immutable Agent instructions
+  ordinary Tool descriptors
+  state-valid built-in control descriptors
+
+dynamic suffix
+  accepted Thread history, Tool results, and latest user input
+  current active Plan as the final runtime context segment
+```
+
+The reference Agent instructions are a versioned, immutable constitution for
+the executable Harness: identity and mission, current Tools, adaptive Plan and
+public-progress policy, evidence and validation expectations, authority and
+secret constraints, efficiency, and final-response behavior. They do not claim
+planned Skills, Handoff compaction, approvals, or sandbox capabilities. Runtime
+facts never enter this text. In particular, an active Plan is rendered as a
+late context segment rather than appended to `instructions`, so Plan revisions
+extend the changing tail without rewriting the reusable prefix.
+
+Ordinary Tool descriptors and their ordering remain stable for an Agent
+snapshot. The Plan control remains derived from State because exposing invalid
+operations would weaken the model contract; its schema therefore changes only
+at the meaningful no-Plan/active-Plan lifecycle boundary. A controlled cache
+miss at that boundary is preferable to making an invalid operation appear
+available or hiding dynamic Plan JSON inside a Tool description.
+
+Prompt caching itself belongs to the Driver boundary. OpenAI and OpenRouter
+adapters may route repeated requests with a stable Thread-derived cache key;
+other providers may use implicit prefix caching or omit the hint. These keys and
+provider breakpoints are correlation and cost optimizations only. They never
+become a Jixu Session, Thread authority, recovery dependency, or substitute for
+durable cache accounting.
 
 If a semantic transformation requires a model or provider compaction endpoint,
 it is an ordinary Effect. Its result becomes a durable, source-linked context
@@ -653,6 +694,33 @@ Signals and OpenTelemetry describe what is happening now:
 - streamed tokens and Tool progress; and
 - correlation by Thread, turn, Event, Effect, and causation IDs.
 
+Surfaces may turn committed Events and transient Signals into compact high-level
+status such as thinking, reading, running, or responding. This projection is
+non-authoritative and must never expose or reconstruct hidden chain-of-thought.
+Every model request includes one reserved `jixu_progress_update` control. A
+cooperating model may use it once to describe the next observable action in the
+user's language. The adapter validates the bounded phrase and emits
+`model.progress` without creating another model request, Tool call, Event, or
+State field; malformed or absent output is cosmetic failure and is ignored.
+The surface carries a valid phrase through the following Tool action while the
+durable Tool Event supplies the factual operation and target.
+High-frequency output Signals may be coalesced into bounded presentation frames
+as long as text order is preserved and the committed Event atomically replaces
+the transient projection at the stable boundary. Public model content remains a
+transcript item even when the same response requests Tools; Tool execution is
+not a reason to erase already presented public text.
+Decorative execution motion belongs entirely to the surface projection. It uses
+the fixed-width `JIXU` wordmark and moves emphasis through existing Nippon
+semantic colors. Response streaming and reduced-motion mode use the complete
+static wordmark rather than freezing an animation frame. Motion never adds a
+timer, phase, or lifecycle to core State. The Composer column already owns a
+permanent two-row status footer beneath its compact input surface. During live
+work, the first row shows the current observable phase and the second projects
+Tool requests from durable Events, updating matching outcomes in place for the
+turn. Repeated or overflowing operations may be compacted while the Activity
+rail retains the full history. At idle the same rows show ordinary model, shell,
+and cost context. Live work changes content, never footer or input geometry.
+
 Telemetry MUST be redacted independently from durable data and may be sampled or
 dropped. OpenTelemetry semantic conventions are preferred over a proprietary
 trace model.
@@ -689,8 +757,10 @@ new Threads by default. Continuing old work under meaningfully changed
 instructions, Tools, or Policy requires an explicit Fork or migration boundary,
 never silent rebinding.
 
-Unknown durable versions fail closed. Version upgrades use explicit, tested
-upcasters or migrations rather than reflection or a generic plugin registry.
+Unknown durable versions fail closed. Before the first stable release, Jixu
+keeps only the current schema and recreates incompatible development Threads.
+Published-version upgrades, when introduced, use explicit tested migrations
+rather than reflection or a generic plugin registry.
 
 ### Architecture fitness rules
 
@@ -766,10 +836,12 @@ The accepted refinements are now release-blocking requirements:
 
 | Area | Normative coverage |
 | --- | --- |
-| Autonomous Plan | `JX-PLAN-001` through `JX-PLAN-007`; `JX-AC-021` and `JX-AC-022` |
+| Autonomous Plan | `JX-PLAN-001` through `JX-PLAN-009`; `JX-AC-021`, `JX-AC-022`, and `JX-AC-031` |
 | Context compilation and manifest | `JX-CTX-001` through `JX-CTX-004`; `JX-AC-027` |
+| Cache-stable request assembly | `JX-CTX-014`, `JX-CTX-015`, `JX-AGENT-001`, `JX-AGENT-002`, and `JX-AC-035` |
 | Continuity Handoff and compaction | `JX-CTX-005` through `JX-CTX-013`; `JX-AC-023` through `JX-AC-026` |
 | Active input | `JX-THREAD-002`, `JX-THREAD-003`, and `JX-THREAD-013`; `JX-AC-020` |
+| Live TUI continuity | `JX-TUI-019`, `JX-TUI-021`, and `JX-AC-036` |
 | Progressive Skills | `JX-SKILL-001` through `JX-SKILL-003` |
 | Artifact integrity | `JX-STORE-008` and `JX-AC-025` |
 

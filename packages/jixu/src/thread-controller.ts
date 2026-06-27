@@ -1,4 +1,4 @@
-import { isJsonObject } from "@jixu/core";
+import { isJsonObject, MODEL_PROGRESS_SIGNAL_TYPE } from "@jixu/core";
 import type {
   AnyThreadEvent,
   Harness,
@@ -9,12 +9,17 @@ import type {
 
 import { formatSlashCommandHelp } from "./commands.ts";
 import { projectThread } from "./thread-projection.ts";
+import { workStatusForEvent } from "./work-status.ts";
 import type {
   JixuTone,
   ThreadControllerSnapshot,
   ThreadSummary,
   TranscriptRole,
 } from "./tui-model.ts";
+
+type SnapshotUpdates = {
+  -readonly [TKey in keyof ThreadControllerSnapshot]?: ThreadControllerSnapshot[TKey];
+};
 
 export interface ThreadControllerConfig {
   readonly harness: Harness;
@@ -23,6 +28,7 @@ export interface ThreadControllerConfig {
 }
 
 const HELP = formatSlashCommandHelp();
+const STREAM_FRAME_MS = 32;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown Jixu error";
@@ -43,11 +49,31 @@ function signalDelta(item: ThreadStreamItem): string | null {
   return typeof item.data.delta === "string" ? item.data.delta : null;
 }
 
+function signalProgress(item: ThreadStreamItem): string | null {
+  if (
+    item.kind !== "signal" ||
+    item.type !== MODEL_PROGRESS_SIGNAL_TYPE ||
+    !isJsonObject(item.data)
+  ) {
+    return null;
+  }
+  return typeof item.data.message === "string" ? item.data.message : null;
+}
+
 function titleFrom(events: readonly AnyThreadEvent[]): string {
   const firstInput = events.find((event) => event.type === "input.received");
   if (firstInput?.type !== "input.received") return "Empty Thread";
   const title = firstInput.payload.content.replace(/\s+/g, " ").trim();
   return title.length > 48 ? `${title.slice(0, 47)}…` : title;
+}
+
+function sameEventLog(
+  left: readonly AnyThreadEvent[],
+  right: readonly AnyThreadEvent[],
+): boolean {
+  return (
+    left.length === right.length && left.at(-1)?.id === right.at(-1)?.id
+  );
 }
 
 export class ThreadController {
@@ -61,6 +87,9 @@ export class ThreadController {
   #inFlight = 0;
   #nextId = 1;
   #observer: AbortController | null = null;
+  #progressMessage: string | null = null;
+  #streamBuffer = "";
+  #streamFlush: ReturnType<typeof setTimeout> | null = null;
   #snapshot: ThreadControllerSnapshot = Object.freeze({
     activePlan: null,
     activity: Object.freeze([]),
@@ -72,7 +101,9 @@ export class ThreadController {
     threadPickerOpen: false,
     threads: Object.freeze([]),
     threadStatus: "none",
+    toolOperations: Object.freeze([]),
     transcript: Object.freeze([]),
+    workStatus: null,
   });
 
   constructor(config: ThreadControllerConfig) {
@@ -343,11 +374,14 @@ export class ThreadController {
   async #select(thread: Thread): Promise<ThreadState> {
     this.#observer?.abort();
     this.#observer = null;
+    this.#resetStreaming();
     this.#current = thread;
     const [events, state] = await Promise.all([thread.events(), thread.state()]);
     this.#events = events;
-    this.#applyProjection();
+    this.#progressMessage = null;
+    const projection = this.#projection();
     this.#patch({
+      ...projection,
       currentThreadId: thread.id,
       inspection: null,
       metrics: state.metrics,
@@ -358,6 +392,8 @@ export class ThreadController {
         current: summary.id === thread.id,
       })),
       threadStatus: state.status,
+      toolOperations: state.status === "running" ? projection.toolOperations : [],
+      workStatus: null,
     });
     this.#observe(thread);
     return state;
@@ -375,17 +411,46 @@ export class ThreadController {
         })) {
           if (this.#current?.id !== thread.id) return;
           if (item.kind === "event") {
+            const updates: SnapshotUpdates = {};
             if (!this.#events.some((event) => event.id === item.event.id)) {
               this.#events = [...this.#events, item.event];
-              this.#applyProjection();
+              Object.assign(updates, this.#projection());
+            }
+            if (item.event.type === "model.requested") {
+              this.#progressMessage = null;
+              this.#resetStreaming();
+              updates.streamingText = "";
+            } else if (item.event.type === "model.completed") {
+              this.#resetStreaming();
+              updates.streamingText = "";
+            }
+            const workStatus = workStatusForEvent(
+              item.event,
+              this.#progressMessage,
+            );
+            if (this.#snapshot.busy && workStatus !== null) {
+              updates.workStatus = workStatus;
+            }
+            this.#patch(updates);
+            continue;
+          }
+          const progress = signalProgress(item);
+          if (progress !== null) {
+            this.#progressMessage = progress;
+            if (this.#snapshot.busy) {
+              this.#patch({
+                workStatus: {
+                  label: progress,
+                  phase: "thinking",
+                  tone: "warning",
+                },
+              });
             }
             continue;
           }
           const delta = signalDelta(item);
           if (delta !== null) {
-            this.#patch({
-              streamingText: `${this.#snapshot.streamingText}${delta}`,
-            });
+            this.#queueStreamDelta(delta);
           }
         }
       } catch (error) {
@@ -402,9 +467,15 @@ export class ThreadController {
       thread.events(),
       state === undefined ? thread.state() : Promise.resolve(state),
     ]);
-    this.#events = events;
-    this.#applyProjection();
+    this.#resetStreaming();
+    const projection = sameEventLog(this.#events, events)
+      ? {}
+      : (() => {
+          this.#events = events;
+          return this.#projection();
+        })();
     this.#patch({
+      ...projection,
       metrics: currentState.metrics,
       streamingText: "",
       threadStatus: currentState.status,
@@ -429,22 +500,76 @@ export class ThreadController {
 
   #beginWork(): void {
     this.#inFlight += 1;
-    this.#patch({ busy: true, inspection: null, streamingText: "" });
+    this.#progressMessage = null;
+    this.#resetStreaming();
+    this.#patch({
+      busy: true,
+      inspection: null,
+      streamingText: "",
+      toolOperations:
+        this.#snapshot.threadStatus === "running"
+          ? this.#snapshot.toolOperations
+          : [],
+      workStatus: {
+        label: "Thinking",
+        phase: "thinking",
+        tone: "warning",
+      },
+    });
   }
 
   #endWork(): void {
     this.#inFlight = Math.max(0, this.#inFlight - 1);
-    this.#patch({ busy: this.#inFlight > 0, streamingText: "" });
+    if (this.#inFlight === 0) this.#progressMessage = null;
+    this.#resetStreaming();
+    this.#patch({
+      busy: this.#inFlight > 0,
+      streamingText: "",
+      toolOperations:
+        this.#inFlight > 0 ? this.#snapshot.toolOperations : [],
+      workStatus: this.#inFlight > 0 ? this.#snapshot.workStatus : null,
+    });
   }
 
-  #applyProjection(): void {
+  #queueStreamDelta(delta: string): void {
+    this.#streamBuffer += delta;
+    if (this.#streamFlush !== null) return;
+    this.#streamFlush = setTimeout(() => this.#flushStreaming(), STREAM_FRAME_MS);
+  }
+
+  #flushStreaming(): void {
+    this.#streamFlush = null;
+    if (this.#streamBuffer.length === 0) return;
+    const delta = this.#streamBuffer;
+    this.#streamBuffer = "";
+    this.#patch({
+      streamingText: `${this.#snapshot.streamingText}${delta}`,
+      workStatus: {
+        label: "Responding",
+        phase: "responding",
+        tone: "brand",
+      },
+    });
+  }
+
+  #resetStreaming(): void {
+    if (this.#streamFlush !== null) clearTimeout(this.#streamFlush);
+    this.#streamFlush = null;
+    this.#streamBuffer = "";
+  }
+
+  #projection(): Pick<
+    ThreadControllerSnapshot,
+    "activePlan" | "activity" | "toolOperations" | "transcript"
+  > {
     const projected = projectThread(this.#events);
     this.#nextId = projected.nextId;
-    this.#patch({
+    return {
       activePlan: projected.activePlan,
       activity: projected.activity.slice(-200),
+      toolOperations: projected.toolOperations,
       transcript: projected.transcript.slice(-200),
-    });
+    };
   }
 
   #inspect(title: string, content: string): void {
@@ -467,14 +592,34 @@ export class ThreadController {
     this.#patch({ transcript: [...this.#snapshot.transcript, entry].slice(-200) });
   }
 
-  #patch(updates: Partial<ThreadControllerSnapshot>): void {
-    this.#snapshot = Object.freeze({
+  #patch(updates: SnapshotUpdates): void {
+    const activity =
+      updates.activity === undefined
+        ? this.#snapshot.activity
+        : Object.freeze([...updates.activity]);
+    const threads =
+      updates.threads === undefined
+        ? this.#snapshot.threads
+        : Object.freeze([...updates.threads]);
+    const toolOperations =
+      updates.toolOperations === undefined
+        ? this.#snapshot.toolOperations
+        : Object.freeze([...updates.toolOperations]);
+    const transcript =
+      updates.transcript === undefined
+        ? this.#snapshot.transcript
+        : Object.freeze([...updates.transcript]);
+    const next = Object.freeze({
       ...this.#snapshot,
       ...updates,
-      activity: Object.freeze([...(updates.activity ?? this.#snapshot.activity)]),
-      threads: Object.freeze([...(updates.threads ?? this.#snapshot.threads)]),
-      transcript: Object.freeze([...(updates.transcript ?? this.#snapshot.transcript)]),
+      activity,
+      threads,
+      toolOperations,
+      transcript,
     });
+    const keys = Object.keys(next) as readonly (keyof ThreadControllerSnapshot)[];
+    if (keys.every((key) => Object.is(next[key], this.#snapshot[key]))) return;
+    this.#snapshot = next;
     for (const listener of this.#listeners) listener();
   }
 }

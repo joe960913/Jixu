@@ -13,6 +13,11 @@ import type { JixuConnectionConfig } from "./config.ts";
 import type { ThreadController } from "./thread-controller.ts";
 import { SlashCommandMenu, ThreadPicker } from "./slash-command-menu.tsx";
 import { jixuTheme } from "./theme.ts";
+import {
+  ExecutionDock,
+  ToolOperationTrail,
+  WorkStatusLine,
+} from "./tui-dock.tsx";
 import { ActivityRail, Transcript } from "./tui-transcript.tsx";
 import type { ThreadControllerSnapshot } from "./tui-model.ts";
 
@@ -24,6 +29,7 @@ export interface JixuActiveConnection {
 interface AgentWorkspaceProps {
   readonly active: JixuActiveConnection | null;
   readonly connectionError: string | null;
+  readonly motion: boolean;
   readonly onConfigure: () => void;
   readonly onQuit: () => void;
 }
@@ -39,7 +45,9 @@ const inactiveSnapshot: ThreadControllerSnapshot = Object.freeze({
   threadPickerOpen: false,
   threads: Object.freeze([]),
   threadStatus: "none",
+  toolOperations: Object.freeze([]),
   transcript: Object.freeze([]),
+  workStatus: null,
 });
 
 const getInactiveSnapshot = (): ThreadControllerSnapshot => inactiveSnapshot;
@@ -60,14 +68,6 @@ function truncate(value: string, maximum: number): string {
   if (value.length <= maximum) return value;
   if (maximum <= 1) return "…";
   return `${value.slice(0, maximum - 1)}…`;
-}
-
-function endpointName(baseUrl: string): string {
-  try {
-    return new URL(baseUrl).host;
-  } catch {
-    return baseUrl;
-  }
 }
 
 function formatUsd(usdNanos: number): string {
@@ -94,34 +94,64 @@ function costContext(snapshot: ThreadControllerSnapshot): {
 function ComposerStatus({
   compact,
   configured,
-  endpointContext,
-  formatContext,
+  modelContext,
+  motion,
+  snapshot,
   threadCost,
+  width,
 }: {
   readonly compact: boolean;
   readonly configured: boolean;
-  readonly endpointContext: string | null;
-  readonly formatContext: string | null;
+  readonly modelContext: string | null;
+  readonly motion: boolean;
+  readonly snapshot: ThreadControllerSnapshot;
   readonly threadCost: ReturnType<typeof costContext>;
+  readonly width: number;
 }) {
+  const working = snapshot.busy && snapshot.workStatus !== null;
+  const showToolTrail = working && snapshot.toolOperations.length > 0;
   return (
     <box style={{ flexDirection: "column", height: 2, width: "100%" }}>
-      <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
-        {configured ? (
-          <text fg={jixuTheme.brand}>{endpointContext}</text>
+      <box
+        style={{
+          flexDirection: "row",
+          height: 1,
+          overflow: "hidden",
+          width: "100%",
+        }}
+      >
+        {working ? (
+          <WorkStatusLine motion={motion} status={snapshot.workStatus} />
+        ) : configured ? (
+          <text fg={jixuTheme.brand}>{modelContext}</text>
         ) : (
           <text fg={jixuTheme.secondary}>
             Model not configured · <span fg={jixuTheme.brand}>use /config</span>
           </text>
         )}
-        {compact || formatContext === null ? null : (
-          <text fg={jixuTheme.secondary}> · {formatContext}</text>
-        )}
+        {working ? <box style={{ flexGrow: 1 }} /> : null}
+        {working && !compact && modelContext !== null ? (
+          <text fg={jixuTheme.secondary}>{modelContext}</text>
+        ) : null}
       </box>
-      <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
-        <text fg={jixuTheme.secondary}>
-          Local shell · <span fg={jixuTheme.warning}>unsandboxed</span>
-        </text>
+      <box
+        style={{
+          flexDirection: "row",
+          height: 1,
+          overflow: "hidden",
+          width: "100%",
+        }}
+      >
+        {showToolTrail ? (
+          <ToolOperationTrail
+            toolOperations={snapshot.toolOperations}
+            width={Math.max(20, width - 24)}
+          />
+        ) : (
+          <text fg={jixuTheme.secondary}>
+            Local shell · <span fg={jixuTheme.warning}>unsandboxed</span>
+          </text>
+        )}
         <box style={{ flexGrow: 1 }} />
         <text fg={threadCost.partial ? jixuTheme.warning : jixuTheme.success}>
           {threadCost.label}
@@ -137,6 +167,7 @@ function ComposerStatus({
 export function AgentWorkspace({
   active,
   connectionError,
+  motion,
   onConfigure,
   onQuit,
 }: AgentWorkspaceProps) {
@@ -274,21 +305,14 @@ export function AgentWorkspace({
       : snapshot.threadStatus === "none"
         ? "ready"
         : snapshot.threadStatus;
-  const endpointContext = configured
+  const modelContext = configured
     ? truncate(
-        compact
-          ? active.config.model
-          : `${endpointName(active.config.baseUrl)} · ${active.config.model}`,
+        active.config.model,
         compact
           ? Math.max(16, chatWidth - 30)
           : Math.max(24, Math.floor(chatWidth / 2)),
       )
     : null;
-  const formatContext = !configured
-    ? null
-    : active.config.apiFormat === "responses"
-      ? "Responses"
-      : "Chat Completions";
   const threadCost = costContext(snapshot);
 
   return (
@@ -356,6 +380,8 @@ export function AgentWorkspace({
                 snapshot={snapshot}
               />
             </box>
+
+            <ExecutionDock snapshot={snapshot} width={chatWidth} />
 
             <SlashCommandMenu
               draft={draft}
@@ -432,9 +458,11 @@ export function AgentWorkspace({
           <ComposerStatus
             compact={compact}
             configured={configured}
-            endpointContext={endpointContext}
-            formatContext={formatContext}
+            modelContext={modelContext}
+            motion={motion}
+            snapshot={snapshot}
             threadCost={threadCost}
+            width={chatWidth}
           />
         </box>
 
