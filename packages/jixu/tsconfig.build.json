@@ -7,6 +7,6 @@
     "rootDir": "./src",
     "tsBuildInfoFile": "../../.cache/tsbuild/jixu.tsbuildinfo"
   },
-  "include": ["./src/**/*.ts"],
+  "include": ["./src/**/*.ts", "./src/**/*.tsx"],
   "references": [{ "path": "../core/tsconfig.build.json" }]
 }

@@ -5,7 +5,7 @@ import type {
   ModelTokenUsage,
 } from "@jixu/core";
 
-type AccountingApiFormat = "chat-completions" | "responses";
+type AccountingApi = "anthropic-messages" | "openai-chat-completions";
 
 export interface ModelCostCalculationInput {
   readonly model: string;
@@ -41,29 +41,47 @@ function tokenDetail(value: unknown, key: string): number | null {
 
 function canonicalUsage(
   value: unknown,
-  format: AccountingApiFormat,
+  api: AccountingApi,
 ): ModelTokenUsage | null {
   const usage = record(value);
   if (usage === null) return null;
-  const inputTokens = token(
-    format === "responses" ? usage.input_tokens : usage.prompt_tokens,
-  );
-  const outputTokens = token(
-    format === "responses" ? usage.output_tokens : usage.completion_tokens,
-  );
-  const totalTokens = token(usage.total_tokens);
-  if (inputTokens === null || outputTokens === null || totalTokens === null) {
-    return null;
+  if (api === "anthropic-messages") {
+    const uncachedInputTokens = token(usage.input_tokens);
+    const outputTokens = token(usage.output_tokens);
+    if (uncachedInputTokens === null || outputTokens === null) return null;
+    const cachedInputTokens = token(usage.cache_read_input_tokens);
+    const cacheWriteTokens = token(usage.cache_creation_input_tokens);
+    const inputTokens =
+      uncachedInputTokens +
+      (cachedInputTokens ?? 0) +
+      (cacheWriteTokens ?? 0);
+    if (!Number.isSafeInteger(inputTokens)) return null;
+    const totalTokens = inputTokens + outputTokens;
+    if (!Number.isSafeInteger(totalTokens)) return null;
+    return {
+      cacheWriteTokens,
+      cachedInputTokens,
+      inputTokens,
+      outputTokens,
+      reasoningTokens: tokenDetail(
+        usage.output_tokens_details,
+        "thinking_tokens",
+      ),
+      totalTokens,
+    };
   }
 
-  const inputDetails =
-    format === "responses"
-      ? usage.input_tokens_details
-      : usage.prompt_tokens_details;
-  const outputDetails =
-    format === "responses"
-      ? usage.output_tokens_details
-      : usage.completion_tokens_details;
+  const inputTokens = token(usage.prompt_tokens);
+  const outputTokens = token(usage.completion_tokens);
+  if (inputTokens === null || outputTokens === null) {
+    return null;
+  }
+  const derivedTotal = inputTokens + outputTokens;
+  if (!Number.isSafeInteger(derivedTotal)) return null;
+  const totalTokens = token(usage.total_tokens) ?? derivedTotal;
+
+  const inputDetails = usage.prompt_tokens_details;
+  const outputDetails = usage.completion_tokens_details;
   return {
     cacheWriteTokens: tokenDetail(inputDetails, "cache_write_tokens"),
     cachedInputTokens: tokenDetail(inputDetails, "cached_tokens"),
@@ -95,7 +113,7 @@ function providerUsdCost(value: unknown, trusted: boolean): ModelCost | null {
 
 export function modelAccounting(
   usageValue: unknown,
-  format: AccountingApiFormat,
+  api: AccountingApi,
   config: {
     readonly costCalculator: ModelCostCalculator | undefined;
     readonly model: string;
@@ -103,7 +121,7 @@ export function modelAccounting(
     readonly providerReportsUsdCost: boolean;
   },
 ): ModelAccounting {
-  const usage = canonicalUsage(usageValue, format);
+  const usage = canonicalUsage(usageValue, api);
   if (usage === null) return EMPTY_MODEL_ACCOUNTING;
   let cost = providerUsdCost(usageValue, config.providerReportsUsdCost);
   if (cost === null && config.costCalculator !== undefined) {
@@ -118,13 +136,4 @@ export function modelAccounting(
     }
   }
   return { cost, usage };
-}
-
-export function isOpenRouterBaseUrl(value: string): boolean {
-  try {
-    const hostname = new URL(value).hostname;
-    return hostname === "openrouter.ai" || hostname.endsWith(".openrouter.ai");
-  } catch {
-    return false;
-  }
 }

@@ -21,7 +21,7 @@ import { createNodeTools } from "@jixu/tools-node";
 import { createThreadController } from "../src/thread-controller.ts";
 import type { ThreadControllerSnapshot } from "../src/tui-model.ts";
 
-test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 TUI controller keeps public text and Tool progress continuous", async () => {
+test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 JX-AC-040 TUI keeps public text, Tool progress, and durable receipts continuous", async () => {
   const root = await mkdtemp(join(tmpdir(), "jixu-controller-"));
   try {
     await writeFile(join(root, "note.txt"), "durable hello", "utf8");
@@ -168,7 +168,10 @@ test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 TUI controller keeps public text a
     assert.ok(observedLiveText.includes("Read"));
     assert.equal(observedLiveText.includes("Re"), false);
     assert.ok(
-      first.transcript.some((entry) => entry.content === "Reading note.txt."),
+      first.transcript.some(
+        (entry) =>
+          entry.kind === "message" && entry.content === "Reading note.txt.",
+      ),
     );
     assert.ok(observedToolOperations.includes("read:running"));
     assert.ok(observedToolOperations.includes("read:succeeded"));
@@ -177,7 +180,10 @@ test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 TUI controller keeps public text a
       observedPresentation.some(
         (frame) =>
           frame.streamingText.length > 0 &&
-          frame.transcript.some((entry) => entry.content === "Reading note.txt."),
+          frame.transcript.some(
+            (entry) =>
+              entry.kind === "message" && entry.content === "Reading note.txt.",
+          ),
       ),
       false,
     );
@@ -197,7 +203,21 @@ test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 TUI controller keeps public text a
         "Inspecting the requested note|Reading note.txt",
       ),
     );
-    assert.equal(first.transcript.at(-1)?.content, "The file says durable hello.");
+    const firstReceipt = first.transcript.find(
+      (entry) => entry.kind === "tool-receipts",
+    );
+    assert.equal(firstReceipt?.kind, "tool-receipts");
+    if (firstReceipt?.kind === "tool-receipts") {
+      assert.equal(firstReceipt.operations.length, 1);
+      assert.equal(firstReceipt.operations[0]?.detail, "note.txt");
+      assert.equal(firstReceipt.operations[0]?.name, "read");
+      assert.equal(firstReceipt.operations[0]?.status, "succeeded");
+    }
+    const firstFinal = first.transcript.at(-1);
+    assert.equal(
+      firstFinal?.kind === "message" ? firstFinal.content : undefined,
+      "The file says durable hello.",
+    );
     // JX-AC-028: the controller exposes the canonical Thread projection.
     assert.equal(first.metrics?.model.calls, 2);
     assert.equal(first.metrics?.model.succeeded, 2);
@@ -221,6 +241,23 @@ test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 TUI controller keeps public text a
       },
       { content: "Follow up", role: "user" },
     ]);
+    const retainedReceipt = controller.getSnapshot().transcript.find(
+      (entry) => entry.kind === "tool-receipts",
+    );
+    assert.equal(retainedReceipt?.kind, "tool-receipts");
+    if (retainedReceipt?.kind === "tool-receipts") {
+      assert.equal(retainedReceipt.operations[0]?.detail, "note.txt");
+      assert.equal(retainedReceipt.operations[0]?.status, "succeeded");
+    }
+    await controller.selectThread(originalThreadId);
+    const reopenedReceipt = controller.getSnapshot().transcript.find(
+      (entry) => entry.kind === "tool-receipts",
+    );
+    assert.equal(reopenedReceipt?.kind, "tool-receipts");
+    if (reopenedReceipt?.kind === "tool-receipts") {
+      assert.equal(reopenedReceipt.operations[0]?.detail, "note.txt");
+      assert.equal(reopenedReceipt.operations[0]?.status, "succeeded");
+    }
 
     await controller.submit("/events");
     assert.equal(controller.getSnapshot().inspection?.title, "Durable Events");
@@ -248,7 +285,11 @@ test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 TUI controller keeps public text a
     assert.ok(controller.getSnapshot().threads.length >= 2);
     await controller.selectThread(originalThreadId);
     assert.equal(controller.getSnapshot().currentThreadId, originalThreadId);
-    assert.equal(controller.getSnapshot().transcript[0]?.content, "Fresh start");
+    const restoredFirst = controller.getSnapshot().transcript[0];
+    assert.equal(
+      restoredFirst?.kind === "message" ? restoredFirst.content : undefined,
+      "Fresh start",
+    );
 
     const forkPoint = (await store.read(originalThreadId)).at(-1);
     assert.notEqual(forkPoint, undefined);

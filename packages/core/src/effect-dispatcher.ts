@@ -7,7 +7,7 @@ import type {
   ModelOutcome,
   ToolExecuteEffect,
 } from "./effects.ts";
-import { InvalidTransitionError } from "./errors.ts";
+import { InvalidTransitionError, ToolExecutionError } from "./errors.ts";
 import { assertJsonValue, cloneJson } from "./json.ts";
 import type { JsonValue } from "./json.ts";
 import {
@@ -181,6 +181,13 @@ export class EffectDispatcher {
     try {
       output = await this.#executeTool(tool, input, effect);
     } catch (error) {
+      if (error instanceof ToolExecutionError) {
+        return this.#toolFailure(
+          effect,
+          "failed",
+          driverError(error.code, error.message, error.retryable),
+        );
+      }
       return this.#toolFailure(
         effect,
         "indeterminate",

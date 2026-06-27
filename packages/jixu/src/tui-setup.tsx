@@ -9,11 +9,11 @@ import { useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 
 import { normalizeJixuBaseUrl } from "./config.ts";
-import type { JixuApiFormat, JixuConnectionConfig } from "./config.ts";
+import type { JixuApi, JixuConnectionConfig } from "./config.ts";
 import { jixuTheme } from "./theme.ts";
 
 export interface JixuInitialConfiguration {
-  readonly apiFormat?: JixuApiFormat;
+  readonly api?: JixuApi;
   readonly apiKey?: string;
   readonly autoConnect?: boolean;
   readonly baseUrl?: string;
@@ -82,7 +82,7 @@ function FormatOption({
 }) {
   return (
     <box
-      backgroundColor={selected ? jixuTheme.surface : jixuTheme.background}
+      backgroundColor={selected ? jixuTheme.elevated : jixuTheme.background}
       border
       borderColor={
         selected
@@ -160,8 +160,8 @@ function SetupField({
 }
 
 export function Setup({ initial, initialError, onConnect, workspace }: SetupProps) {
-  const [apiFormat, setApiFormat] = useState<JixuApiFormat>(
-    initial?.apiFormat ?? "responses",
+  const [api, setApi] = useState<JixuApi>(
+    initial?.api ?? "openai-chat-completions",
   );
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "");
   const [apiKey, setApiKey] = useState(initial?.apiKey ?? "");
@@ -181,14 +181,14 @@ export function Setup({ initial, initialError, onConnect, workspace }: SetupProp
     if (focus !== 3) modelInput.current?.blur();
   }, [focus]);
 
-  const selectApiFormat = (next: JixuApiFormat) => {
-    setApiFormat(next);
+  const selectApi = (next: JixuApi) => {
+    setApi(next);
     setError(null);
   };
 
-  const selectFormatByPointer = (next: JixuApiFormat) => {
+  const selectApiByPointer = (next: JixuApi) => {
     setFocus(0);
-    selectApiFormat(next);
+    selectApi(next);
   };
 
   const connect = async () => {
@@ -222,7 +222,7 @@ export function Setup({ initial, initialError, onConnect, workspace }: SetupProp
     setError(null);
     try {
       await onConnect({
-        apiFormat,
+        api,
         apiKey: cleanKey,
         baseUrl: cleanBaseUrl,
         model: cleanModel,
@@ -255,15 +255,19 @@ export function Setup({ initial, initialError, onConnect, workspace }: SetupProp
         key.name === "down"
       ) {
         key.preventDefault();
-        selectApiFormat(
-          apiFormat === "responses" ? "chat-completions" : "responses",
+        selectApi(
+          api === "openai-chat-completions"
+            ? "anthropic-messages"
+            : "openai-chat-completions",
         );
         return;
       }
       if (key.sequence === "1" || key.sequence === "2") {
         key.preventDefault();
-        selectApiFormat(
-          key.sequence === "1" ? "responses" : "chat-completions",
+        selectApi(
+          key.sequence === "1"
+            ? "openai-chat-completions"
+            : "anthropic-messages",
         );
         return;
       }
@@ -295,23 +299,28 @@ export function Setup({ initial, initialError, onConnect, workspace }: SetupProp
         width: "100%",
       }}
     >
-      <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
-        <text fg={jixuTheme.brand} selectable={false}>
-          <strong>JIXU</strong>
-        </text>
-        <text fg={jixuTheme.text} selectable={false}>  Configuration</text>
-        <box style={{ flexGrow: 1 }} />
-        <text fg={jixuTheme.secondary} selectable={false}>
-          {compact ? "~/.jixu" : "saved locally · ~/.jixu"}
+      <box style={{ flexDirection: "column", height: 2, width: "100%" }}>
+        <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
+          <text fg={jixuTheme.brand} selectable={false}>
+            <strong>JIXU</strong>
+          </text>
+          <text fg={jixuTheme.text} selectable={false}>  Configuration</text>
+          <box style={{ flexGrow: 1 }} />
+          <text fg={jixuTheme.secondary} selectable={false}>
+            {compact ? "~/.jixu" : "saved locally · ~/.jixu"}
+          </text>
+        </box>
+        <text fg={jixuTheme.divider} selectable={false}>
+          {"─".repeat(Math.max(1, width - 2))}
         </text>
       </box>
 
       <box
-        backgroundColor={jixuTheme.background}
-        borderStyle="rounded"
-        borderColor={jixuTheme.secondary}
+        backgroundColor={jixuTheme.surface}
+        borderStyle="single"
+        borderColor={jixuTheme.divider}
         title=" Model connection "
-        titleColor={jixuTheme.text}
+        titleColor={jixuTheme.brand}
         style={{
           flexDirection: "column",
           padding: 1,
@@ -321,23 +330,23 @@ export function Setup({ initial, initialError, onConnect, workspace }: SetupProp
         <FieldLabel
           active={focus === 0}
           hint="COMPATIBILITY MODE"
-          label="API FORMAT"
+          label="API PROTOCOL"
           number={0}
         />
         <box style={{ flexDirection: "row", gap: 1, height: 3, width: "100%" }}>
           <FormatOption
             focused={focus === 0}
-            label="Responses"
+            label="OpenAI Chat"
             number={1}
-            onSelect={() => selectFormatByPointer("responses")}
-            selected={apiFormat === "responses"}
+            onSelect={() => selectApiByPointer("openai-chat-completions")}
+            selected={api === "openai-chat-completions"}
           />
           <FormatOption
             focused={focus === 0}
-            label="Chat Completions"
+            label="Anthropic Messages"
             number={2}
-            onSelect={() => selectFormatByPointer("chat-completions")}
-            selected={apiFormat === "chat-completions"}
+            onSelect={() => selectApiByPointer("anthropic-messages")}
+            selected={api === "anthropic-messages"}
           />
         </box>
         <text fg={focus === 0 ? jixuTheme.brand : jixuTheme.secondary} selectable={false}>
@@ -346,7 +355,7 @@ export function Setup({ initial, initialError, onConnect, workspace }: SetupProp
 
         <SetupField
           active={focus === 1}
-          hint="OPENAI-COMPATIBLE"
+          hint={api === "openai-chat-completions" ? "OPENAI-COMPATIBLE" : "ANTHROPIC"}
           inputRef={baseUrlInput}
           label="BASE URL"
           number={1}
@@ -408,12 +417,17 @@ export function Setup({ initial, initialError, onConnect, workspace }: SetupProp
         </box>
       </box>
 
-      <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
-        <text fg={jixuTheme.info} selectable={false}>OpenAI-compatible endpoint</text>
-        <box style={{ flexGrow: 1 }} />
-        <text fg={jixuTheme.secondary} selectable={false}>
-          {compact ? "Ctrl+C quit" : `Ctrl+C quit · ${workspace}`}
+      <box style={{ flexDirection: "column", height: 2, width: "100%" }}>
+        <text fg={jixuTheme.divider} selectable={false}>
+          {"─".repeat(Math.max(1, width - 2))}
         </text>
+        <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
+          <text fg={jixuTheme.info} selectable={false}>Chat Completions · Anthropic Messages</text>
+          <box style={{ flexGrow: 1 }} />
+          <text fg={jixuTheme.secondary} selectable={false}>
+            {compact ? "Ctrl+C quit" : `Ctrl+C quit · ${workspace}`}
+          </text>
+        </box>
       </box>
     </box>
   );
@@ -431,9 +445,7 @@ export function Booting({ workspace }: { readonly workspace: string }) {
         width: "100%",
       }}
     >
-      <text fg={jixuTheme.brand}>
-        <strong>JIXU</strong>
-      </text>
+      <text fg={jixuTheme.brand}><strong>JIXU</strong></text>
       <text fg={jixuTheme.text}>Loading saved endpoint configuration…</text>
       <text fg={jixuTheme.secondary}>{workspace}</text>
     </box>

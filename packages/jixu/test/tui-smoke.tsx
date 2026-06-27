@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
 
-import { createHarness, defineAgent } from "@jixu/core";
+import {
+  createHarness,
+  defineAgent,
+  defineSchema,
+  defineTool,
+} from "@jixu/core";
 import type { ModelDriver } from "@jixu/core";
-import type { TextareaRenderable } from "@opentui/core";
+import {
+  ImageRenderable,
+  type BaseRenderable,
+  type TextareaRenderable,
+} from "@opentui/core";
+import { setRendererCapabilities } from "@opentui/core/testing";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 
@@ -11,11 +21,94 @@ import { createThreadController } from "../src/thread-controller.ts";
 import type { ThreadController } from "../src/thread-controller.ts";
 import { JixuApp } from "../src/tui.tsx";
 
+let resolveThinkingStarted!: () => void;
+const thinkingStarted = new Promise<void>((resolve) => {
+  resolveThinkingStarted = resolve;
+});
+let releaseThinkingText!: () => void;
+const thinkingTextGate = new Promise<void>((resolve) => {
+  releaseThinkingText = resolve;
+});
+let resolveThinkingTextStarted!: () => void;
+const thinkingTextStarted = new Promise<void>((resolve) => {
+  resolveThinkingTextStarted = resolve;
+});
+let releaseThinkingFinal!: () => void;
+const thinkingFinalGate = new Promise<void>((resolve) => {
+  releaseThinkingFinal = resolve;
+});
+let resolveToolStarted!: () => void;
+const toolStarted = new Promise<void>((resolve) => {
+  resolveToolStarted = resolve;
+});
+let releaseTool!: () => void;
+const toolGate = new Promise<void>((resolve) => {
+  releaseTool = resolve;
+});
+let resolveContinuationStarted!: () => void;
+const continuationStarted = new Promise<void>((resolve) => {
+  resolveContinuationStarted = resolve;
+});
+let releaseContinuation!: () => void;
+const continuationGate = new Promise<void>((resolve) => {
+  releaseContinuation = resolve;
+});
+
+function smokeAccounting(priced: boolean) {
+  return {
+    cost: priced
+      ? {
+          currency: "USD" as const,
+          pricingVersion: "smoke-1",
+          source: "calculator" as const,
+          usdNanos: 13_200_000,
+        }
+      : null,
+    usage: {
+      cacheWriteTokens: null,
+      cachedInputTokens: 24,
+      inputTokens: 120,
+      outputTokens: 30,
+      reasoningTokens: 8,
+      totalTokens: 150,
+    },
+  };
+}
+
 const successfulDriver: ModelDriver = {
   generate: async (effect, context) => {
-    const priced = !effect.input.messages.some(
-      (message) => message.role === "user" && message.content === "Compact activity",
+    const latestMessage = effect.input.messages.at(-1);
+    const latestUser = effect.input.messages.findLast(
+      (message) => message.role === "user",
     );
+    const directExecution = latestUser?.content === "Direct task";
+    const priced = latestUser?.content !== "Compact activity";
+    if (latestUser?.content === "Thinking task") {
+      resolveThinkingStarted();
+      await thinkingTextGate;
+      context.signals.emit({
+        data: { delta: "A partial answer" },
+        kind: "signal",
+        threadId: effect.threadId,
+        type: "model.output_text.delta",
+      });
+      resolveThinkingTextStarted();
+      await thinkingFinalGate;
+      return {
+        accounting: smokeAccounting(false),
+        status: "succeeded",
+        value: { content: "A complete answer.", toolCalls: [] },
+      };
+    }
+    if (directExecution && latestMessage?.role === "tool") {
+      resolveContinuationStarted();
+      await continuationGate;
+      return {
+        accounting: smokeAccounting(true),
+        status: "succeeded",
+        value: { content: "The **durable** run completed.", toolCalls: [] },
+      };
+    }
     context.signals.emit({
       data: { delta: "Working" },
       kind: "signal",
@@ -23,29 +116,16 @@ const successfulDriver: ModelDriver = {
       type: "model.output_text.delta",
     });
     return {
-      accounting: {
-        cost: priced
-          ? {
-              currency: "USD",
-              pricingVersion: "smoke-1",
-              source: "calculator",
-              usdNanos: 13_200_000,
-            }
-          : null,
-        usage: {
-          cacheWriteTokens: null,
-          cachedInputTokens: 24,
-          inputTokens: 120,
-          outputTokens: 30,
-          reasoningTokens: 8,
-          totalTokens: 150,
-        },
-      },
+      accounting: smokeAccounting(priced),
       status: "succeeded",
       value: {
-        content: "The **durable** run completed.",
-        planUpdates: [
-          {
+        content:
+          directExecution && latestMessage?.role !== "tool"
+            ? "Creating the requested file."
+            : "The **durable** run completed.",
+        planUpdates: directExecution
+          ? []
+          : [{
             acceptanceCriteria: ["The repository is explained accurately"],
             assumptions: [],
             blockers: [],
@@ -66,16 +146,63 @@ const successfulDriver: ModelDriver = {
                 status: "pending",
               },
             ],
-          },
-        ],
-        toolCalls: [],
+          }],
+        toolCalls:
+          directExecution && latestMessage?.role !== "tool"
+            ? [
+                {
+                  arguments: { command: "cat > /tmp/hello.html" },
+                  id: "bash-1",
+                  name: "bash",
+                },
+              ]
+            : [],
       },
     };
   },
 };
+const bashInput = defineSchema<{ readonly command: string }>({
+  jsonSchema: {
+    additionalProperties: false,
+    properties: { command: { type: "string" } },
+    required: ["command"],
+    type: "object",
+  },
+  parse(value) {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value) ||
+      !("command" in value) ||
+      typeof value.command !== "string"
+    ) {
+      throw new TypeError("bash command must be a string");
+    }
+    return { command: value.command };
+  },
+});
+const textOutput = defineSchema<string>({
+  jsonSchema: { type: "string" },
+  parse(value) {
+    if (typeof value !== "string") throw new TypeError("output must be a string");
+    return value;
+  },
+});
+const bash = defineTool({
+  description: "Run a fixture shell command",
+  execute: async () => {
+    resolveToolStarted();
+    await toolGate;
+    return "completed";
+  },
+  input: bashInput,
+  name: "bash",
+  output: textOutput,
+});
 const agent = defineAgent({
   instructions: "Be useful.",
   model: { model: "vendor/model-example", provider: "openai-compatible" },
+  tools: [bash],
 });
 const harness = createHarness({
   agent,
@@ -85,6 +212,13 @@ let connected: JixuConnectionConfig | null = null;
 const activeController: { current: ThreadController | null } = { current: null };
 const secret = "openrouter-secret-fixture";
 
+function containsImageRenderable(renderable: BaseRenderable): boolean {
+  return (
+    renderable instanceof ImageRenderable ||
+    renderable.getChildren().some(containsImageRenderable)
+  );
+}
+
 const setup = await testRender(
   <JixuApp
     connect={async (config, controls) => {
@@ -92,7 +226,7 @@ const setup = await testRender(
       activeController.current = createThreadController({ harness, ...controls });
       return activeController.current;
     }}
-    initial={{ apiFormat: "chat-completions" }}
+    initial={{ api: "openai-chat-completions" }}
     onQuit={() => undefined}
     workspace="/workspace"
   />,
@@ -105,13 +239,25 @@ try {
     await setup.flush();
   });
   const initialFrame = setup.captureCharFrame();
-  // JX-AC-015 JX-AC-018: missing credentials do not gate the working surface.
+  // JX-AC-015 JX-AC-037 JX-AC-038: first launch keeps work and discovery visible.
   assert.match(initialFrame, /JIXU/);
   assert.match(initialFrame, /not configured/i);
   assert.match(initialFrame, /Use \/config to connect a model/);
   assert.match(initialFrame, /Model not configured · use \/config/);
   assert.match(initialFrame, /USD —/);
-  assert.doesNotMatch(initialFrame, /Connect a model/);
+  assert.match(initialFrame, /NOW/);
+  assert.match(initialFrame, /PLAN/);
+  assert.match(initialFrame, /Direct execution/);
+  assert.match(initialFrame, /VERIFIED/);
+  assert.match(initialFrame, /NEEDS YOU/);
+  assert.match(initialFrame, /\/events · durable history/);
+  assert.match(initialFrame, /Type \/ to view commands\./);
+  assert.doesNotMatch(initialFrame, /\/help · \/new · \/clear/);
+  assert.notEqual(
+    setup.renderer.root.findDescendantById("jixu-creation-mark"),
+    undefined,
+  );
+  assert.equal(containsImageRenderable(setup.renderer.root), false);
   assert.doesNotMatch(initialFrame, /API Key/);
   assert.doesNotMatch(initialFrame, /OpenAI|OpenRouter/);
 
@@ -262,28 +408,142 @@ try {
   });
   connectedFrame = setup.captureCharFrame();
   assert.deepEqual(connected, {
-    apiFormat: "chat-completions",
+    api: "openai-chat-completions",
     apiKey: secret,
     baseUrl: "https://router.example/v1",
     model: "vendor/model-example",
   });
-  // JX-AC-018: the wide working surface keeps chat dominant beside activity.
+  // JX-AC-030 JX-AC-037: the wide surface keeps chat beside the attention rail.
   assert.match(connectedFrame, /vendor\/model-example/);
-  assert.doesNotMatch(connectedFrame, /router\.example|Chat Completions/);
-  assert.match(connectedFrame, /╚█████╔╝/);
+  assert.doesNotMatch(connectedFrame, /router\.example|OpenAI Chat/);
   assert.match(connectedFrame, /Ask Jixu anything/);
-  assert.match(connectedFrame, /\/help · \/new · \/clear/);
+  assert.doesNotMatch(connectedFrame, /│\s+YOU\s+Ask Jixu anything/);
+  assert.match(connectedFrame, /Type \/ to view commands\./);
+  assert.doesNotMatch(connectedFrame, /\/help · \/new · \/clear/);
   assert.doesNotMatch(connectedFrame, /read · write · edit · bash/);
-  assert.match(connectedFrame, /ACTIVITY\s+0/);
-  assert.match(connectedFrame, /No activity yet/);
-  assert.match(connectedFrame, /\/config/);
-  assert.match(connectedFrame, /Local shell · unsandboxed/);
+  assert.match(connectedFrame, /NOW/);
+  assert.match(connectedFrame, /PLAN/);
+  assert.match(connectedFrame, /Direct execution/);
+  assert.match(connectedFrame, /VERIFIED/);
+  assert.match(connectedFrame, /NEEDS YOU/);
+  assert.match(connectedFrame, /LOCAL I\/O · process access/);
   assert.match(connectedFrame, /USD —/);
+  assert.doesNotMatch(connectedFrame, /ACTIVITY|No activity yet|Thread created/);
   assert.doesNotMatch(connectedFrame, /Next Level Agent/);
   assert.doesNotMatch(connectedFrame, /Conversation|Run activity|New Run/);
   assert.doesNotMatch(connectedFrame, /openrouter-secret-fixture/);
 
   assert.notEqual(activeController.current, null);
+  let thinkingSubmission: Promise<void> | null = null;
+  await act(async () => {
+    if (activeController.current !== null) {
+      thinkingSubmission = activeController.current.submit("Thinking task");
+    }
+    await thinkingStarted;
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  // JX-AC-033 JX-AC-036: pending Agent work lives in transcript flow.
+  const thinkingFrame = setup.captureCharFrame();
+  assert.notEqual(
+    setup.renderer.root.findDescendantById("ephemeral-agent-status"),
+    undefined,
+  );
+  const thinkingMotion = setup.renderer.root.findDescendantById(
+    "thinking-motion-label",
+  );
+  assert.notEqual(thinkingMotion, undefined);
+  assert.equal(thinkingMotion?.width, "Thinking ...".length);
+  assert.equal(thinkingMotion?.getChildren().length, "Thinking ...".length);
+  assert.match(thinkingFrame, /Thinking task/);
+  assert.match(thinkingFrame, /Thinking \.\.\./);
+  assert.match(thinkingFrame, /MODEL\s+vendor\/model-example/);
+  assert.match(thinkingFrame, /LOCAL I\/O · process access/);
+
+  await act(async () => {
+    releaseThinkingText();
+    await thinkingTextStarted;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const streamingFrame = setup.captureCharFrame();
+  assert.equal(
+    setup.renderer.root.findDescendantById("ephemeral-agent-status"),
+    undefined,
+  );
+  assert.match(streamingFrame, /A partial answer/);
+  assert.match(streamingFrame, /MODEL\s+vendor\/model-example/);
+
+  await act(async () => {
+    releaseThinkingFinal();
+    await thinkingSubmission;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.match(setup.captureCharFrame(), /A complete answer\./);
+
+  let directSubmission: Promise<void> | null = null;
+  await act(async () => {
+    if (activeController.current !== null) {
+      directSubmission = activeController.current.submit("Direct task");
+    }
+    await toolStarted;
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const liveToolFrame = setup.captureCharFrame();
+  assert.equal(
+    setup.renderer.root.findDescendantById("ephemeral-agent-status"),
+    undefined,
+  );
+  assert.match(liveToolFrame, /cat > \/tmp\/hello\.html · In progress/);
+  assert.match(liveToolFrame, /MODEL\s+vendor\/model-example/);
+
+  await act(async () => {
+    releaseTool();
+    await continuationStarted;
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const continuationFrame = setup.captureCharFrame();
+  assert.notEqual(
+    setup.renderer.root.findDescendantById("ephemeral-agent-status"),
+    undefined,
+  );
+  assert.match(continuationFrame, /cat > \/tmp\/hello\.html · Completed/);
+  assert.match(continuationFrame, /Thinking \.\.\./);
+
+  await act(async () => {
+    releaseContinuation();
+    await directSubmission;
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  // JX-AC-021 JX-AC-037 JX-AC-040: a completed simple Tool turn keeps receipts.
+  const directFrame = setup.captureCharFrame();
+  assert.match(directFrame, /Direct task/);
+  assert.match(directFrame, /Direct execution/);
+  assert.match(directFrame, /Response committed/);
+  assert.match(directFrame, /No intervention required/);
+  assert.match(directFrame, /TOOLS/);
+  assert.match(directFrame, /bash/);
+  assert.match(directFrame, /cat > \/tmp\/hello\.html · Completed/);
+  assert.equal(setup.renderer.root.findDescendantById("plan-strip"), undefined);
+
   await act(async () => {
     if (activeController.current !== null) {
       await activeController.current.submit("Explain this repository");
@@ -293,18 +553,17 @@ try {
   });
   const completedFrame = setup.captureCharFrame();
   assert.match(completedFrame, /Explain this repository/);
-  assert.match(completedFrame, /ACTIVITY\s+5/);
-  assert.match(completedFrame, /\+ Thinking/);
   assert.match(completedFrame, /vendor\/model-example/);
-  assert.match(completedFrame, /✓ Model response/);
-  assert.match(completedFrame, /committed/);
+  assert.match(completedFrame, /Response committed/);
   assert.match(completedFrame, /The durable run completed\./);
-  assert.match(completedFrame, /PLAN · r1/);
-  assert.match(completedFrame, /Explain the repository architecture/);
-  assert.match(completedFrame, /→ Inspect the architecture/);
-  assert.match(completedFrame, /Next · Inspect the architecture/);
+  assert.match(completedFrame, /PLAN r1/);
+  assert.match(completedFrame, /Explain the repository/);
+  assert.match(completedFrame, /Inspect the architecture/);
+  assert.match(completedFrame, /cat > \/tmp\/hello\.html · Completed/);
+  assert.notEqual(setup.renderer.root.findDescendantById("plan-strip"), undefined);
   // JX-AC-028: the footer reads durable Thread cost, not UI-local counters.
-  assert.match(completedFrame, /USD \$0\.0132/);
+  assert.match(completedFrame, /USD \$0\.0396/);
+  assert.doesNotMatch(completedFrame, /\b\d+%\b|ETA|ACTIVITY|Thread created/);
   assert.doesNotMatch(completedFrame, /Conversation|Run activity|New Run/);
 
   let reconfiguredFrame = "";
@@ -340,7 +599,7 @@ const restoredSetup = await testRender(
       return createThreadController({ harness, ...controls });
     }}
     initial={{
-      apiFormat: "responses",
+      api: "anthropic-messages",
       apiKey: secret,
       autoConnect: true,
       baseUrl: "https://router.example/v1",
@@ -365,30 +624,55 @@ try {
   });
   const restoredFrame = restoredSetup.captureCharFrame();
   assert.deepEqual(restored, {
-    apiFormat: "responses",
+    api: "anthropic-messages",
     apiKey: secret,
     baseUrl: "https://router.example/v1",
     model: "vendor/model-example",
   });
-  // JX-AC-018: wide terminals use the available width for the 4:1 workspace.
+  // JX-AC-037: wide terminals reserve a stable, right-side attention surface.
   const headerLine = restoredFrame
     .split("\n")
     .find((line) => line.includes("JIXU"));
   assert.notEqual(headerLine, undefined);
   assert.ok((headerLine?.indexOf("JIXU") ?? 99) <= 2);
-  const activityLine = restoredFrame
+  const attentionLine = restoredFrame
     .split("\n")
-    .find((line) => line.includes("ACTIVITY"));
-  assert.notEqual(activityLine, undefined);
-  assert.ok((activityLine?.indexOf("ACTIVITY") ?? 0) >= 125);
-  assert.match(restoredFrame, /╚█████╔╝/);
-  assert.match(restoredFrame, /ACTIVITY/);
+    .find((line) => line.includes("NOW"));
+  assert.notEqual(attentionLine, undefined);
+  assert.ok((attentionLine?.indexOf("NOW") ?? 0) >= 115);
+  assert.match(restoredFrame, /NOW/);
+  assert.match(restoredFrame, /Direct execution/);
+  assert.match(restoredFrame, /VERIFIED/);
+  assert.match(restoredFrame, /NEEDS YOU/);
   assert.match(restoredFrame, /Ask Jixu anything/);
   assert.match(restoredFrame, /vendor\/model-example/);
-  assert.doesNotMatch(restoredFrame, /router\.example|Responses/);
+  assert.doesNotMatch(restoredFrame, /router\.example|Anthropic Messages/);
   assert.doesNotMatch(restoredFrame, /Next Level Agent/);
   assert.doesNotMatch(restoredFrame, /Conversation|Run activity|New Run/);
   assert.doesNotMatch(restoredFrame, /openrouter-secret-fixture/);
+
+  // JX-TUI-024 JX-AC-037: markers stay one-row text even when Kitty is available.
+  await act(async () => {
+    const capabilities = setRendererCapabilities(restoredSetup.renderer, {
+      image_protocol: "kitty",
+      kitty_graphics: true,
+      multiplexer: "none",
+    });
+    restoredSetup.renderer.emit("capabilities", capabilities);
+  });
+  await act(async () => {
+    await restoredSetup.renderOnce();
+    await restoredSetup.flush();
+  });
+  const attentionGlyph = restoredSetup.renderer.root.findDescendantById(
+    "attention-glyph-now",
+  );
+  assert.notEqual(attentionGlyph, undefined);
+  assert.equal(attentionGlyph?.constructor.name, "TextRenderable");
+  assert.equal(attentionGlyph?.height, 1);
+  assert.equal(attentionGlyph?.width, 2);
+  assert.equal(containsImageRenderable(restoredSetup.renderer.root), false);
+  assert.match(restoredSetup.captureCharFrame(), /[!○•←‖≡→✱$…⚙✓◈]/u);
 } finally {
   act(() => {
     restoredSetup.renderer.destroy();
@@ -409,7 +693,7 @@ const compactSetup = await testRender(
       return compactController;
     }}
     initial={{
-      apiFormat: "responses",
+      api: "openai-chat-completions",
       apiKey: secret,
       autoConnect: true,
       baseUrl: "https://router.example/v1",
@@ -432,14 +716,25 @@ try {
     await Promise.resolve();
     await compactSetup.flush();
   });
-  // JX-AC-018: 80x24 retains the prompt, status, and safety context.
+  // JX-AC-030 JX-AC-037 JX-AC-038: 80x24 keeps discovery over decoration.
   const compactFrame = compactSetup.captureCharFrame();
-  assert.match(compactFrame, /╚█████╔╝/);
   assert.match(compactFrame, /Ask Jixu anything/);
-  assert.match(compactFrame, /Local shell · unsandboxed/);
+  assert.match(compactFrame, /LOCAL I\/O · process access/);
   assert.match(compactFrame, /USD —/);
-  assert.match(compactFrame, /\/help · \/new · \/clear/);
-  assert.doesNotMatch(compactFrame, /ACTIVITY/);
+  assert.match(compactFrame, /Type \/ to view commands\./);
+  assert.doesNotMatch(compactFrame, /\/help · \/new · \/clear/);
+  assert.equal(
+    compactSetup.renderer.root.findDescendantById("jixu-creation-mark"),
+    undefined,
+  );
+  assert.match(compactFrame, /NOW/);
+  assert.match(compactFrame, /PLAN/);
+  assert.match(compactFrame, /Direct/);
+  assert.match(compactFrame, /VERIFIED/);
+  assert.match(compactFrame, /NEEDS YOU/);
+  assert.equal(compactSetup.renderer.root.findDescendantById("attention-rail"), undefined);
+  assert.notEqual(compactSetup.renderer.root.findDescendantById("attention-strip"), undefined);
+  assert.doesNotMatch(compactFrame, /ACTIVITY|Thread created/);
   assert.doesNotMatch(compactFrame, /Conversation|Run activity|New Run/);
   assert.doesNotMatch(compactFrame, /openrouter-secret-fixture/);
 
@@ -454,7 +749,7 @@ try {
   // JX-AC-018: the 80x24 surface keeps a usable composer and command picker.
   assert.match(compactCommandFrame, /Commands/);
   assert.match(compactCommandFrame, /▶ \/fork/);
-  assert.match(compactCommandFrame, /Local shell · unsandboxed/);
+  assert.match(compactCommandFrame, /LOCAL I\/O · process access/);
 
   await act(async () => {
     compactSetup.mockInput.pressEnter();
@@ -475,10 +770,10 @@ try {
     await compactSetup.flush();
   });
   const compactCompletedFrame = compactSetup.captureCharFrame();
-  assert.match(compactCompletedFrame, /\+ Thinking · vendor\/model-example/);
+  assert.match(compactCompletedFrame, /vendor\/model-example/);
   assert.match(compactCompletedFrame, /The durable run completed\./);
-  assert.match(compactCompletedFrame, /PLAN · r1/);
-  assert.match(compactCompletedFrame, /Explain the repository architecture/);
+  assert.match(compactCompletedFrame, /PLAN r1/);
+  assert.match(compactCompletedFrame, /Explain the repository/);
   assert.match(compactCompletedFrame, /USD —/);
   assert.doesNotMatch(compactCompletedFrame, /ACTIVITY/);
 } finally {

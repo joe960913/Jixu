@@ -12,9 +12,10 @@ export type JixuTone =
 export type TranscriptRole = "assistant" | "notice" | "user";
 export type ActivityKind = "control" | "model" | "runtime" | "tool";
 
-export interface TranscriptEntry {
+export interface TranscriptMessageEntry {
   readonly content: string;
   readonly id: number;
+  readonly kind: "message";
   readonly label: string;
   readonly role: TranscriptRole;
   readonly tone: JixuTone;
@@ -51,6 +52,16 @@ export interface ToolOperation {
   readonly name: string;
   readonly status: ToolOperationStatus;
 }
+
+export interface TranscriptToolReceiptEntry {
+  readonly id: number;
+  readonly kind: "tool-receipts";
+  readonly operations: readonly ToolOperation[];
+}
+
+export type TranscriptEntry =
+  | TranscriptMessageEntry
+  | TranscriptToolReceiptEntry;
 
 export interface ThreadSummary {
   readonly current: boolean;

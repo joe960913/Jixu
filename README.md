@@ -76,9 +76,28 @@ same totals. Provider-reported cost is accepted only from a trusted adapter;
 other providers can inject a versioned `costCalculator`. Missing usage or
 pricing stays explicit instead of becoming zero.
 
+`@jixu/llm` exposes one protocol selector with two supported values:
+`openai-chat-completions` for any Tool-calling OpenAI-compatible Chat
+Completions endpoint, and `anthropic-messages` for Anthropic Messages.
+
+```ts
+import { createLLMModelDriver } from "@jixu/llm";
+
+const driver = createLLMModelDriver({
+  api: "openai-chat-completions",
+  apiKey: process.env.MODEL_API_KEY,
+  baseURL: "https://api.example.com/v1",
+});
+```
+
+Both paths normalize streaming text, client-side Tool calls, Plan/progress
+controls, typed failures, and usage. The first-party clients perform no hidden
+retry or protocol fallback; Jixu's durable Effect path owns retry attempts.
+OpenAI Responses is not part of this boundary.
+
 ## Reference TUI
 
-Prerequisites: Node.js 22.18+ for the workspace and Bun 1.3+ for the source TUI.
+Prerequisites: Node.js 22.19+ for the workspace and Bun 1.3+ for the source TUI.
 
 ```bash
 pnpm install
@@ -87,11 +106,26 @@ pnpm dev
 
 The first launch enters the ordinary workspace even without credentials. It
 shows `Model not configured` and `use /config`; setup is never a forced gate.
-The endpoint can implement either `/v1/responses` or `/v1/chat/completions`.
+The endpoint can implement OpenAI-compatible `/v1/chat/completions` or
+Anthropic `/v1/messages` with client-side Tool calling.
 Jixu stores credentials separately in `~/.jixu/auth.json` and non-secret settings
-in `~/.jixu/settings.json` with restrictive POSIX permissions.
+in `~/.jixu/settings.json` using schema version 3 with restrictive POSIX
+permissions. Pre-release schema versions 1 and 2 are not migrated; re-enter the
+connection through `/config`.
 The footer shows the selected Thread's known USD cost; `USD —` means no trusted
 price is available, and a trailing `+` marks a known partial total.
+
+On a wide terminal, the transcript stays dominant beside an always-present
+Attention Rail. `NOW`, `PLAN`, `VERIFIED`, and `NEEDS YOU` summarize observable
+work without replacing the durable Event log. Simple work explicitly shows
+`Direct execution`; a real active Plan additionally opens a bounded horizontal
+strip above the Composer. Compact terminals keep the same meanings in a
+two-line attention strip. Attention sections and Tool receipts use portable
+one-cell Unicode markers in a fixed two-column text gutter. The adjacent label
+is always the semantic authority. The normal OpenTUI text path is used, so
+custom drawing surfaces, Nerd Fonts, Kitty, Sixel, encoded images, DPI, and
+image scaling are not involved. `/events` remains the raw ordered inspection
+surface.
 
 Normal prompts continue the selected Thread. Useful controls are:
 
@@ -106,8 +140,10 @@ Normal prompts continue the selected Thread. Useful controls are:
 Typing `/` or a command prefix opens a filtered menu above the composer. Use Up
 and Down to select, Escape to close, and Enter to invoke or insert a command.
 
-The first-party Agent exposes workspace-bounded `read`, `write`, and `edit`
-Tools plus an explicitly unsandboxed local `bash` Tool.
+`@jixu/tools-node` keeps `read`, `write`, and `edit` workspace-bounded by
+default. The reference TUI explicitly selects process-level file access because
+it also exposes an unsandboxed local `bash` Tool; the footer discloses that
+shared boundary as `LOCAL I/O · process access`.
 
 ## Validation
 

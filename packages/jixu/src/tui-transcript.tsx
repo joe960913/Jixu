@@ -1,12 +1,15 @@
 import { RGBA, SyntaxStyle } from "@opentui/core";
-
 import type {
-  ActivityEntry,
   JixuTone,
   ThreadControllerSnapshot,
-  TranscriptEntry,
+  TranscriptMessageEntry,
+  ToolOperation,
+  WorkStatus,
 } from "./tui-model.ts";
 import { jixuTheme } from "./theme.ts";
+import { JixuCreationMark } from "./tui-creation-mark.tsx";
+import { iconForTool, JixuIcon } from "./tui-icons.tsx";
+import { JixuMotionText, JixuWordmark } from "./tui-motion.tsx";
 
 function toneColor(tone: JixuTone): string {
   return jixuTheme[tone];
@@ -28,45 +31,24 @@ const markdownTableOptions = {
   wrapMode: "word",
 } as const;
 
-type FeedItem =
-  | { readonly entry: ActivityEntry; readonly kind: "activity" }
-  | { readonly entry: TranscriptEntry; readonly kind: "transcript" };
+const MESSAGE_ROLE_WIDTH = 6;
 
-function visibleFeed(
-  snapshot: ThreadControllerSnapshot,
-  includeActivity: boolean,
-): readonly FeedItem[] {
-  return [
-    ...snapshot.transcript.map(
-      (entry): FeedItem => ({ entry, kind: "transcript" }),
-    ),
-    ...(includeActivity
-      ? snapshot.activity
-          .filter((entry) => entry.kind !== "runtime")
-          .map((entry): FeedItem => ({ entry, kind: "activity" }))
-      : []),
-  ].sort((left, right) => left.entry.id - right.entry.id);
-}
-
-function activitySymbol(entry: ActivityEntry): string {
-  if (entry.tone === "danger") return "×";
-  if (entry.tone === "success") return "✓";
-  if (entry.kind === "control") return "↳";
-  return "+";
-}
-
-function TranscriptItem({ entry }: { readonly entry: TranscriptEntry }) {
+function TranscriptItem({ entry }: { readonly entry: TranscriptMessageEntry }) {
   if (entry.role === "user") {
     return (
       <box
-        backgroundColor={jixuTheme.surface}
-        border={["left"]}
-        borderColor={jixuTheme.brand}
-        style={{ marginBottom: 1, paddingLeft: 1, paddingRight: 1 }}
+        style={{
+          flexDirection: "row",
+          marginBottom: 1,
+          paddingLeft: 1,
+          paddingRight: 1,
+          width: "100%",
+        }}
       >
-        <text fg={jixuTheme.text} wrapMode="word">
-          {entry.content}
+        <text fg={jixuTheme.secondary} style={{ width: MESSAGE_ROLE_WIDTH }}>
+          <strong>YOU</strong>
         </text>
+        <text fg={jixuTheme.text} wrapMode="word">{entry.content}</text>
       </box>
     );
   }
@@ -74,25 +56,21 @@ function TranscriptItem({ entry }: { readonly entry: TranscriptEntry }) {
   if (entry.role === "assistant") {
     return (
       <box
-        style={{
-          flexDirection: "column",
-          marginBottom: 1,
-          paddingLeft: 1,
-          paddingRight: 1,
-          width: "100%",
-        }}
+        style={{ flexDirection: "row", marginBottom: 1, paddingLeft: 1, paddingRight: 1, width: "100%" }}
       >
-        <text fg={jixuTheme.brand}>
+        <text fg={jixuTheme.brand} style={{ width: MESSAGE_ROLE_WIDTH }}>
           <strong>JIXU</strong>
         </text>
-        <markdown
-          conceal
-          content={entry.content}
-          fg={jixuTheme.text}
-          style={{ width: "100%" }}
-          syntaxStyle={markdownSyntaxStyle}
-          tableOptions={markdownTableOptions}
-        />
+        <box style={{ flexGrow: 1, minWidth: 0 }}>
+          <markdown
+            conceal
+            content={entry.content}
+            fg={jixuTheme.text}
+            style={{ width: "100%" }}
+            syntaxStyle={markdownSyntaxStyle}
+            tableOptions={markdownTableOptions}
+          />
+        </box>
       </box>
     );
   }
@@ -103,37 +81,149 @@ function TranscriptItem({ entry }: { readonly entry: TranscriptEntry }) {
         flexDirection: "row",
         marginBottom: 1,
         paddingLeft: 1,
+        paddingRight: 1,
         width: "100%",
       }}
     >
+      <box style={{ flexDirection: "row", flexShrink: 0, width: 10 }}>
+        <text fg={toneColor(entry.tone)}>
+          {entry.label.slice(0, 7)}
+        </text>
+      </box>
       <text fg={toneColor(entry.tone)} wrapMode="word">
-        {entry.tone === "danger" ? "×" : "!"} {entry.content}
+        {entry.content}
       </text>
     </box>
   );
 }
 
-function ActivityItem({ entry }: { readonly entry: ActivityEntry }) {
+function ToolLedger({ operations }: { readonly operations: readonly ToolOperation[] }) {
+  const visible = operations.slice(-4);
+  const hidden = operations.length - visible.length;
   return (
     <box
+      border={["left"]}
+      borderColor={jixuTheme.divider}
+      style={{
+        flexDirection: "column",
+        marginBottom: 1,
+        marginLeft: MESSAGE_ROLE_WIDTH,
+        marginRight: 1,
+        paddingLeft: 1,
+      }}
+    >
+      <box style={{ flexDirection: "row", height: 1 }}>
+        <text fg={jixuTheme.info}><strong>TOOLS</strong></text>
+        {hidden > 0 ? <text fg={jixuTheme.secondary}>  +{hidden} earlier</text> : null}
+      </box>
+      {visible.map((operation) => {
+        const tone: JixuTone =
+          operation.status === "failed"
+            ? "danger"
+            : operation.status === "running"
+              ? "warning"
+              : "success";
+        const status =
+          operation.status === "failed"
+            ? "Failed"
+            : operation.status === "running"
+              ? "In progress"
+              : "Completed";
+        return (
+          <box
+            key={operation.effectId}
+            style={{ flexDirection: "column", height: 2, width: "100%" }}
+          >
+            <box style={{ flexDirection: "row", height: 1, minWidth: 0 }}>
+              <JixuIcon name={iconForTool(operation.name)} tone={tone} />
+              <text fg={toneColor(tone)}>{operation.name}</text>
+            </box>
+            <text fg={jixuTheme.secondary} style={{ paddingLeft: 2 }}>
+              {operation.detail === undefined ? status : `${operation.detail} · ${status}`}
+            </text>
+          </box>
+        );
+      })}
+    </box>
+  );
+}
+
+function pendingAgentStatus(
+  snapshot: ThreadControllerSnapshot,
+): WorkStatus | null {
+  const status = snapshot.workStatus;
+  if (
+    !snapshot.busy ||
+    snapshot.streamingText.length > 0 ||
+    status === null ||
+    (status.phase !== "thinking" && status.phase !== "planning")
+  ) {
+    return null;
+  }
+  return status;
+}
+
+function EphemeralAgentStatus({
+  motion,
+  status,
+}: {
+  readonly motion: boolean;
+  readonly status: WorkStatus;
+}) {
+  return (
+    <box
+      id="ephemeral-agent-status"
       style={{
         flexDirection: "row",
         marginBottom: 1,
         paddingLeft: 1,
+        paddingRight: 1,
         width: "100%",
       }}
     >
-      <text fg={toneColor(entry.tone)}>
-        {activitySymbol(entry)} {entry.label}
-      </text>
-      {entry.detail === undefined ? null : (
-        <text fg={jixuTheme.secondary}> · {entry.detail}</text>
+      <box
+        style={{
+          flexDirection: "row",
+          flexShrink: 0,
+          width: MESSAGE_ROLE_WIDTH,
+        }}
+      >
+        <JixuWordmark
+          enabled={motion}
+          phase={status.phase}
+          tone={status.tone}
+        />
+      </box>
+      {status.phase === "thinking" && status.label === "Thinking" ? (
+        <JixuMotionText
+          enabled={motion}
+          id="thinking-motion-label"
+          label="Thinking ..."
+          phase={status.phase}
+          staticTone={status.tone}
+          tone={status.tone}
+        />
+      ) : (
+        <text fg={toneColor(status.tone)}>
+          <strong>{status.label}</strong>
+        </text>
+      )}
+      {status.detail === undefined ? null : (
+        <text fg={jixuTheme.secondary}> · {status.detail}</text>
       )}
     </box>
   );
 }
 
-function EmptyState({ configured, top }: { configured: boolean; top: number }) {
+function EmptyState({
+  configured,
+  showCreationMark,
+  top,
+}: {
+  configured: boolean;
+  showCreationMark: boolean;
+  top: number;
+}) {
   return (
     <box
       style={{
@@ -142,12 +232,8 @@ function EmptyState({ configured, top }: { configured: boolean; top: number }) {
         marginTop: top,
       }}
     >
-      <ascii-font
-        color={jixuTheme.brand}
-        font="block"
-        selectable={false}
-        text="JIXU"
-      />
+      {showCreationMark ? <JixuCreationMark /> : null}
+      <text fg={jixuTheme.brand}><strong>JIXU</strong></text>
       <text fg={jixuTheme.text}>Agents that continue.</text>
       <text fg={jixuTheme.secondary}>
         {configured
@@ -157,10 +243,7 @@ function EmptyState({ configured, top }: { configured: boolean; top: number }) {
       {configured ? null : (
         <text fg={jixuTheme.warning}>Use /config to connect a model.</text>
       )}
-      <text fg={jixuTheme.secondary}>
-        /help · /new · /clear · /resume · /continue
-      </text>
-      <text fg={jixuTheme.secondary}>/events · /state · /replay · /fork · /config</text>
+      <text fg={jixuTheme.secondary}>Type / to view commands.</text>
     </box>
   );
 }
@@ -168,20 +251,22 @@ function EmptyState({ configured, top }: { configured: boolean; top: number }) {
 export function Transcript({
   configured,
   emptyTop,
-  includeActivity,
+  motion,
+  showCreationMark,
   snapshot,
 }: {
   readonly configured: boolean;
   readonly emptyTop: number;
-  readonly includeActivity: boolean;
+  readonly motion: boolean;
+  readonly showCreationMark: boolean;
   readonly snapshot: ThreadControllerSnapshot;
 }) {
-  const items = visibleFeed(snapshot, includeActivity);
+  const pendingStatus = pendingAgentStatus(snapshot);
   const empty =
-    items.length === 0 &&
+    snapshot.transcript.length === 0 &&
     snapshot.inspection === null &&
-    snapshot.streamingText.length === 0;
-
+    snapshot.streamingText.length === 0 &&
+    pendingStatus === null;
   return (
     <scrollbox
       stickyScroll
@@ -199,36 +284,41 @@ export function Transcript({
         },
       }}
     >
-      {empty ? <EmptyState configured={configured} top={emptyTop} /> : null}
-      {items.map((item) =>
-        item.kind === "transcript" ? (
-          <TranscriptItem entry={item.entry} key={`transcript-${item.entry.id}`} />
+      {empty ? (
+        <EmptyState
+          configured={configured}
+          showCreationMark={showCreationMark}
+          top={emptyTop}
+        />
+      ) : null}
+      {snapshot.transcript.map((entry) =>
+        entry.kind === "tool-receipts" ? (
+          <ToolLedger key={`transcript-${entry.id}`} operations={entry.operations} />
         ) : (
-          <ActivityItem entry={item.entry} key={`activity-${item.entry.id}`} />
+          <TranscriptItem key={`transcript-${entry.id}`} entry={entry} />
         ),
+      )}
+      {pendingStatus === null ? null : (
+        <EphemeralAgentStatus motion={motion} status={pendingStatus} />
       )}
       {snapshot.streamingText.length > 0 ? (
         <box
-          style={{
-            flexDirection: "column",
-            marginBottom: 1,
-            paddingLeft: 1,
-            paddingRight: 1,
-            width: "100%",
-          }}
+          style={{ flexDirection: "row", marginBottom: 1, paddingLeft: 1, paddingRight: 1, width: "100%" }}
         >
-          <text fg={jixuTheme.brand}>
+          <text fg={jixuTheme.brand} style={{ width: MESSAGE_ROLE_WIDTH }}>
             <strong>JIXU</strong>
           </text>
-          <markdown
-            conceal
-            content={snapshot.streamingText}
-            fg={jixuTheme.text}
-            style={{ width: "100%" }}
-            streaming
-            syntaxStyle={markdownSyntaxStyle}
-            tableOptions={markdownTableOptions}
-          />
+          <box style={{ flexGrow: 1, minWidth: 0 }}>
+            <markdown
+              conceal
+              content={snapshot.streamingText}
+              fg={jixuTheme.text}
+              style={{ width: "100%" }}
+              streaming
+              syntaxStyle={markdownSyntaxStyle}
+              tableOptions={markdownTableOptions}
+            />
+          </box>
         </box>
       ) : null}
       {snapshot.inspection === null ? null : (
@@ -239,7 +329,7 @@ export function Transcript({
           style={{
             flexDirection: "column",
             marginBottom: 1,
-            paddingLeft: 1,
+            paddingLeft: 2,
             paddingRight: 1,
             width: "100%",
           }}
@@ -253,97 +343,5 @@ export function Transcript({
         </box>
       )}
     </scrollbox>
-  );
-}
-
-function compactEventId(eventId: string): string {
-  return eventId.length <= 14 ? eventId : `…${eventId.slice(-12)}`;
-}
-
-function DeveloperActivityItem({ entry }: { readonly entry: ActivityEntry }) {
-  return (
-    <box
-      style={{
-        flexDirection: "column",
-        marginBottom: 1,
-        width: "100%",
-      }}
-    >
-      <text fg={toneColor(entry.tone)} wrapMode="word">
-        {activitySymbol(entry)} {entry.label}
-      </text>
-      {entry.detail === undefined ? null : (
-        <text fg={jixuTheme.secondary} wrapMode="word">
-          {entry.detail}
-        </text>
-      )}
-      {entry.eventId === undefined ? null : (
-        <text fg={jixuTheme.secondary}>{compactEventId(entry.eventId)}</text>
-      )}
-    </box>
-  );
-}
-
-export function ActivityRail({
-  height,
-  snapshot,
-  width,
-}: {
-  readonly height: number;
-  readonly snapshot: ThreadControllerSnapshot;
-  readonly width: number;
-}) {
-  return (
-    <box
-      border={["left"]}
-      borderColor={jixuTheme.secondary}
-      style={{
-        flexDirection: "column",
-        height,
-        paddingLeft: 1,
-        width,
-      }}
-    >
-      <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
-        <text fg={jixuTheme.brand}>
-          <strong>ACTIVITY</strong>
-        </text>
-        <box style={{ flexGrow: 1 }} />
-        <text fg={jixuTheme.secondary}>{snapshot.activity.length}</text>
-      </box>
-      <scrollbox
-        stickyScroll
-        stickyStart="bottom"
-        style={{
-          flexGrow: 1,
-          rootOptions: { backgroundColor: jixuTheme.background },
-          viewportOptions: { backgroundColor: jixuTheme.background },
-          contentOptions: { backgroundColor: jixuTheme.background },
-          scrollbarOptions: {
-            trackOptions: {
-              backgroundColor: jixuTheme.background,
-              foregroundColor: jixuTheme.secondary,
-            },
-          },
-        }}
-      >
-        {snapshot.activity.length === 0 ? (
-          <box style={{ flexDirection: "column", marginTop: 1 }}>
-            <text fg={jixuTheme.secondary}>No activity yet.</text>
-            <text fg={jixuTheme.secondary} wrapMode="word">
-              Thread, model, and Tool events appear here.
-            </text>
-          </box>
-        ) : null}
-        {snapshot.activity.map((entry) => (
-          <DeveloperActivityItem entry={entry} key={entry.id} />
-        ))}
-      </scrollbox>
-      <text fg={jixuTheme.secondary}>
-        {snapshot.currentThreadId === null
-          ? "No Thread selected"
-          : `Thread · ${compactEventId(snapshot.currentThreadId)}`}
-      </text>
-    </box>
   );
 }

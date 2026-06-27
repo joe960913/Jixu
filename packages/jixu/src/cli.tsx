@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { createHarness, defineAgent } from "@jixu/core";
 import {
   createLLMAdapter,
-  createOpenAICompatibleModelDriver,
+  createLLMModelDriver,
 } from "@jixu/llm";
 import { JsonlEventStore } from "@jixu/store-jsonl";
 import { createNodeTools } from "@jixu/tools-node";
@@ -13,7 +13,7 @@ import { createRoot } from "@opentui/react";
 import { JIXU_REFERENCE_AGENT_INSTRUCTIONS } from "./agent-instructions.ts";
 import { JixuConfigStore } from "./config.ts";
 import type {
-  JixuApiFormat,
+  JixuApi,
   JixuConnectionConfig,
 } from "./config.ts";
 import { createThreadController } from "./thread-controller.ts";
@@ -21,23 +21,23 @@ import { jixuTheme } from "./theme.ts";
 import { JixuApp } from "./tui.tsx";
 
 interface CliOptions {
-  readonly apiFormat?: JixuApiFormat;
+  readonly api?: JixuApi;
   readonly baseUrl?: string;
   readonly help: boolean;
   readonly model?: string;
   readonly root: string;
 }
 
-const MODEL_DRIVER_ID = "openai-compatible";
+const MODEL_DRIVER_ID = "configured-model";
 
 const HELP = `Jixu — Agents that continue.
 
 Usage:
-  jixu [--api-format responses|chat-completions] [--base-url URL] [--model MODEL] [--root PATH]
+  jixu [--api openai-chat-completions|anthropic-messages] [--base-url URL] [--model MODEL] [--root PATH]
 
 Environment:
-  JIXU_API_FORMAT        Prefill responses or chat-completions
-  JIXU_BASE_URL          Prefill the compatible API root
+  JIXU_API               Prefill openai-chat-completions or anthropic-messages
+  JIXU_BASE_URL          Prefill the selected protocol API root
   JIXU_MODEL             Prefill the model ID
   JIXU_API_KEY           Prefill credentials when auth.json has none
   JIXU_HOME              Override the global config directory
@@ -45,14 +45,17 @@ Environment:
 
 Examples:
   pnpm dev
-  pnpm dev -- --api-format responses --base-url https://api.example.com/v1
+  pnpm dev -- --api anthropic-messages --base-url https://api.anthropic.com
 `;
 
-function apiFormat(value: string | undefined): JixuApiFormat | undefined {
+function api(value: string | undefined): JixuApi | undefined {
   if (value === undefined) return undefined;
-  if (value === "responses" || value === "chat-completions") return value;
+  if (
+    value === "openai-chat-completions" ||
+    value === "anthropic-messages"
+  ) return value;
   throw new TypeError(
-    `Unsupported API format ${value}; use responses or chat-completions`,
+    `Unsupported API ${value}; use openai-chat-completions or anthropic-messages`,
   );
 }
 
@@ -68,7 +71,7 @@ export function parseCliOptions(
   args: readonly string[],
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): CliOptions {
-  let selectedApiFormat = apiFormat(environment.JIXU_API_FORMAT);
+  let selectedApi = api(environment.JIXU_API);
   let selectedBaseUrl = environment.JIXU_BASE_URL;
   let selectedModel = environment.JIXU_MODEL;
   let root = process.cwd();
@@ -80,13 +83,13 @@ export function parseCliOptions(
       help = true;
       continue;
     }
-    if (argument === "--api-format") {
-      selectedApiFormat = apiFormat(valueAfter(args, index, argument));
+    if (argument === "--api") {
+      selectedApi = api(valueAfter(args, index, argument));
       index += 1;
       continue;
     }
-    if (argument?.startsWith("--api-format=")) {
-      selectedApiFormat = apiFormat(argument.slice("--api-format=".length));
+    if (argument?.startsWith("--api=")) {
+      selectedApi = api(argument.slice("--api=".length));
       continue;
     }
     if (argument === "--base-url") {
@@ -122,9 +125,9 @@ export function parseCliOptions(
   return {
     help,
     root: resolve(root),
-    ...(selectedApiFormat === undefined
+    ...(selectedApi === undefined
       ? {}
-      : { apiFormat: selectedApiFormat }),
+      : { api: selectedApi }),
     ...(selectedBaseUrl === undefined ? {} : { baseUrl: selectedBaseUrl }),
     ...(selectedModel === undefined ? {} : { model: selectedModel }),
   };
@@ -141,19 +144,22 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
     ? new JixuConfigStore()
     : new JixuConfigStore(resolve(process.env.JIXU_HOME));
   const stored = await configStore.load();
-  const apiFormat = options.apiFormat ?? stored.apiFormat ?? "responses";
+  const selectedApi = options.api ?? stored.api ?? "openai-chat-completions";
   const apiKey = stored.apiKey ?? process.env.JIXU_API_KEY;
   const baseUrl = options.baseUrl ?? stored.baseUrl;
   const model = options.model ?? stored.model;
   const autoConnect =
-    stored.apiFormat !== undefined &&
+    stored.api !== undefined &&
     stored.apiKey !== undefined &&
     stored.baseUrl !== undefined &&
     stored.model !== undefined &&
-    options.apiFormat === undefined &&
+    options.api === undefined &&
     options.baseUrl === undefined &&
     options.model === undefined;
-  const tools = createNodeTools({ root: options.root });
+  const tools = createNodeTools({
+    filesystemScope: "process",
+    root: options.root,
+  });
 
   let quit!: () => void;
   const done = new Promise<void>((resolveDone) => {
@@ -164,8 +170,8 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
     controls: { readonly onConfigure: () => void; readonly onQuit: () => void },
   ) => {
     await configStore.saveConnection(config);
-    const driver = createOpenAICompatibleModelDriver({
-      apiFormat: config.apiFormat,
+    const driver = createLLMModelDriver({
+      api: config.api,
       apiKey: config.apiKey,
       baseURL: config.baseUrl,
       provider: MODEL_DRIVER_ID,
@@ -198,7 +204,7 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
       <JixuApp
         connect={connect}
         initial={{
-          apiFormat,
+          api: selectedApi,
           autoConnect,
           ...(apiKey === undefined ? {} : { apiKey }),
           ...(baseUrl === undefined ? {} : { baseUrl }),

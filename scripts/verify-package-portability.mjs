@@ -8,7 +8,7 @@ import { runCommand } from "./lib/command.mjs";
 import { buildPackageArtifacts, repositoryRoot } from "./package-artifacts.mjs";
 
 const managers = ["npm", "pnpm", "yarn", "bun"];
-const nodeFloorVersion = "22.18.0";
+const nodeFloorVersion = "22.19.0";
 const yarnVersion = "4.18.0";
 const typescriptCli = join(repositoryRoot, "node_modules", "typescript", "bin", "tsc");
 
@@ -39,7 +39,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createHarness, defineAgent } from "@jixu/core";
-import { createOpenAICompatibleModelDriver } from "@jixu/llm";
+import { createLLMModelDriver } from "@jixu/llm";
 import { JsonlEventStore } from "@jixu/store-jsonl";
 import { SqliteEventStore } from "@jixu/store-sqlite";
 import { SequenceModelDriver } from "@jixu/testkit";
@@ -70,8 +70,8 @@ try {
   assert.equal(typeof defineStoreContract, "function");
   assert.equal(typeof JixuConfigStore, "function");
   assert.equal(
-    typeof createOpenAICompatibleModelDriver({
-      apiFormat: "responses",
+    typeof createLLMModelDriver({
+      api: "openai-chat-completions",
       apiKey: "fixture-secret",
       baseURL: "http://127.0.0.1:1/v1",
     }).generate,
@@ -87,7 +87,7 @@ try {
 function typeConsumer() {
   return `
 import { createHarness, defineAgent, type ModelDriver } from "@jixu/core";
-import { createOpenAICompatibleModelDriver } from "@jixu/llm";
+import { createLLMModelDriver } from "@jixu/llm";
 import { JsonlEventStore } from "@jixu/store-jsonl";
 import { SqliteEventStore } from "@jixu/store-sqlite";
 import { SequenceModelDriver } from "@jixu/testkit";
@@ -110,7 +110,7 @@ void SqliteEventStore;
 void defineStoreContract;
 void createNodeTools;
 void JixuConfigStore;
-void createOpenAICompatibleModelDriver;
+void createLLMModelDriver;
 `;
 }
 

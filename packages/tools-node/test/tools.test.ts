@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import { ToolExecutionError } from "@jixu/core";
 import type { ToolExecutionContext } from "@jixu/core";
 
 import { createNodeTools } from "../src/index.ts";
@@ -71,7 +72,7 @@ test("JX-TOOL-006 read, write, and edit use canonical Tools inside one workspace
   }
 });
 
-test("JX-TOOL-007 file Tools reject lexical and symlink escapes", async (t) => {
+test("JX-AC-039 JX-TOOL-007 file Tools reject lexical and symlink escapes", async (t) => {
   const fixture = await workspace();
   const outside = await mkdtemp(join(tmpdir(), "jixu-outside-"));
   try {
@@ -79,7 +80,10 @@ test("JX-TOOL-007 file Tools reject lexical and symlink escapes", async (t) => {
     await writeFile(join(outside, "secret.txt"), "secret", "utf8");
     await assert.rejects(
       tools.read.execute(tools.read.parseInput({ path: "../secret.txt" }), context()),
-      /escapes the workspace root/,
+      (error) =>
+        error instanceof ToolExecutionError &&
+        error.code === "tool_path_outside_scope" &&
+        /escapes the workspace scope/.test(error.message),
     );
 
     if (process.platform === "win32") {
@@ -89,7 +93,9 @@ test("JX-TOOL-007 file Tools reject lexical and symlink escapes", async (t) => {
     await symlink(join(outside, "secret.txt"), join(fixture.root, "linked.txt"));
     await assert.rejects(
       tools.read.execute(tools.read.parseInput({ path: "linked.txt" }), context()),
-      /escapes the workspace root/,
+      (error) =>
+        error instanceof ToolExecutionError &&
+        error.code === "tool_path_outside_scope",
     );
 
     await symlink(join(outside, "missing.txt"), join(fixture.root, "dangling.txt"));
@@ -108,7 +114,48 @@ test("JX-TOOL-007 file Tools reject lexical and symlink escapes", async (t) => {
   }
 });
 
-test("JX-SEC-007 bash is bounded but remains an explicitly unsandboxed local shell", async () => {
+test("JX-AC-039 process scope gives file Tools the disclosed shell boundary", async () => {
+  const fixture = await workspace();
+  const outside = await mkdtemp(join(tmpdir(), "jixu-process-scope-"));
+  const target = join(outside, "hello.txt");
+  try {
+    const tools = createNodeTools({
+      filesystemScope: "process",
+      root: fixture.root,
+    });
+    const written = await tools.write.execute(
+      tools.write.parseInput({ content: "hello world", path: target }),
+      context(),
+    );
+    assert.deepEqual(written, { bytes: 11, path: target });
+
+    const edited = await tools.edit.execute(
+      tools.edit.parseInput({
+        newText: "hello 2nd world",
+        oldText: "hello world",
+        path: target,
+      }),
+      context(),
+    );
+    assert.deepEqual(edited, { path: target, replacements: 1 });
+    assert.deepEqual(
+      tools.read.parseOutput(
+        await tools.read.execute(
+          tools.read.parseInput({ path: target }),
+          context(),
+        ),
+      ),
+      { content: "hello 2nd world", path: target, truncated: false },
+    );
+  } finally {
+    await Promise.all([
+      fixture.cleanup(),
+      rm(outside, { force: true, recursive: true }),
+    ]);
+  }
+});
+
+test("JX-AC-039 JX-SEC-005 bash is bounded but remains explicitly unsandboxed", async () => {
   const fixture = await workspace();
   try {
     const tools = createNodeTools({

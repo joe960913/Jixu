@@ -34,17 +34,17 @@ export interface JixuAppProps {
 function completeInitial(
   initial: JixuInitialConfiguration | undefined,
 ): JixuConnectionConfig | null {
-  const apiFormat = initial?.apiFormat;
+  const api = initial?.api;
   const apiKey = initial?.apiKey;
   const baseUrl = initial?.baseUrl;
   const model = initial?.model;
 
-  return apiFormat === undefined ||
+  return api === undefined ||
     apiKey === undefined ||
     baseUrl === undefined ||
     model === undefined
     ? null
-    : { apiFormat, apiKey, baseUrl, model };
+    : { api, apiKey, baseUrl, model };
 }
 
 export function JixuApp({
@@ -74,7 +74,7 @@ export function JixuApp({
       });
 
       setConfiguration({
-        apiFormat: config.apiFormat,
+        api: config.api,
         apiKey: config.apiKey,
         autoConnect: true,
         baseUrl: config.baseUrl,
@@ -137,6 +137,7 @@ export function JixuApp({
         setView("config");
       }}
       onQuit={onQuit}
+      workspace={workspace}
     />
   );
 }
