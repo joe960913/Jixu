@@ -19,7 +19,7 @@ const MAX_PROGRESS_LENGTH = 48;
 
 export const PROGRESS_CONTROL: ProgressControlDescriptor = cloneFrozenJson({
   description:
-    "Report at most one short user-visible phrase before meaningful Tool work or a material change of approach. Use the user's language and describe only the next observable action. Never reveal hidden reasoning, use generic filler, or call this control for a direct answer or obvious single action. This reports intent; it does not perform or authorize work.",
+    "Report at most one short user-visible phrase before meaningful Tool work or a material change of approach. Call this only in a response that also requests at least one ordinary Tool; never call it as the sole output or with a final answer. Use the user's language and describe only the next observable action. Never reveal hidden reasoning or use generic filler. This reports intent; it does not perform or authorize work.",
   inputSchema: {
     additionalProperties: false,
     properties: {
