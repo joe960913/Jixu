@@ -43,6 +43,8 @@ The public promise is:
    work benefits from one, without imposing planning overhead on simple work.
 9. Keep long-running work coherent across context windows through automatic,
    inspectable Continuity Handoffs rather than opaque summary replacement.
+10. Make execution efficiency inspectable through durable token, cost, model,
+    and Tool accounting without introducing a billing service.
 
 ## 3. Non-goals
 
@@ -253,6 +255,11 @@ interface ThreadEvent<TType extends string, TPayload> {
 - **JX-EVT-004.** Events MUST be immutable after append.
 - **JX-EVT-005.** Correlation metadata MAY group work but MUST NOT replace
   Thread or Event identity.
+- **JX-EVT-006.** Event schema version 2 is the current Thread schema. A schema
+  version 1 Thread Event MUST be deterministically upcast at the core boundary:
+  model requests gain no active Plan, and terminal model outcomes gain unknown
+  usage and pricing. Other unknown versions and version/type combinations MUST
+  still fail closed.
 
 The v0.4 families are:
 
@@ -303,6 +310,36 @@ Every Effect carries `id`, `threadId`, `type`, `input`, and idempotency metadata
 Jixu provides at-least-once dispatch for Effects declared idempotent. For
 non-idempotent Effects whose durable outcome is unknown, recovery MUST enter
 `waiting` rather than guess or silently repeat the action.
+
+### 8.1 Durable efficiency accounting
+
+Efficiency data is typed bookkeeping inside Events and derived Thread State. It
+is not a new lifecycle, telemetry authority, hosted billing system, or provider
+invoice.
+
+- **JX-MET-001.** Every terminal model outcome MUST durably record a canonical
+  accounting value. It MUST distinguish provider-reported token usage from an
+  unavailable report instead of treating unknown values as zero.
+- **JX-MET-002.** Canonical token usage MUST preserve reported input, output,
+  total, reasoning, cached-input, and cache-write tokens. A provider field that
+  is not reported MUST remain unknown; Jixu MUST NOT fabricate internal token
+  counts.
+- **JX-MET-003.** A trusted USD cost MAY come from a provider-declared USD
+  amount or an explicitly injected versioned calculator. Cost MUST be stored as
+  integer nanodollars with source metadata. Unknown or untrusted pricing MUST
+  remain unpriced and MUST NOT be rendered as zero.
+- **JX-MET-004.** Thread State MUST deterministically project cumulative model
+  calls and attempts, model outcomes, Tool calls and attempts, Tool outcomes,
+  canonical token usage, known USD cost, and missing usage or pricing counts
+  from Events.
+- **JX-MET-005.** Logical calls and dispatch attempts MUST remain distinct so a
+  retry cannot make one Effect appear to be multiple requested capabilities.
+- **JX-MET-006.** `clear` MUST retain efficiency accounting because consumed
+  work remains historical fact. Replay and recovery MUST reproduce it; Fork
+  MUST inherit the exact accounting projection at its selected Event.
+- **JX-MET-007.** Durable accounting MUST contain no credentials, raw pricing
+  callbacks, or secret provider metadata. Operational telemetry MAY export the
+  same redacted facts but MUST NOT become their authority.
 
 ## 9. Continuity operations
 
@@ -584,6 +621,22 @@ not own execution truth.
 - **JX-TUI-013.** TUI orchestration, command metadata, transcript projection,
   screen layout, and configuration MUST remain separate modules; no catch-all
   UI source file may own all of them.
+- **JX-TUI-014.** The composer footer MUST show the selected Thread's cumulative
+  known model cost in USD. A Thread with missing trusted pricing MUST display an
+  explicit unavailable or partial value rather than `$0.00`. When an Activity
+  rail is visible, this footer belongs to the composer column and MUST NOT span
+  beneath the rail.
+- **JX-TUI-015.** Every interactive configuration control MUST expose the same
+  selection and focus transition to keyboard and primary-button mouse input.
+  Pointer support MUST supplement, not replace, visible keyboard operation.
+- **JX-TUI-016.** Full-screen page chrome MUST place its header and footer on
+  the first and last rendered rows. The outer canvas MUST inherit the terminal
+  background so pixels outside the terminal cell grid cannot appear as a
+  distinct application-colored band.
+- **JX-TUI-017.** The composer MUST submit on Enter and insert a newline on
+  Shift+Enter when the terminal reports that modifier. It MUST grow with visual
+  content only to a bounded maximum height, then scroll internally instead of
+  displacing the surrounding workspace without limit.
 
 Configuration stores credentials separately from non-secret settings, uses
 restrictive POSIX permissions, and never records secrets in Thread data.
@@ -689,6 +742,19 @@ frameworks, and UI frameworks.
   Context Manifest that accounts for included, transformed, and excluded
   sources, Plan and Handoff revisions, raw-tail boundary, schema versions,
   budgets, and logical request digest.
+- **JX-AC-028 — Durable efficiency accounting.** A deterministic Thread with
+  model retries, reported reasoning/cache usage, priced and unpriced model
+  outcomes, and repeated Tool dispatch projects exact logical-call, attempt,
+  outcome, token, missing-report, and USD totals after Replay and recovery. The
+  TUI renders its USD value below the composer without using UI-local counters.
+- **JX-AC-029 — Config viewport and input parity.** At ordinary wide and compact
+  terminal sizes, the Config header and footer occupy the viewport boundary
+  rows; API format and field focus can be selected by mouse; and the same form
+  remains fully operable by Tab, arrows, numbers, and Enter.
+- **JX-AC-030 — Composer column and multiline input.** On a wide workspace, the
+  model, shell, cost, and quit status remain left of the Activity rail while the
+  rail reaches its own bottom row. The composer preserves Shift+Enter newlines,
+  Enter submits, and its rendered height never exceeds the documented bound.
 
 The minimum validation for a code change is targeted tests, typecheck, lint, and
 `git diff --check`. Release work also runs the complete acceptance suite and
@@ -725,6 +791,12 @@ Context Manifests, immutable Handoff Artifacts, and running-input queue semantic
 to the pre-release design. These are not aliases for old Run or Session data.
 Persisted 0.3 drafts without explicit compatible upcasters MUST fail closed; no
 automatic migration is promised before the first stable release.
+
+Within the Thread model, Event schema version 2 adds Plan-control input and
+terminal model accounting. The core decoder deterministically upcasts schema
+version 1 Thread Events produced before those fields existed. Their historical
+model and Tool call counts remain exact, while unavailable historical token and
+cost values remain explicitly unknown. The Store is not rewritten in place.
 
 ## 19. Implementation order
 

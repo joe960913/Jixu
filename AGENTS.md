@@ -240,6 +240,11 @@ Tests must focus on load-bearing behavior, failure paths, and regressions.
 - Provider tests distinguish mocked contract tests from explicitly enabled live
   probes.
 - Do not add low-value tests that only repeat TypeScript or library behavior.
+- UI changes do not require an automated test by default. Add or update one
+  only when it protects a core user path, durable state or data safety, a
+  high-risk failure boundary, or a regression that has actually recurred. Do
+  not freeze ordinary spacing, colors, wording, exact row or column positions,
+  or incidental pointer and focus styling in tests; review those visually.
 - Add the minimum test surface that proves the user-visible contract. Extend an
   existing acceptance or smoke test when the behavior belongs to that same
   public path; create a new test file only for an independent unit or contract
@@ -247,6 +252,11 @@ Tests must focus on load-bearing behavior, failure paths, and regressions.
 - One user-visible behavior MUST NOT be scattered across multiple new test
   files. Temporary harnesses and spike tests MUST be removed once the behavior
   is covered through the ordinary public path.
+- In OpenTUI React tests, an input or mouse interaction that schedules React
+  state and the renderer pass that verifies it MUST use separate `act()` calls.
+  State commits when the interaction `act()` exits; rendering inside that same
+  `act()` observes the old frame and is a test-ordering bug, not evidence that
+  production interaction failed.
 
 A milestone with a developer-facing surface is not complete until its documented
 acceptance path can be run by a maintainer. Internal tests alone cannot close

@@ -15,6 +15,7 @@ Jixu treats the Harness as the durable operating layer around one capable Agent:
 - a Thread continues naturally across messages and process restarts;
 - external work is durably requested before dispatch;
 - pause, continue, clear, fork, recovery, and replay use the same lifecycle;
+- non-trivial work can carry one compact, recoverable execution Plan;
 - model providers, Tools, Stores, and interfaces remain replaceable; and
 - the reference TUI consumes the same public API as any other application.
 
@@ -60,6 +61,21 @@ A Thread also exposes `clear`, `events`, `state`, `stream`, `wait`, `pause`,
 `continue`, `fork`, and side-effect-free `replay`. Input accepted while a Thread
 is running is durably queued and starts automatically after the current turn.
 
+Planning is adaptive rather than a mode: simple requests proceed with no Plan,
+while the Agent may create and revise one active Plan for dependent or uncertain
+work. Plan changes are validated and committed as `plan.updated` before related
+Tool Effects run. `thread.state().activePlan` exposes the current projection;
+historical revisions remain in `thread.events()`. A Plan coordinates work but
+does not grant permission or dispatch Effects.
+
+`thread.state().metrics` is the durable efficiency projection: logical model
+and Tool calls, retry attempts, terminal outcomes, reported input/output/
+reasoning/cache tokens, and trusted USD cost. Terminal model Events retain the
+canonical accounting facts, so Replay, recovery, clear, and Fork reproduce the
+same totals. Provider-reported cost is accepted only from a trusted adapter;
+other providers can inject a versioned `costCalculator`. Missing usage or
+pricing stays explicit instead of becoming zero.
+
 ## Reference TUI
 
 Prerequisites: Node.js 22.18+ for the workspace and Bun 1.3+ for the source TUI.
@@ -74,6 +90,8 @@ shows `Model not configured` and `use /config`; setup is never a forced gate.
 The endpoint can implement either `/v1/responses` or `/v1/chat/completions`.
 Jixu stores credentials separately in `~/.jixu/auth.json` and non-secret settings
 in `~/.jixu/settings.json` with restrictive POSIX permissions.
+The footer shows the selected Thread's known USD cost; `USD —` means no trusted
+price is available, and a trailing `+` marks a known partial total.
 
 Normal prompts continue the selected Thread. Useful controls are:
 

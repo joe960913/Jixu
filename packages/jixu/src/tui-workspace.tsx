@@ -1,4 +1,4 @@
-import type { InputRenderable, SubmitEvent } from "@opentui/core";
+import type { TextareaOptions, TextareaRenderable } from "@opentui/core";
 import { useTerminalDimensions } from "@opentui/react";
 import {
   useCallback,
@@ -29,10 +29,12 @@ interface AgentWorkspaceProps {
 }
 
 const inactiveSnapshot: ThreadControllerSnapshot = Object.freeze({
+  activePlan: null,
   activity: Object.freeze([]),
   busy: false,
   currentThreadId: null,
   inspection: null,
+  metrics: null,
   streamingText: "",
   threadPickerOpen: false,
   threads: Object.freeze([]),
@@ -42,6 +44,17 @@ const inactiveSnapshot: ThreadControllerSnapshot = Object.freeze({
 
 const getInactiveSnapshot = (): ThreadControllerSnapshot => inactiveSnapshot;
 const subscribeInactive = (): (() => void) => () => undefined;
+const COMPOSER_MIN_HEIGHT = 3;
+const COMPOSER_MAX_HEIGHT = 8;
+const COMPOSER_EDITOR_MAX_HEIGHT = COMPOSER_MAX_HEIGHT - 2;
+const COMPOSER_KEY_BINDINGS: NonNullable<TextareaOptions["keyBindings"]> = [
+  { action: "submit", name: "return" },
+  { action: "newline", name: "return", shift: true },
+  { action: "submit", name: "kpenter" },
+  { action: "newline", name: "kpenter", shift: true },
+  { action: "submit", name: "linefeed" },
+  { action: "newline", name: "linefeed", shift: true },
+];
 
 function truncate(value: string, maximum: number): string {
   if (value.length <= maximum) return value;
@@ -55,6 +68,70 @@ function endpointName(baseUrl: string): string {
   } catch {
     return baseUrl;
   }
+}
+
+function formatUsd(usdNanos: number): string {
+  const [whole = "0", fraction = ""] = (usdNanos / 1_000_000_000)
+    .toFixed(9)
+    .split(".");
+  return `${whole}.${fraction.replace(/0+$/u, "").padEnd(4, "0")}`;
+}
+
+function costContext(snapshot: ThreadControllerSnapshot): {
+  readonly label: string;
+  readonly partial: boolean;
+} {
+  const cost = snapshot.metrics?.cost;
+  if (cost === undefined || (cost.pricedOutcomes === 0 && cost.unpricedOutcomes > 0)) {
+    return { label: "USD —", partial: true };
+  }
+  return {
+    label: `USD $${formatUsd(cost.usdNanos)}${cost.unpricedOutcomes > 0 ? "+" : ""}`,
+    partial: cost.unpricedOutcomes > 0,
+  };
+}
+
+function ComposerStatus({
+  compact,
+  configured,
+  endpointContext,
+  formatContext,
+  threadCost,
+}: {
+  readonly compact: boolean;
+  readonly configured: boolean;
+  readonly endpointContext: string | null;
+  readonly formatContext: string | null;
+  readonly threadCost: ReturnType<typeof costContext>;
+}) {
+  return (
+    <box style={{ flexDirection: "column", height: 2, width: "100%" }}>
+      <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
+        {configured ? (
+          <text fg={jixuTheme.brand}>{endpointContext}</text>
+        ) : (
+          <text fg={jixuTheme.secondary}>
+            Model not configured · <span fg={jixuTheme.brand}>use /config</span>
+          </text>
+        )}
+        {compact || formatContext === null ? null : (
+          <text fg={jixuTheme.secondary}> · {formatContext}</text>
+        )}
+      </box>
+      <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
+        <text fg={jixuTheme.secondary}>
+          Local shell · <span fg={jixuTheme.warning}>unsandboxed</span>
+        </text>
+        <box style={{ flexGrow: 1 }} />
+        <text fg={threadCost.partial ? jixuTheme.warning : jixuTheme.success}>
+          {threadCost.label}
+        </text>
+        {compact ? null : (
+          <text fg={jixuTheme.secondary}> · ctrl+c quit</text>
+        )}
+      </box>
+    </box>
+  );
 }
 
 export function AgentWorkspace({
@@ -80,13 +157,11 @@ export function AgentWorkspace({
   const chatWidth = workspaceWidth - columnGap - activityWidth;
   const headerHeight = 1;
   const footerHeight = 2;
-  const sectionGapRows = 2;
-  const workHeight = Math.max(
-    12,
-    height - headerHeight - footerHeight - sectionGapRows,
-  );
+  const sectionGapRows = 1;
+  const workspaceHeight = Math.max(15, height - headerHeight - sectionGapRows);
+  const chatHeight = workspaceHeight - footerHeight - 1;
   const compact = chatWidth < 84;
-  const input = useRef<InputRenderable>(null);
+  const composer = useRef<TextareaRenderable>(null);
   const [draft, setDraft] = useState("");
   const [localInspection, setLocalInspection] = useState<
     ThreadControllerSnapshot["inspection"]
@@ -162,18 +237,16 @@ export function AgentWorkspace({
   );
 
   const setComposerValue = useCallback((value: string) => {
-    if (input.current !== null) input.current.value = value;
+    composer.current?.setText(value);
+    composer.current?.gotoBufferEnd();
     setDraft(value);
-    input.current?.focus();
+    composer.current?.focus();
   }, []);
 
   const clearComposer = useCallback(() => setComposerValue(""), [setComposerValue]);
 
-  const submit = (submitted: string | SubmitEvent) => {
-    const value =
-      typeof submitted === "string"
-        ? submitted
-        : (input.current?.value ?? draft);
+  const submit = () => {
+    const value = composer.current?.plainText ?? draft;
     if (value.trim().length === 0) return;
     clearComposer();
     submitValue(value);
@@ -207,8 +280,8 @@ export function AgentWorkspace({
           ? active.config.model
           : `${endpointName(active.config.baseUrl)} · ${active.config.model}`,
         compact
-          ? Math.max(16, workspaceWidth - 30)
-          : Math.max(24, Math.floor(workspaceWidth / 2)),
+          ? Math.max(16, chatWidth - 30)
+          : Math.max(24, Math.floor(chatWidth / 2)),
       )
     : null;
   const formatContext = !configured
@@ -216,12 +289,13 @@ export function AgentWorkspace({
     : active.config.apiFormat === "responses"
       ? "Responses"
       : "Chat Completions";
+  const threadCost = costContext(snapshot);
 
   return (
     <box
       style={{
         alignItems: "center",
-        backgroundColor: jixuTheme.background,
+        backgroundColor: jixuTheme.canvas,
         flexDirection: "column",
         gap: 1,
         height: "100%",
@@ -245,7 +319,7 @@ export function AgentWorkspace({
         style={{
           columnGap,
           flexDirection: "row",
-          height: workHeight,
+          height: workspaceHeight,
           width: workspaceWidth,
         }}
       >
@@ -253,72 +327,87 @@ export function AgentWorkspace({
           style={{
             flexDirection: "column",
             gap: 1,
-            height: workHeight,
+            height: workspaceHeight,
             width: chatWidth,
           }}
         >
           <box
             style={{
-              flexBasis: 0,
-              flexGrow: 1,
-              flexShrink: 1,
-              minHeight: 2,
-              overflow: "hidden",
-              width: chatWidth,
-            }}
-          >
-            <Transcript
-              configured={configured}
-              emptyTop={Math.max(0, Math.floor((workHeight - 15) / 2))}
-              includeActivity={!showActivityRail}
-              snapshot={snapshot}
-            />
-          </box>
-
-          <SlashCommandMenu
-            draft={draft}
-            input={input}
-            onInsert={setComposerValue}
-            onInvoke={invokeCommand}
-          />
-
-          <ThreadPicker
-            input={input}
-            onClose={() => active?.controller.closeThreadPicker()}
-            onSelect={(threadId) => {
-              void active?.controller.selectThread(threadId);
-            }}
-            open={snapshot.threadPickerOpen}
-            threads={snapshot.threads}
-          />
-
-          <box
-            backgroundColor={jixuTheme.surface}
-            border={["left"]}
-            borderColor={jixuTheme.brand}
-            style={{
               flexDirection: "column",
-              flexShrink: 0,
-              height: 3,
-              paddingLeft: 1,
-              paddingRight: 1,
-              paddingTop: 1,
+              gap: 1,
+              height: chatHeight,
               width: chatWidth,
             }}
           >
-            <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
+            <box
+              style={{
+                flexBasis: 0,
+                flexGrow: 1,
+                flexShrink: 1,
+                minHeight: 2,
+                overflow: "hidden",
+                width: chatWidth,
+              }}
+            >
+              <Transcript
+                configured={configured}
+                emptyTop={Math.max(0, Math.floor((chatHeight - 15) / 2))}
+                includeActivity={!showActivityRail}
+                snapshot={snapshot}
+              />
+            </box>
+
+            <SlashCommandMenu
+              draft={draft}
+              input={composer}
+              onInsert={setComposerValue}
+              onInvoke={invokeCommand}
+            />
+
+            <ThreadPicker
+              input={composer}
+              onClose={() => active?.controller.closeThreadPicker()}
+              onSelect={(threadId) => {
+                void active?.controller.selectThread(threadId);
+              }}
+              open={snapshot.threadPickerOpen}
+              threads={snapshot.threads}
+            />
+
+            <box
+              backgroundColor={jixuTheme.surface}
+              border={["left"]}
+              borderColor={jixuTheme.brand}
+              id="composer"
+              style={{
+                alignItems: "flex-start",
+                flexDirection: "row",
+                flexShrink: 0,
+                maxHeight: COMPOSER_MAX_HEIGHT,
+                minHeight: COMPOSER_MIN_HEIGHT,
+                paddingBottom: 1,
+                paddingLeft: 1,
+                paddingRight: 1,
+                paddingTop: 1,
+                width: chatWidth,
+              }}
+            >
               <text fg={jixuTheme.brand}>
                 <strong>›</strong>
               </text>
               <text> </text>
-              <input
-                ref={input}
+              <textarea
+                ref={composer}
                 backgroundColor={jixuTheme.surface}
                 cursorColor={jixuTheme.brand}
                 focused
                 focusedBackgroundColor={jixuTheme.surface}
                 focusedTextColor={jixuTheme.text}
-                onInput={setDraft}
+                id="composer-editor"
+                keyBindings={COMPOSER_KEY_BINDINGS}
+                onContentChange={() => {
+                  setDraft(composer.current?.plainText ?? "");
+                }}
                 onSubmit={submit}
                 placeholder={
                   !configured
@@ -328,49 +417,34 @@ export function AgentWorkspace({
                       : "Ask Jixu anything…"
                 }
                 placeholderColor={jixuTheme.secondary}
-                style={{ flexGrow: 1 }}
+                style={{
+                  flexGrow: 1,
+                  height: "auto",
+                  maxHeight: COMPOSER_EDITOR_MAX_HEIGHT,
+                  minHeight: 1,
+                }}
                 textColor={jixuTheme.text}
-                value={draft}
+                wrapMode="word"
               />
             </box>
           </box>
+
+          <ComposerStatus
+            compact={compact}
+            configured={configured}
+            endpointContext={endpointContext}
+            formatContext={formatContext}
+            threadCost={threadCost}
+          />
         </box>
 
         {showActivityRail ? (
           <ActivityRail
-            height={workHeight}
+            height={workspaceHeight}
             snapshot={snapshot}
             width={activityWidth}
           />
         ) : null}
-      </box>
-
-      <box
-        style={{
-          flexDirection: "column",
-          height: footerHeight,
-          width: workspaceWidth,
-        }}
-      >
-        <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
-          {configured ? (
-            <text fg={jixuTheme.brand}>{endpointContext}</text>
-          ) : (
-            <text fg={jixuTheme.secondary}>
-              Model not configured · <span fg={jixuTheme.brand}>use /config</span>
-            </text>
-          )}
-          {compact || formatContext === null ? null : (
-            <text fg={jixuTheme.secondary}> · {formatContext}</text>
-          )}
-        </box>
-        <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
-          <text fg={jixuTheme.secondary}>
-            Local shell · <span fg={jixuTheme.warning}>unsandboxed</span>
-          </text>
-          <box style={{ flexGrow: 1 }} />
-          {compact ? null : <text fg={jixuTheme.secondary}>ctrl+c quit</text>}
-        </box>
       </box>
     </box>
   );

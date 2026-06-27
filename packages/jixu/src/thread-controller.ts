@@ -62,10 +62,12 @@ export class ThreadController {
   #nextId = 1;
   #observer: AbortController | null = null;
   #snapshot: ThreadControllerSnapshot = Object.freeze({
+    activePlan: null,
     activity: Object.freeze([]),
     busy: false,
     currentThreadId: null,
     inspection: null,
+    metrics: null,
     streamingText: "",
     threadPickerOpen: false,
     threads: Object.freeze([]),
@@ -348,6 +350,7 @@ export class ThreadController {
     this.#patch({
       currentThreadId: thread.id,
       inspection: null,
+      metrics: state.metrics,
       streamingText: "",
       threadPickerOpen: false,
       threads: this.#snapshot.threads.map((summary) => ({
@@ -402,6 +405,7 @@ export class ThreadController {
     this.#events = events;
     this.#applyProjection();
     this.#patch({
+      metrics: currentState.metrics,
       streamingText: "",
       threadStatus: currentState.status,
     });
@@ -437,6 +441,7 @@ export class ThreadController {
     const projected = projectThread(this.#events);
     this.#nextId = projected.nextId;
     this.#patch({
+      activePlan: projected.activePlan,
       activity: projected.activity.slice(-200),
       transcript: projected.transcript.slice(-200),
     });

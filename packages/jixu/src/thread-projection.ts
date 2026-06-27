@@ -1,4 +1,4 @@
-import type { AnyThreadEvent } from "@jixu/core";
+import type { AnyThreadEvent, PlanSnapshot } from "@jixu/core";
 
 import type { ActivityEntry, TranscriptEntry } from "./tui-model.ts";
 
@@ -44,6 +44,26 @@ export function eventActivity(
         label: "Model failed",
         tone: "danger",
       };
+    case "plan.updated":
+      return {
+        ...base,
+        detail: `r${event.payload.plan.revision}`,
+        kind: "control",
+        label:
+          event.payload.plan.status === "active"
+            ? event.payload.plan.revision === 1
+              ? "Plan created"
+              : "Plan updated"
+            : `Plan ${event.payload.plan.status}`,
+        tone:
+          event.payload.plan.status === "abandoned"
+            ? "warning"
+            : event.payload.plan.status === "active"
+              ? "brand"
+              : event.payload.plan.status === "superseded"
+                ? "info"
+                : "success",
+      };
     case "tool.requested":
       return {
         ...base,
@@ -86,6 +106,7 @@ export function eventActivity(
 }
 
 export interface ProjectedThread {
+  readonly activePlan: PlanSnapshot | null;
   readonly activity: readonly ActivityEntry[];
   readonly nextId: number;
   readonly transcript: readonly TranscriptEntry[];
@@ -96,10 +117,17 @@ export function projectThread(
 ): ProjectedThread {
   const activity: ActivityEntry[] = [];
   const transcript: TranscriptEntry[] = [];
+  let activePlan: PlanSnapshot | null = null;
   let nextId = 1;
 
   for (const event of events) {
-    if (event.type === "context.cleared") transcript.splice(0);
+    if (event.type === "context.cleared") {
+      transcript.splice(0);
+      activePlan = null;
+    }
+    if (event.type === "plan.updated") {
+      activePlan = event.payload.plan.status === "active" ? event.payload.plan : null;
+    }
     if (event.type === "input.received") {
       transcript.push({
         content: event.payload.content,
@@ -127,6 +155,7 @@ export function projectThread(
   }
 
   return {
+    activePlan,
     activity: Object.freeze(activity),
     nextId,
     transcript: Object.freeze(transcript),

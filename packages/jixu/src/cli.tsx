@@ -188,7 +188,7 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
     return createThreadController({ harness, ...controls });
   };
   const renderer = await createCliRenderer({
-    backgroundColor: jixuTheme.background,
+    backgroundColor: jixuTheme.canvas,
     clearOnShutdown: true,
     consoleMode: "disabled",
     exitOnCtrlC: false,
