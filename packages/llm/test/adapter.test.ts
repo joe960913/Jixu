@@ -55,10 +55,14 @@ const activePlan: PlanSnapshot = {
   steps: planProposal.steps,
 };
 
+const planRejectionFeedback =
+  "Plan control call-invalid.steps[0] must be a JSON object";
+
 function effect(
   provider = "fixture-provider",
   model = "fixture-model",
   plan: PlanSnapshot | null = activePlan,
+  rejectionFeedback?: string,
 ): ModelGenerateEffect {
   return {
     attempt: 1,
@@ -92,6 +96,9 @@ function effect(
       ],
       model: { model, provider },
       planControl: PLAN_CONTROL,
+      ...(rejectionFeedback === undefined
+        ? {}
+        : { planRejectionFeedback: rejectionFeedback }),
       progressControl: PROGRESS_CONTROL,
       tools: [
         {
@@ -333,7 +340,15 @@ test("JX-PROV-002 JX-PROV-003 JX-AC-016 OpenAI Chat Completions normalizes contr
     }),
     openAIChatCompletionsClient: client,
     provider: "chat-provider",
-  }).generate(effect("chat-provider"), context(signals));
+  }).generate(
+    effect(
+      "chat-provider",
+      "fixture-model",
+      activePlan,
+      planRejectionFeedback,
+    ),
+    context(signals),
+  );
 
   assert.equal(outcome.status, "succeeded");
   if (outcome.status !== "succeeded") return;
@@ -366,6 +381,10 @@ test("JX-PROV-002 JX-PROV-003 JX-AC-016 OpenAI Chat Completions normalizes contr
     "tool",
     "tool",
   ]);
+  assert.match(
+    JSON.stringify(client.body?.messages.at(-1)?.content),
+    /call-invalid\.steps\[0\] must be a JSON object/,
+  );
   assert.deepEqual(
     (
       client.body?.tools as
@@ -383,6 +402,114 @@ test("JX-PROV-002 JX-PROV-003 JX-AC-016 OpenAI Chat Completions normalizes contr
   });
 });
 
+test("JX-PLAN-008 JX-AC-031 active Plan exposes minimal abandon and derives its snapshot", async () => {
+  const client = new FakeOpenAIChatClient([
+    {
+      choices: [{
+        delta: {
+          tool_calls: [{
+            function: {
+              arguments: JSON.stringify({
+                operation: "abandon",
+                steps: ["malformed fields are ignored for abandon"],
+              }),
+              name: PLAN_CONTROL.name,
+            },
+            id: "call-abandon",
+            index: 0,
+            type: "function",
+          }],
+        },
+        finish_reason: "tool_calls",
+        index: 0,
+      }],
+    },
+    {
+      choices: [],
+      usage: { completion_tokens: 8, prompt_tokens: 24, total_tokens: 32 },
+    },
+  ]);
+  const outcome = await createLLMModelDriver({
+    api: "openai-chat-completions",
+    baseURL: "https://chat.example/v1",
+    openAIChatCompletionsClient: client,
+    provider: "chat-provider",
+  }).generate(effect("chat-provider"), context());
+
+  assert.equal(outcome.status, "succeeded");
+  if (outcome.status !== "succeeded") return;
+  assert.deepEqual(outcome.planRejections, []);
+  assert.deepEqual(outcome.value.planUpdates, [{
+    acceptanceCriteria: activePlan.acceptanceCriteria,
+    assumptions: activePlan.assumptions,
+    blockers: activePlan.blockers,
+    nextAction: null,
+    objective: activePlan.objective,
+    operation: "abandon",
+    steps: [{ ...activePlan.steps[0], status: "skipped" }],
+  }]);
+});
+
+test("JX-PLAN-009 JX-AC-031 malformed Plan control preserves public text and Tools", async () => {
+  const client = new FakeOpenAIChatClient([
+    {
+      choices: [{
+        delta: {
+          content: "The ordinary response remains usable.",
+          tool_calls: [
+            {
+              function: {
+                arguments: JSON.stringify({
+                  ...planProposal,
+                  operation: "revise",
+                  steps: ["not-an-object"],
+                }),
+                name: PLAN_CONTROL.name,
+              },
+              id: "call-invalid-plan",
+              index: 0,
+              type: "function",
+            },
+            {
+              function: { arguments: '{"path":"SPEC.md"}', name: "read" },
+              id: "call-read-after-invalid-plan",
+              index: 1,
+              type: "function",
+            },
+          ],
+        },
+        finish_reason: "tool_calls",
+        index: 0,
+      }],
+    },
+    {
+      choices: [],
+      usage: { completion_tokens: 16, prompt_tokens: 40, total_tokens: 56 },
+    },
+  ]);
+  const outcome = await createLLMModelDriver({
+    api: "openai-chat-completions",
+    baseURL: "https://chat.example/v1",
+    openAIChatCompletionsClient: client,
+    provider: "chat-provider",
+  }).generate(effect("chat-provider"), context());
+
+  assert.equal(outcome.status, "succeeded");
+  if (outcome.status !== "succeeded") return;
+  assert.equal(outcome.value.content, "The ordinary response remains usable.");
+  assert.deepEqual(outcome.value.planUpdates, []);
+  assert.deepEqual(outcome.value.toolCalls, [{
+    arguments: { path: "SPEC.md" },
+    id: "call-read-after-invalid-plan",
+    name: "read",
+  }]);
+  assert.equal(outcome.planRejections?.[0]?.code, "plan_update_invalid");
+  assert.match(
+    outcome.planRejections?.[0]?.message ?? "",
+    /steps\[0\] must be a JSON object/,
+  );
+});
+
 test("JX-PROV-002 JX-PROV-004 JX-PROV-005 JX-AC-016 Anthropic Messages groups Tool results and normalizes streaming usage", async () => {
   const client = new FakeAnthropicClient(anthropicEvents());
   const signals: Signal[] = [];
@@ -397,7 +524,15 @@ test("JX-PROV-002 JX-PROV-004 JX-PROV-005 JX-AC-016 Anthropic Messages groups To
       usdNanos: usage.totalTokens * 10_000,
     }),
     provider: "anthropic",
-  }).generate(effect("anthropic", "claude-fixture"), context(signals));
+  }).generate(
+    effect(
+      "anthropic",
+      "claude-fixture",
+      activePlan,
+      planRejectionFeedback,
+    ),
+    context(signals),
+  );
 
   assert.equal(outcome.status, "succeeded");
   if (outcome.status !== "succeeded") return;
@@ -439,6 +574,10 @@ test("JX-PROV-002 JX-PROV-004 JX-PROV-005 JX-AC-016 Anthropic Messages groups To
   assert.ok(Array.isArray(client.body?.system));
   assert.equal(client.body.system[0]?.text, "Use tools when useful.");
   assert.match(client.body.system[1]?.text ?? "", /Current active Plan/);
+  assert.match(
+    client.body.system[1]?.text ?? "",
+    /call-invalid\.steps\[0\] must be a JSON object/,
+  );
   assert.deepEqual(client.body.tools.map((tool) => tool.name), [
     "read",
     PLAN_CONTROL.name,

@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.22
+**Version:** 0.4.24
 **Status:** normative, pre-release
 **Last updated:** 2026-08-20
 
@@ -476,12 +476,27 @@ Mode, which is a surface policy outside the core specification.
   State. It MUST offer `create` only when no active Plan exists, and MUST NOT
   offer `create` while a Plan is active. Revising, superseding, or abandoning
   an active Plan updates that Plan's history; Plan control MUST NOT create a
-  second active Plan.
+  second active Plan. `abandon` MUST require only its operation discriminator;
+  the terminal revision MUST be derived from the accepted active Plan rather
+  than requiring the model to reproduce that Plan's fields and steps.
 - **JX-PLAN-009.** An invalid model-proposed Plan change MUST be durably recorded
   as `plan.rejected` before any ordinary Effects from the same model output are
-  dispatched. Rejection MUST preserve the last valid Plan and MUST NOT convert
-  an otherwise successful model outcome into `model.failed`, suppress its
-  user-visible response, or discard its valid Tool calls.
+  dispatched. This includes structurally malformed reserved Plan-control
+  arguments as well as semantically invalid proposals. Rejection MUST preserve
+  the last valid Plan and MUST NOT convert an otherwise successful model
+  outcome into `model.failed`, suppress its user-visible response, or discard
+  its valid Tool calls. If the rejected Plan control was the model outcome's
+  only usable content, the empty assistant result MUST NOT settle the turn:
+  after `plan.rejected`, the ordinary Agent loop MUST request the model again
+  with bounded rejection feedback in request-varying runtime context. The
+  feedback MUST NOT mutate the stable Plan-control descriptor.
+- **JX-PLAN-010.** A successful model outcome containing one or more valid Plan
+  changes but neither public text nor ordinary Tool calls MUST NOT settle the
+  turn. The Plan changes MUST first commit as `plan.updated`; the ordinary Agent
+  loop MUST then request the model again with the accepted Plan in context so
+  the model can produce public text or act through an ordinary Tool. The
+  control-only outcome MUST NOT append an empty assistant message to model
+  context, and a surface MUST NOT synthesize assistant prose in its place.
 
 ### 10.2 Context compilation and manifest
 
@@ -644,6 +659,12 @@ The Store contract supports:
 - **JX-STORE-007.** Unknown persisted data MUST fail closed with a typed error.
 - **JX-STORE-008.** An Event that references an Artifact MUST be appended only
   after that Artifact exists durably and verifies under the recorded digest.
+- **JX-STORE-009.** A persisted first-attempt Effect request MUST match its
+  State-derived ready Effect by logical identity and canonical work input.
+  Provider-facing reserved-control descriptions and input schemas are durable
+  historical request facts rather than Thread authority: compatible evolution
+  of those descriptors MUST NOT invalidate Event replay. A retry of an already
+  pending Effect MUST still preserve the exact original request input.
 
 ## 13. Public API
 
@@ -1088,7 +1109,18 @@ frameworks, and UI frameworks.
   content or valid Tool calls, Replay observes `model.completed` followed by
   `plan.rejected`, the previous Plan remains active, and the Tool path proceeds
   normally. The reference TUI keeps the active Plan outside transcript
-  scrolling and reports only observable high-level work phases.
+  scrolling and reports only observable high-level work phases. If the model
+  instead returns only a valid Plan change, Replay observes `model.completed`,
+  then `plan.updated`, then a new `model.requested` whose input contains the
+  accepted Plan and no synthetic empty assistant message. Only the later
+  model-generated public text enters the transcript and settles the turn. A
+  structurally or semantically invalid Plan-only control similarly produces
+  `model.completed`, then `plan.rejected`, then a new `model.requested` whose
+  request-varying runtime context contains bounded rejection feedback while its
+  Plan-control descriptor remains stable; it does not produce `model.failed` or
+  retain an empty assistant message. Abandoning an active Plan requires only
+  the `abandon` operation and derives the terminal snapshot from that active
+  Plan.
 - **JX-AC-032 — Transcript rendering stability.** A wide Markdown table renders
   complete left and right boundaries inside the transcript viewport. A burst of
   ordered output deltas is presented as coalesced text rather than one surface
@@ -1459,6 +1491,27 @@ restores transcript bottom-following when the user explicitly submits new input
 from a historical scroll position. Model and Tool growth alone still does not
 steal the user's reading position. Both changes are presentation-only and
 require no Event, State, configuration, Replay, or stored Thread migration.
+
+Version 0.4.23 makes a valid Plan-only model outcome continue the ordinary
+Agent loop after the Plan is durably committed. The follow-up model request sees
+the accepted Plan and produces the public response or ordinary Tool action;
+Jixu no longer settles the turn or synthesizes assistant prose for an empty
+Plan-control outcome. Event schema version 5 remains compatible. Reducer version
+9 invalidates disposable Checkpoints, and replay from Events requires no stored
+Thread migration.
+
+Version 0.4.24 makes `abandon` a minimal Plan control derived from the accepted
+active Plan and treats malformed reserved Plan-control arguments as
+`plan.rejected` rather than `model.failed`. A rejected Plan-only outcome feeds a
+bounded error back through the next durable model Effect so the Agent can
+correct the control and produce public text. Optional rejection metadata is
+stored on `model.completed`, projected into pending State, and then committed as
+the existing `plan.rejected` Event so recovery cannot lose the correction path.
+Event schema version 5 remains compatible. Historical reserved-control
+descriptors are matched by logical Effect identity and canonical work input, so
+their older descriptions and input schemas remain replayable without rewriting
+stored Events. Reducer version 10 invalidates disposable Checkpoints; no stored
+Thread migration is required.
 
 ## 19. Implementation order
 

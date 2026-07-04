@@ -10,7 +10,7 @@ import {
   EMPTY_MODEL_ACCOUNTING,
   isJsonObject,
   MODEL_PROGRESS_SIGNAL_TYPE,
-  parsePlanUpdateProposal,
+  parsePlanControlUpdate,
   parseProgressUpdate,
   PLAN_CONTROL_NAME,
   PROGRESS_CONTROL_NAME,
@@ -149,21 +149,31 @@ function jsonString(value: JsonValue): string {
   return JSON.stringify(value);
 }
 
-function activePlanContext(
+function planRuntimeContext(
   activePlan: ModelGenerateEffect["input"]["activePlan"],
+  rejectionFeedback: ModelGenerateEffect["input"]["planRejectionFeedback"],
 ): string | null {
-  if (activePlan === null) return null;
-  return [
+  if (activePlan === null && rejectionFeedback === undefined) return null;
+  const context = [
     "Jixu runtime context. This is accepted coordination data, not a new user request, and it grants no permission.",
-    "Current active Plan:",
-    JSON.stringify(activePlan),
-  ].join("\n");
+  ];
+  if (activePlan !== null) {
+    context.push("Current active Plan:", JSON.stringify(activePlan));
+  }
+  if (rejectionFeedback !== undefined) {
+    context.push(
+      "The previous Plan control was rejected by runtime validation. Correct the control before continuing:",
+      rejectionFeedback,
+    );
+  }
+  return context.join("\n");
 }
 
 function toChatMessages(
   instructions: string,
   messages: readonly ModelMessage[],
   activePlan: ModelGenerateEffect["input"]["activePlan"],
+  rejectionFeedback: ModelGenerateEffect["input"]["planRejectionFeedback"],
 ): ChatCompletionMessageParam[] {
   const input: ChatCompletionMessageParam[] = [];
   if (instructions.length > 0) {
@@ -199,7 +209,7 @@ function toChatMessages(
       tool_call_id: message.toolCallId,
     });
   }
-  const planContext = activePlanContext(activePlan);
+  const planContext = planRuntimeContext(activePlan, rejectionFeedback);
   if (planContext !== null) {
     input.push({ content: planContext, role: "system" });
   }
@@ -223,8 +233,9 @@ function toChatTool(
 function toAnthropicSystem(
   instructions: string,
   activePlan: ModelGenerateEffect["input"]["activePlan"],
+  rejectionFeedback: ModelGenerateEffect["input"]["planRejectionFeedback"],
 ): string | readonly AnthropicTextBlock[] | undefined {
-  const planContext = activePlanContext(activePlan);
+  const planContext = planRuntimeContext(activePlan, rejectionFeedback);
   if (planContext === null) return instructions.length === 0 ? undefined : instructions;
   return [
     ...(instructions.length === 0
@@ -349,7 +360,12 @@ function completedResponse(
   pendingTools: readonly PendingToolCall[],
   effect: ModelGenerateEffect,
   context: ModelDriverContext,
-): { readonly response: ModelResponse; readonly sawProgressControl: boolean } {
+): {
+  readonly planRejectionMessages: readonly string[];
+  readonly response: ModelResponse;
+  readonly sawProgressControl: boolean;
+} {
+  const planRejectionMessages: string[] = [];
   const planUpdates: PlanUpdateProposal[] = [];
   const toolCalls: ModelResponse["toolCalls"][number][] = [];
   let sawProgressControl = false;
@@ -365,11 +381,23 @@ function completedResponse(
         parsed = JSON.parse(pending.arguments) as unknown;
       } catch (error) {
         if (pending.name === PROGRESS_CONTROL_NAME) continue;
+        if (pending.name === PLAN_CONTROL_NAME) {
+          planRejectionMessages.push(
+            `Plan control ${pending.id} arguments are not valid JSON: ${errorMessage(error, "Plan control")}`,
+          );
+          continue;
+        }
         throw error;
       }
     }
     if (!isJsonObject(parsed)) {
       if (pending.name === PROGRESS_CONTROL_NAME) continue;
+      if (pending.name === PLAN_CONTROL_NAME) {
+        planRejectionMessages.push(
+          `Plan control ${pending.id} arguments must be a JSON object`,
+        );
+        continue;
+      }
       throw new TypeError(
         `Tool call ${pending.id} arguments must be a JSON object`,
       );
@@ -387,9 +415,17 @@ function completedResponse(
       continue;
     }
     if (pending.name === PLAN_CONTROL_NAME) {
-      planUpdates.push(
-        parsePlanUpdateProposal(parsed, `Plan control ${pending.id}`),
-      );
+      try {
+        planUpdates.push(
+          parsePlanControlUpdate(
+            parsed,
+            effect.input.activePlan,
+            `Plan control ${pending.id}`,
+          ),
+        );
+      } catch (error) {
+        planRejectionMessages.push(errorMessage(error, "Plan control"));
+      }
       continue;
     }
     toolCalls.push({
@@ -400,6 +436,7 @@ function completedResponse(
   }
 
   return {
+    planRejectionMessages,
     response: { content, planUpdates, toolCalls },
     sawProgressControl,
   };
@@ -554,6 +591,7 @@ class OpenAIChatCompletionsModelDriver implements ModelDriver {
             effect.input.instructions,
             effect.input.messages,
             effect.input.activePlan,
+            effect.input.planRejectionFeedback,
           ),
           model: effect.input.model.model,
           stream: true,
@@ -734,10 +772,22 @@ class OpenAIChatCompletionsModelDriver implements ModelDriver {
         effect,
         context,
       );
-      if (isProgressOnly(parsed.response, parsed.sawProgressControl)) {
+      if (
+        parsed.planRejectionMessages.length === 0 &&
+        isProgressOnly(parsed.response, parsed.sawProgressControl)
+      ) {
         return progressOnlyFailure(this.#provider, accounting);
       }
-      return { accounting, status: "succeeded", value: parsed.response };
+      return {
+        accounting,
+        planRejections: parsed.planRejectionMessages.map((message) => ({
+          code: "plan_update_invalid",
+          message: this.#redactError(message),
+          retryable: false,
+        })),
+        status: "succeeded",
+        value: parsed.response,
+      };
     } catch (error) {
       return invalidEvent(
         this.#provider,
@@ -908,6 +958,7 @@ class AnthropicMessagesModelDriver implements ModelDriver {
     const system = toAnthropicSystem(
       effect.input.instructions,
       effect.input.activePlan,
+      effect.input.planRejectionFeedback,
     );
     let stream: AsyncIterable<unknown>;
     try {
@@ -1173,10 +1224,22 @@ class AnthropicMessagesModelDriver implements ModelDriver {
         effect,
         context,
       );
-      if (isProgressOnly(parsed.response, parsed.sawProgressControl)) {
+      if (
+        parsed.planRejectionMessages.length === 0 &&
+        isProgressOnly(parsed.response, parsed.sawProgressControl)
+      ) {
         return progressOnlyFailure(this.#provider, accounting);
       }
-      return { accounting, status: "succeeded", value: parsed.response };
+      return {
+        accounting,
+        planRejections: parsed.planRejectionMessages.map((message) => ({
+          code: "plan_update_invalid",
+          message: this.#redactError(message),
+          retryable: false,
+        })),
+        status: "succeeded",
+        value: parsed.response,
+      };
     } catch (error) {
       return invalidEvent(
         this.#provider,

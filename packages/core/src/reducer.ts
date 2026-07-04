@@ -30,7 +30,7 @@ import {
 } from "./plan.ts";
 import { PROGRESS_CONTROL } from "./progress.ts";
 
-export const REDUCER_VERSION = 8;
+export const REDUCER_VERSION = 10;
 
 export interface TransitionResult {
   readonly effects: readonly EffectRequest[];
@@ -110,7 +110,8 @@ function acceptRequest(
   const readyIndex = state.readyEffects.findIndex(
     (candidate) => candidate.id === effect.id,
   );
-  if (readyIndex < 0 || !jsonEquals(state.readyEffects[readyIndex], effect)) {
+  const ready = state.readyEffects[readyIndex];
+  if (readyIndex < 0 || ready === undefined || !sameReadyEffect(ready, effect)) {
     throw new InvalidTransitionError(`Effect ${effect.id} is not ready`);
   }
   return {
@@ -119,13 +120,67 @@ function acceptRequest(
   };
 }
 
+function sameReadyEffect(
+  expected: EffectRequest,
+  persisted: EffectRequest,
+): boolean {
+  if (
+    expected.attempt !== persisted.attempt ||
+    expected.id !== persisted.id ||
+    expected.idempotencyKey !== persisted.idempotencyKey ||
+    expected.requestedByEventId !== persisted.requestedByEventId ||
+    expected.threadId !== persisted.threadId ||
+    expected.type !== persisted.type
+  ) {
+    return false;
+  }
+
+  if (expected.type === "tool.execute") {
+    return (
+      persisted.type === "tool.execute" &&
+      jsonEquals(expected.input, persisted.input)
+    );
+  }
+  if (persisted.type !== "model.generate") {
+    return false;
+  }
+
+  return jsonEquals(
+    {
+      activePlan: expected.input.activePlan,
+      instructions: expected.input.instructions,
+      messages: expected.input.messages,
+      model: expected.input.model,
+      planControlName: expected.input.planControl.name,
+      planRejectionFeedback: expected.input.planRejectionFeedback ?? null,
+      progressControlName: expected.input.progressControl.name,
+      tools: expected.input.tools,
+    },
+    {
+      activePlan: persisted.input.activePlan,
+      instructions: persisted.input.instructions,
+      messages: persisted.input.messages,
+      model: persisted.input.model,
+      planControlName: persisted.input.planControl.name,
+      planRejectionFeedback: persisted.input.planRejectionFeedback ?? null,
+      progressControlName: persisted.input.progressControl.name,
+      tools: persisted.input.tools,
+    },
+  );
+}
+
 function createModelEffect(
   state: ThreadState,
   requestedByEventId: string,
   index: number,
+  planRejectionFeedback?: string,
 ): ModelGenerateEffect {
   const agent = requireAgent(state);
   const id = `${requestedByEventId}:effect:${index}`;
+  const feedback = planRejectionFeedback
+    ?.trim()
+    .replace(/\s+/gu, " ")
+    .slice(0, 500);
   return {
     attempt: 1,
     id,
@@ -136,6 +191,9 @@ function createModelEffect(
       messages: state.messages,
       model: agent.model,
       planControl: createPlanControl(state.activePlan),
+      ...(feedback === undefined || feedback.length === 0
+        ? {}
+        : { planRejectionFeedback: feedback }),
       progressControl: PROGRESS_CONTROL,
       tools: agent.tools,
     },
@@ -294,6 +352,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           lineage: event.payload,
           pauseRequested: false,
           pendingEffects: {},
+          pendingPlanRejections: [],
           pendingPlanUpdates: [],
           readyEffects: [],
           result: null,
@@ -339,6 +398,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           inputQueue: [],
           messages: [],
           activePlan: null,
+          pendingPlanRejections: [],
           pendingPlanUpdates: [],
           result: null,
           waitingReason: null,
@@ -425,34 +485,68 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
       );
       const response = event.payload.response;
       const identitySeed = `sequence-${event.sequence}`;
-      materializePlanUpdates(
-        state.activePlan,
-        response.planUpdates ?? [],
-        identitySeed,
-      );
-      const pendingPlanUpdates = (response.planUpdates ?? []).map(
+      let pendingPlanUpdates = (response.planUpdates ?? []).map(
         (proposal, index) => ({
           identitySeed: `${identitySeed}-${index}`,
           proposal,
         }),
       );
+      const pendingPlanRejections = [
+        ...(event.payload.planRejections ?? []),
+      ];
+      for (const rejection of pendingPlanRejections) {
+        if (rejection.effectId !== event.payload.effectId) {
+          throw new InvalidTransitionError(
+            `Plan rejection ${rejection.effectId} does not match Model Effect ${event.payload.effectId}`,
+          );
+        }
+      }
+      try {
+        materializePlanUpdates(
+          state.activePlan,
+          response.planUpdates ?? [],
+          identitySeed,
+        );
+      } catch (error) {
+        pendingPlanRejections.push({
+          effectId: event.payload.effectId,
+          error: {
+            code: "plan_update_invalid",
+            message:
+              error instanceof Error ? error.message : "Invalid Plan update",
+            retryable: false,
+          },
+          proposals: response.planUpdates ?? [],
+        });
+        pendingPlanUpdates = [];
+      }
+      const planOnlyControl =
+        response.content.trim().length === 0 &&
+        response.toolCalls.length === 0 &&
+        (pendingPlanUpdates.length > 0 || pendingPlanRejections.length > 0);
       const metrics = recordModelAccounting(
         recordEffectOutcome(state.metrics, "model", "succeeded"),
         event.payload.accounting,
       );
       const nextState = advance(state, event.sequence, {
-        messages: [
-          ...state.messages,
-          {
-            content: response.content,
-            role: "assistant",
-            toolCalls: response.toolCalls,
-          },
-        ],
+        messages: planOnlyControl
+          ? state.messages
+          : [
+              ...state.messages,
+              {
+                content: response.content,
+                role: "assistant",
+                toolCalls: response.toolCalls,
+              },
+            ],
         metrics,
         pendingEffects: remaining,
+        pendingPlanRejections,
         pendingPlanUpdates,
       });
+      if (planOnlyControl) {
+        return { effects: [], state: nextState };
+      }
       if (response.toolCalls.length === 0) {
         return settleTurn(nextState, event.sequence, {
           error: null,
@@ -484,22 +578,68 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         );
       }
       assertPlanUpdateTransition(state.activePlan, event.payload.plan);
-      return {
-        effects: [],
-        state: advance(state, event.sequence, {
-          activePlan:
-            event.payload.plan.status === "active" ? event.payload.plan : null,
-          pendingPlanUpdates: state.pendingPlanUpdates.slice(1),
-        }),
-      };
+      const pendingPlanUpdates = state.pendingPlanUpdates.slice(1);
+      const nextState = advance(state, event.sequence, {
+        activePlan:
+          event.payload.plan.status === "active" ? event.payload.plan : null,
+        pendingPlanUpdates,
+      });
+      if (
+        state.status === "running" &&
+        state.pendingPlanRejections.length === 0 &&
+        pendingPlanUpdates.length === 0 &&
+        Object.keys(state.pendingEffects).length === 0 &&
+        state.readyEffects.length === 0
+      ) {
+        const effects = [createModelEffect(nextState, event.id, 0)];
+        return withReadyEffects(nextState, event.sequence, effects);
+      }
+      return { effects: [], state: nextState };
     }
 
-    case "plan.rejected":
+    case "plan.rejected": {
       requireAgent(state);
-      return {
-        effects: [],
-        state: advance(state, event.sequence, {}),
-      };
+      const expected = state.pendingPlanRejections[0];
+      if (expected === undefined) {
+        // Event schema 5 originally persisted plan.rejected immediately after a
+        // stripped model.completed response, before pending rejection recovery
+        // became State-derived. Preserve replay compatibility for those Events.
+        return {
+          effects: [],
+          state: advance(state, event.sequence, {}),
+        };
+      }
+      if (!jsonEquals(expected, event.payload)) {
+        throw new InvalidTransitionError(
+          `Plan rejection for ${event.payload.effectId} is not pending`,
+        );
+      }
+      const pendingPlanRejections = state.pendingPlanRejections.slice(1);
+      const nextState = advance(state, event.sequence, {
+        pendingPlanRejections,
+      });
+      if (
+        state.status !== "running" ||
+        pendingPlanRejections.length > 0 ||
+        state.pendingPlanUpdates.length > 0 ||
+        Object.keys(state.pendingEffects).length > 0 ||
+        state.readyEffects.length > 0
+      ) {
+        return {
+          effects: [],
+          state: nextState,
+        };
+      }
+      const effects = [
+        createModelEffect(
+          nextState,
+          event.id,
+          0,
+          event.payload.error.message,
+        ),
+      ];
+      return withReadyEffects(nextState, event.sequence, effects);
+    }
 
     case "model.failed": {
       requireStatus(state, event.type, "running");

@@ -49,6 +49,25 @@ function messageFrom(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown Driver error";
 }
 
+function parseDriverError(value: unknown, label: string): DriverError {
+  if (typeof value !== "object" || value === null) {
+    throw new TypeError(`${label} must be an object`);
+  }
+  const candidate = value as Partial<DriverError>;
+  if (
+    typeof candidate.code !== "string" ||
+    typeof candidate.message !== "string" ||
+    typeof candidate.retryable !== "boolean"
+  ) {
+    throw new TypeError(`${label} has an invalid shape`);
+  }
+  return {
+    code: candidate.code,
+    message: candidate.message,
+    retryable: candidate.retryable,
+  };
+}
+
 export class EffectDispatcher {
   readonly #agent: AgentDefinition;
   readonly #modelDrivers: Readonly<Record<string, ModelDriver>>;
@@ -133,10 +152,23 @@ export class EffectDispatcher {
     }
 
     try {
+      const planRejections = (outcome.planRejections ?? []).map(
+        (rejection, index) =>
+          parseDriverError(rejection, `Model Plan rejection ${index}`),
+      );
       return {
         payload: {
           accounting,
           effectId: effect.id,
+          ...(planRejections.length === 0
+            ? {}
+            : {
+                planRejections: planRejections.map((error) => ({
+                  effectId: effect.id,
+                  error,
+                  proposals: [],
+                })),
+              }),
           response: parseModelResponse(outcome.value),
         },
         type: "model.completed",

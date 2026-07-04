@@ -493,7 +493,6 @@ export function AgentWorkspace({
                 motion={motion}
                 showCreationMark={showCreationMark}
                 snapshot={snapshot}
-                allToolDetailsExpanded={allToolDetailsExpanded}
                 expandedToolEffectIds={currentToolDisclosure.expandedEffectIds}
                 onToggleToolDetail={toggleToolDetail}
                 revealLatestRequest={transcriptRevealRequest}
@@ -501,79 +500,90 @@ export function AgentWorkspace({
               />
             </box>
 
-            <ExecutionDock snapshot={snapshot} width={chatWidth} />
-
-            {showAttentionRail ? null : (
-              <AttentionStrip model={attention} width={chatWidth} />
-            )}
-
-            <SlashCommandMenu
-              draft={draft}
-              input={composer}
-              onInsert={setComposerValue}
-              onInvoke={invokeCommand}
-            />
-
-            <ThreadPicker
-              input={composer}
-              onClose={() => active?.controller.closeThreadPicker()}
-              onSelect={(threadId) => {
-                void active?.controller.selectThread(threadId);
-              }}
-              open={snapshot.threadPickerOpen}
-              threads={snapshot.threads}
-            />
-
             <box
-              backgroundColor={jixuTheme.surface}
-              border={["top", "bottom", "left", "right"]}
-              borderColor={jixuTheme.divider}
-              id="composer"
               style={{
-                alignItems: "flex-start",
-                columnGap: 1,
-                flexDirection: "row",
+                flexDirection: "column",
                 flexShrink: 0,
-                maxHeight: COMPOSER_MAX_HEIGHT,
-                minHeight: COMPOSER_MIN_HEIGHT,
-                paddingBottom: 1,
-                paddingLeft: 1,
-                paddingRight: 1,
-                paddingTop: 1,
                 width: chatWidth,
               }}
             >
-              <box backgroundColor={jixuTheme.secondary} style={{ height: "100%", width: 1 }} />
-              <textarea
-                ref={composer}
-                backgroundColor={jixuTheme.surface}
-                cursorColor={jixuTheme.brand}
-                focused
-                focusedBackgroundColor={jixuTheme.surface}
-                focusedTextColor={jixuTheme.text}
-                id="composer-editor"
-                keyBindings={COMPOSER_KEY_BINDINGS}
-                onContentChange={() => {
-                  setDraft(composer.current?.plainText ?? "");
-                }}
-                onSubmit={submit}
-                placeholder={
-                  !configured
-                    ? "Use /config to connect a model…"
-                    : snapshot.busy
-                      ? "Queue a follow-up…"
-                      : "Ask Jixu anything…"
-                }
-                placeholderColor={jixuTheme.secondary}
-                style={{
-                  flexGrow: 1,
-                  height: "auto",
-                  maxHeight: COMPOSER_EDITOR_MAX_HEIGHT,
-                  minHeight: 1,
-                }}
-                textColor={jixuTheme.text}
-                wrapMode="word"
+              <ExecutionDock snapshot={snapshot} width={chatWidth} />
+
+              {showAttentionRail ? null : (
+                <AttentionStrip model={attention} width={chatWidth} />
+              )}
+
+              <SlashCommandMenu
+                draft={draft}
+                input={composer}
+                onInsert={setComposerValue}
+                onInvoke={invokeCommand}
               />
+
+              <ThreadPicker
+                input={composer}
+                onClose={() => active?.controller.closeThreadPicker()}
+                onSelect={(threadId) => {
+                  void active?.controller.selectThread(threadId);
+                }}
+                open={snapshot.threadPickerOpen}
+                threads={snapshot.threads}
+              />
+
+              <box
+                backgroundColor={jixuTheme.surface}
+                border={["top", "bottom", "left", "right"]}
+                borderColor={jixuTheme.divider}
+                id="composer"
+                style={{
+                  alignItems: "flex-start",
+                  columnGap: 1,
+                  flexDirection: "row",
+                  flexShrink: 0,
+                  maxHeight: COMPOSER_MAX_HEIGHT,
+                  minHeight: COMPOSER_MIN_HEIGHT,
+                  paddingBottom: 1,
+                  paddingLeft: 1,
+                  paddingRight: 1,
+                  paddingTop: 1,
+                  width: chatWidth,
+                }}
+              >
+                <box
+                  backgroundColor={jixuTheme.secondary}
+                  style={{ height: "100%", width: 1 }}
+                />
+                <textarea
+                  ref={composer}
+                  backgroundColor={jixuTheme.surface}
+                  cursorColor={jixuTheme.brand}
+                  focused
+                  focusedBackgroundColor={jixuTheme.surface}
+                  focusedTextColor={jixuTheme.text}
+                  id="composer-editor"
+                  keyBindings={COMPOSER_KEY_BINDINGS}
+                  onContentChange={() => {
+                    setDraft(composer.current?.plainText ?? "");
+                  }}
+                  onSubmit={submit}
+                  placeholder={
+                    !configured
+                      ? "Use /config to connect a model…"
+                      : snapshot.busy
+                        ? "Queue a follow-up…"
+                        : "Ask Jixu anything…"
+                  }
+                  placeholderColor={jixuTheme.secondary}
+                  style={{
+                    flexGrow: 1,
+                    height: "auto",
+                    maxHeight: COMPOSER_EDITOR_MAX_HEIGHT,
+                    minHeight: 1,
+                  }}
+                  textColor={jixuTheme.text}
+                  wrapMode="word"
+                />
+              </box>
             </box>
           </box>
 

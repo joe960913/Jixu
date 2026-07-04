@@ -27,6 +27,7 @@ export interface ModelGenerateInput {
   readonly messages: readonly ModelMessage[];
   readonly model: ModelRef;
   readonly planControl: PlanControlDescriptor;
+  readonly planRejectionFeedback?: string;
   readonly progressControl: ProgressControlDescriptor;
   readonly tools: readonly ToolDescriptor[];
 }
@@ -69,4 +70,5 @@ export type DriverOutcome<T> =
 
 export type ModelOutcome = DriverOutcome<ModelResponse> & {
   readonly accounting?: ModelAccounting;
+  readonly planRejections?: readonly DriverError[];
 };

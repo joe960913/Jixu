@@ -147,7 +147,6 @@ export function AttentionRail({
         <box style={{ flexDirection: "column", paddingLeft: 2, width: "100%" }}>
           <text fg={jixuTheme.text} wrapMode="word">
             {truncate(model.plan.label, Math.max(8, width - 4))}
-            {model.plan.revision === undefined ? "" : ` · r${model.plan.revision}`}
           </text>
           <text fg={jixuTheme.secondary} wrapMode="word">
             {truncate(model.plan.detail, Math.max(8, (width - 4) * 2))}

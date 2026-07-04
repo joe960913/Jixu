@@ -107,6 +107,8 @@ const successfulDriver: ModelDriver = {
     const codeExecution = latestUser?.content === "Code task";
     const markdownExecution = latestUser?.content === "Markdown task";
     const scrollExecution = latestUser?.content === "Scroll task";
+    const planOnlyExecution = latestUser?.content === "Plan-only task";
+    const planCancelExecution = latestUser?.content === "Cancel Plan task";
     const failureBatchExecution = latestUser?.content === "Failure batch";
     const priced = latestUser?.content !== "Compact activity";
     if (latestUser?.content === "Thinking task") {
@@ -144,6 +146,81 @@ const successfulDriver: ModelDriver = {
         value: {
           content: "The latest message remains in view.",
           planUpdates: [],
+          toolCalls: [],
+        },
+      };
+    }
+    if (planOnlyExecution) {
+      const correctingRejectedPlan =
+        effect.input.planRejectionFeedback !== undefined;
+      return {
+        accounting: smokeAccounting(true),
+        status: "succeeded",
+        value:
+          effect.input.activePlan === null
+            ? {
+                content: correctingRejectedPlan
+                  ? "I created the Plan and it is ready to use."
+                  : "",
+                planUpdates: [{
+                  acceptanceCriteria: ["The Plan is visible and ready"],
+                  assumptions: [],
+                  blockers: [],
+                  nextAction: correctingRejectedPlan
+                    ? "Wait for user instruction"
+                    : null,
+                  objective: "Prepare the requested work",
+                  operation: "create",
+                  steps: [
+                    {
+                      description: "Inspect the request",
+                      evidence: [],
+                      id: "inspect-request",
+                      status: "pending",
+                    },
+                    {
+                      description: "Complete the work",
+                      evidence: [],
+                      id: "complete-work",
+                      status: "pending",
+                    },
+                  ],
+                }],
+                toolCalls: [],
+              }
+            : { content: "The Plan is ready to use.", planUpdates: [], toolCalls: [] },
+      };
+    }
+    if (planCancelExecution && effect.input.activePlan !== null) {
+      if (effect.input.planRejectionFeedback === undefined) {
+        return {
+          accounting: smokeAccounting(true),
+          planRejections: [{
+            code: "plan_update_invalid",
+            message: "Plan control fixture.steps[0] must be a JSON object",
+            retryable: false,
+          }],
+          status: "succeeded",
+          value: { content: "", planUpdates: [], toolCalls: [] },
+        };
+      }
+      return {
+        accounting: smokeAccounting(true),
+        status: "succeeded",
+        value: {
+          content: "I cancelled the Plan.",
+          planUpdates: [{
+            acceptanceCriteria: effect.input.activePlan.acceptanceCriteria,
+            assumptions: effect.input.activePlan.assumptions,
+            blockers: effect.input.activePlan.blockers,
+            nextAction: null,
+            objective: effect.input.activePlan.objective,
+            operation: "abandon",
+            steps: effect.input.activePlan.steps.map((step) => ({
+              ...step,
+              status: step.status === "in_progress" ? "skipped" : step.status,
+            })),
+          }],
           toolCalls: [],
         },
       };
@@ -1045,7 +1122,7 @@ try {
   assert.match(directFrame, /edit/);
   assert.match(directFrame, /cat > \/tmp\/hello\.html\s+· exit 0/);
   assert.match(directFrame, /demo\.html\s+· 1 replacement/);
-  assert.match(directFrame, /Ctrl\+O Expand all/);
+  assert.doesNotMatch(directFrame, /Ctrl\+O/);
   assert.doesNotMatch(directFrame, /fixture output/);
   assert.doesNotMatch(directFrame, /REPLACEMENT DIFF/);
   assert.equal(setup.renderer.root.findDescendantById("plan-strip"), undefined);
@@ -1200,6 +1277,59 @@ try {
   assert.doesNotMatch(setup.captureCharFrame(), /fixture output/);
 
   await act(async () => {
+    await activeController.current?.submit("/new");
+    await activeController.current?.submit("Plan-only task");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await setup.flush();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const planOnlyFrame = setup.captureCharFrame();
+  assert.match(planOnlyFrame, /I created the Plan and it is ready to use\./);
+  assert.match(planOnlyFrame, /Prepare the requested/);
+  assert.doesNotMatch(planOnlyFrame, /reply without text|PLAN\s+r\d+/);
+  const planStrip = setup.renderer.root.findDescendantById("plan-strip") as
+    | Renderable
+    | undefined;
+  const composer = setup.renderer.root.findDescendantById("composer") as
+    | Renderable
+    | undefined;
+  assert.notEqual(planStrip, undefined);
+  assert.notEqual(composer, undefined);
+  assert.equal(
+    planStrip === undefined || composer === undefined
+      ? undefined
+      : planStrip.y + planStrip.height,
+    composer?.y,
+  );
+
+  await act(async () => {
+    await activeController.current?.submit("Cancel Plan task");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await setup.flush();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const cancelledPlanFrame = setup.captureCharFrame();
+  assert.match(cancelledPlanFrame, /I cancelled the Plan\./);
+  assert.doesNotMatch(cancelledPlanFrame, /reply without text|Model failed/);
+  assert.equal(setup.renderer.root.findDescendantById("plan-strip"), undefined);
+
+  if (directThreadId !== null && directThreadId !== undefined) {
+    await act(async () => {
+      await activeController.current?.selectThread(directThreadId);
+    });
+  }
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+
+  await act(async () => {
     if (activeController.current !== null) {
       await activeController.current.submit("Explain this repository");
     }
@@ -1211,7 +1341,8 @@ try {
   assert.match(completedFrame, /vendor\/model-example/);
   assert.match(completedFrame, /Response committed/);
   assert.match(completedFrame, /The durable run completed\./);
-  assert.match(completedFrame, /PLAN r1/);
+  assert.match(completedFrame, /PLAN/);
+  assert.doesNotMatch(completedFrame, /PLAN\s+r\d+/);
   assert.match(completedFrame, /Explain the repository/);
   assert.match(completedFrame, /Inspect the architecture/);
   assert.match(completedFrame, /cat > \/tmp\/hello\.html\s+· exit 0/);
@@ -1554,7 +1685,8 @@ try {
     await setup.flush();
   });
   const collapsedBatchFrame = setup.captureCharFrame();
-  assert.match(collapsedBatchFrame, /5 done\s+Ctrl\+O Expand all/);
+  assert.match(collapsedBatchFrame, /5 done/);
+  assert.doesNotMatch(collapsedBatchFrame, /Ctrl\+O/);
   assert.doesNotMatch(collapsedBatchFrame, /printf batch-1/);
 
   await act(async () => {
@@ -1615,7 +1747,8 @@ try {
     await setup.flush();
   });
   const failedBatchFrame = setup.captureCharFrame();
-  assert.match(failedBatchFrame, /4 done · 1 unknown\s+Ctrl\+O Expand all/);
+  assert.match(failedBatchFrame, /4 done · 1 unknown/);
+  assert.doesNotMatch(failedBatchFrame, /Ctrl\+O/);
   assert.match(failedBatchFrame, /fail-indeterminate/);
   assert.match(failedBatchFrame, /Outcome unknown/);
 
@@ -1916,7 +2049,8 @@ try {
   const compactCompletedFrame = compactSetup.captureCharFrame();
   assert.match(compactCompletedFrame, /vendor\/model-example/);
   assert.match(compactCompletedFrame, /The durable run completed\./);
-  assert.match(compactCompletedFrame, /PLAN r1/);
+  assert.match(compactCompletedFrame, /PLAN/);
+  assert.doesNotMatch(compactCompletedFrame, /PLAN\s+r\d+/);
   assert.match(compactCompletedFrame, /Explain the repository/);
   assert.match(compactCompletedFrame, /USD —/);
   assert.doesNotMatch(compactCompletedFrame, /ACTIVITY/);

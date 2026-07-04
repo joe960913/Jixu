@@ -135,6 +135,12 @@ export interface QueuedInput {
   readonly eventId: string;
 }
 
+export interface PendingPlanRejection {
+  readonly effectId: string;
+  readonly error: DriverError;
+  readonly proposals: readonly PlanUpdateProposal[];
+}
+
 export interface ThreadState {
   readonly activePlan: PlanSnapshot | null;
   readonly agent: AgentSnapshot | null;
@@ -145,6 +151,7 @@ export interface ThreadState {
   readonly metrics: ThreadMetrics;
   readonly pauseRequested: boolean;
   readonly pendingEffects: Readonly<Record<string, EffectRequest>>;
+  readonly pendingPlanRejections: readonly PendingPlanRejection[];
   readonly pendingPlanUpdates: readonly PendingPlanUpdate[];
   readonly readyEffects: readonly EffectRequest[];
   readonly result: string | null;
@@ -175,6 +182,7 @@ export function createInitialThreadState(threadId: string): ThreadState {
     metrics: createInitialThreadMetrics(),
     pauseRequested: false,
     pendingEffects: {},
+    pendingPlanRejections: [],
     pendingPlanUpdates: [],
     readyEffects: [],
     result: null,

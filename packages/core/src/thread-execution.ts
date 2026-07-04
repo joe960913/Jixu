@@ -261,6 +261,11 @@ export class ThreadExecution implements Thread {
   async #drive(): Promise<void> {
     while (true) {
       const state = this.#state;
+      const pendingPlanRejection = state.pendingPlanRejections[0];
+      if (pendingPlanRejection !== undefined) {
+        await this.#commit("plan.rejected", pendingPlanRejection);
+        continue;
+      }
       const pendingPlanUpdate = state.pendingPlanUpdates[0];
       if (pendingPlanUpdate !== undefined) {
         const plan = materializePlanUpdates(
@@ -350,43 +355,6 @@ export class ThreadExecution implements Thread {
   ): Promise<void> {
     switch (proposal.type) {
       case "model.completed": {
-        const planUpdates = proposal.payload.response.planUpdates ?? [];
-        try {
-          materializePlanUpdates(
-            this.#state.activePlan,
-            planUpdates,
-            "preview",
-          );
-        } catch (error) {
-          const planError = {
-            code: "plan_update_invalid",
-            message:
-              error instanceof Error ? error.message : "Invalid Plan update",
-            retryable: false,
-          } as const;
-          const completed = await this.#commit(
-            "model.completed",
-            {
-              accounting: proposal.payload.accounting,
-              effectId: proposal.payload.effectId,
-              response: {
-                ...proposal.payload.response,
-                planUpdates: [],
-              },
-            },
-            causationId,
-          );
-          await this.#commit(
-            "plan.rejected",
-            {
-              effectId: proposal.payload.effectId,
-              error: planError,
-              proposals: planUpdates,
-            },
-            completed.event.id,
-          );
-          return;
-        }
         await this.#commit(proposal.type, proposal.payload, causationId);
         return;
       }

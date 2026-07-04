@@ -326,14 +326,12 @@ function ToolDetail({
 }
 
 function ToolLedger({
-  allDetailsExpanded,
   expandedEffectIds,
   liveOutput,
   onToggleDetail,
   operations,
   showAllOperations,
 }: {
-  readonly allDetailsExpanded: boolean;
   readonly expandedEffectIds: ReadonlySet<string>;
   readonly liveOutput: Readonly<Record<string, ToolLiveOutput>>;
   readonly onToggleDetail: (effectId: string) => void;
@@ -383,9 +381,6 @@ function ToolLedger({
           {affordance === null ? null : (
             <text fg={jixuTheme.secondary}>  {affordance}</text>
           )}
-          <text fg={jixuTheme.secondary}>
-            {`  Ctrl+O ${allDetailsExpanded ? "Collapse all" : "Expand all"}`}
-          </text>
         </box>
         {visible.map((operation) => {
           const tone = toolTone(operation);
@@ -553,7 +548,6 @@ export function Transcript({
   motion,
   showCreationMark,
   snapshot,
-  allToolDetailsExpanded,
   expandedToolEffectIds,
   onToggleToolDetail,
   revealLatestRequest,
@@ -564,7 +558,6 @@ export function Transcript({
   readonly motion: boolean;
   readonly showCreationMark: boolean;
   readonly snapshot: ThreadControllerSnapshot;
-  readonly allToolDetailsExpanded: boolean;
   readonly expandedToolEffectIds: ReadonlySet<string>;
   readonly onToggleToolDetail: (effectId: string) => void;
   readonly revealLatestRequest: number;
@@ -616,7 +609,6 @@ export function Transcript({
       {snapshot.transcript.map((entry) =>
         entry.kind === "tool-receipts" ? (
           <ToolLedger
-            allDetailsExpanded={allToolDetailsExpanded}
             expandedEffectIds={expandedToolEffectIds}
             key={`transcript-${entry.id}`}
             liveOutput={snapshot.toolLiveOutput}
