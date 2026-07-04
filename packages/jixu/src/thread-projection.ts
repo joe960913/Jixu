@@ -1,10 +1,12 @@
 import type { AnyThreadEvent, PlanSnapshot } from "@jixu/core";
 
-import { toolOperationForRequest } from "./work-status.ts";
+import {
+  toolOperationForOutcome,
+  toolOperationForRequest,
+} from "./work-status.ts";
 import type {
   ActivityEntry,
   ToolOperation,
-  ToolOperationStatus,
   TranscriptEntry,
 } from "./tui-model.ts";
 
@@ -163,7 +165,11 @@ export function projectThread(
       const operation = toolOperationForRequest(event);
       toolOperations.push(operation);
       const previous = transcript.at(-1);
-      if (previous?.kind === "tool-receipts") {
+      const requestEventId = event.payload.effect.requestedByEventId;
+      if (
+        previous?.kind === "tool-receipts" &&
+        previous.requestEventId === requestEventId
+      ) {
         transcript[transcript.length - 1] = {
           ...previous,
           operations: Object.freeze([...previous.operations, operation]),
@@ -173,22 +179,17 @@ export function projectThread(
           id: nextId++,
           kind: "tool-receipts",
           operations: Object.freeze([operation]),
+          requestEventId,
         });
       }
     }
     if (event.type === "tool.completed" || event.type === "tool.failed") {
-      const terminalStatus: ToolOperationStatus =
-        event.type === "tool.completed" ? "succeeded" : "failed";
       const operationIndex = toolOperations.findIndex(
         (operation) => operation.effectId === event.payload.effectId,
       );
       const operation = toolOperations[operationIndex];
       if (operation !== undefined) {
-        const updated = {
-          ...operation,
-          status: terminalStatus,
-        } as const;
-        toolOperations[operationIndex] = updated;
+        toolOperations[operationIndex] = toolOperationForOutcome(event, operation);
       }
       const receiptIndex = transcript.findLastIndex(
         (entry) =>
@@ -204,7 +205,7 @@ export function projectThread(
           operations: Object.freeze(
             receipt.operations.map((candidate) =>
               candidate.effectId === event.payload.effectId
-                ? { ...candidate, status: terminalStatus }
+                ? toolOperationForOutcome(event, candidate)
                 : candidate,
             ),
           ),

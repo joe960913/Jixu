@@ -5,11 +5,19 @@ import {
   defineAgent,
   defineSchema,
   defineTool,
+  TOOL_OUTPUT_SIGNAL_TYPE,
 } from "@jixu/core";
 import type { ModelDriver } from "@jixu/core";
 import {
+  BoxRenderable,
+  CodeRenderable,
+  getTreeSitterClient,
   ImageRenderable,
+  RGBA,
+  ScrollBoxRenderable,
+  SelectRenderable,
   type BaseRenderable,
+  type Renderable,
   type TextareaRenderable,
 } from "@opentui/core";
 import { setRendererCapabilities } from "@opentui/core/testing";
@@ -19,6 +27,10 @@ import { act } from "react";
 import type { JixuConnectionConfig } from "../src/config.ts";
 import { createThreadController } from "../src/thread-controller.ts";
 import type { ThreadController } from "../src/thread-controller.ts";
+import { jixuTheme } from "../src/theme.ts";
+import { CODE_BLOCK_MAX_CONTENT_HEIGHT } from "../src/tui-markdown.ts";
+import { registerJixuCodeParsers } from "../src/tui-parsers.ts";
+import { jixuMarkdownSyntaxStyle } from "../src/tui-syntax-theme.ts";
 import { JixuApp } from "../src/tui.tsx";
 
 let resolveThinkingStarted!: () => void;
@@ -53,6 +65,14 @@ let releaseContinuation!: () => void;
 const continuationGate = new Promise<void>((resolve) => {
   releaseContinuation = resolve;
 });
+let resolveScrollSubmissionStarted!: () => void;
+const scrollSubmissionStarted = new Promise<void>((resolve) => {
+  resolveScrollSubmissionStarted = resolve;
+});
+let releaseScrollSubmission!: () => void;
+const scrollSubmissionGate = new Promise<void>((resolve) => {
+  releaseScrollSubmission = resolve;
+});
 
 function smokeAccounting(priced: boolean) {
   return {
@@ -82,12 +102,17 @@ const successfulDriver: ModelDriver = {
       (message) => message.role === "user",
     );
     const directExecution = latestUser?.content === "Direct task";
+    const batchExecution = latestUser?.content === "Batch task";
+    const codeExecution = latestUser?.content === "Code task";
+    const markdownExecution = latestUser?.content === "Markdown task";
+    const scrollExecution = latestUser?.content === "Scroll task";
+    const failureBatchExecution = latestUser?.content === "Failure batch";
     const priced = latestUser?.content !== "Compact activity";
     if (latestUser?.content === "Thinking task") {
       resolveThinkingStarted();
       await thinkingTextGate;
       context.signals.emit({
-        data: { delta: "A partial answer" },
+        data: { delta: "```javascript\nconst partial = true;\n```" },
         kind: "signal",
         threadId: effect.threadId,
         type: "model.output_text.delta",
@@ -97,10 +122,35 @@ const successfulDriver: ModelDriver = {
       return {
         accounting: smokeAccounting(false),
         status: "succeeded",
-        value: { content: "A complete answer.", toolCalls: [] },
+        value: {
+          content: "```javascript\nconst complete = true;\n```",
+          toolCalls: [],
+        },
       };
     }
-    if (directExecution && latestMessage?.role === "tool") {
+    if (scrollExecution) {
+      context.signals.emit({
+        data: { delta: "Following the latest message" },
+        kind: "signal",
+        threadId: effect.threadId,
+        type: "model.output_text.delta",
+      });
+      resolveScrollSubmissionStarted();
+      await scrollSubmissionGate;
+      return {
+        accounting: smokeAccounting(true),
+        status: "succeeded",
+        value: {
+          content: "The latest message remains in view.",
+          planUpdates: [],
+          toolCalls: [],
+        },
+      };
+    }
+    if (
+      (directExecution || batchExecution || failureBatchExecution) &&
+      latestMessage?.role === "tool"
+    ) {
       resolveContinuationStarted();
       await continuationGate;
       return {
@@ -120,10 +170,94 @@ const successfulDriver: ModelDriver = {
       status: "succeeded",
       value: {
         content:
-          directExecution && latestMessage?.role !== "tool"
+          markdownExecution
+            ? [
+                "# Project Overview",
+                "",
+                "> **Note**: useful guidance with `inline code`.",
+                "",
+                "---",
+                "",
+                "## Checklist",
+                "",
+                "- [x] **Chat**: durable context",
+                "- [ ] **Media**: planned",
+                "",
+                "## Architecture",
+                "",
+                "| Module | Status | Priority |",
+                "| :--- | :---: | ---: |",
+                "| **Core** | `Active` | P0 |",
+                "| **Tools** | `Beta` | P1 |",
+                "",
+                "## Start",
+                "",
+                "```bash",
+                "git clone https://example.com/jixu.git",
+                "pnpm install",
+                "```",
+              ].join("\n")
+            : codeExecution
+            ? [
+                "A highlighted example:",
+                "",
+                "```javascript",
+                "function debounce(value, delay = 300) {",
+                "  const timer = setTimeout(() => value, delay);",
+                "  return timer;",
+                "}",
+                "```",
+                "",
+                "```unknown-language",
+                "raw fallback remains readable",
+                "```",
+                "",
+                "```json",
+                '{"ready": true, "count": 2}',
+                "```",
+                "",
+                "```shell",
+                "set -euo pipefail",
+                'name="jixu"',
+                "printf '%s\\n' \"$name\"",
+                "```",
+                "",
+                "```python",
+                "def greet(name: str) -> str:",
+                '    message = f"Hello, {name}"',
+                "    return message",
+                "```",
+                "",
+                "```html",
+                "<!DOCTYPE html>",
+                '<html lang="zh-CN">',
+                "<head>",
+                "  <title>Jixu clock</title>",
+                "  <style>",
+                "    body {",
+                "      color: #f5f3ef;",
+                "    }",
+                "  </style>",
+                "</head>",
+                "<body>",
+                '  <main data-theme="dark">',
+                "    <h1>Jixu</h1>",
+                '    <button id="toggle">Toggle</button>',
+                "    <script>const ready = true;</script>",
+                "  </main>",
+                "</body>",
+                "</html>",
+                "```",
+              ].join("\n")
+            : directExecution && latestMessage?.role !== "tool"
             ? "Creating the requested file."
+            : (batchExecution || failureBatchExecution) &&
+                latestMessage?.role !== "tool"
+              ? ""
             : "The **durable** run completed.",
-        planUpdates: directExecution
+        planUpdates:
+          directExecution || batchExecution || codeExecution || markdownExecution ||
+              failureBatchExecution
           ? []
           : [{
             acceptanceCriteria: ["The repository is explained accurately"],
@@ -148,12 +282,40 @@ const successfulDriver: ModelDriver = {
             ],
           }],
         toolCalls:
-          directExecution && latestMessage?.role !== "tool"
+          (batchExecution || failureBatchExecution) &&
+            latestMessage?.role !== "tool"
+            ? Array.from({ length: 5 }, (_, index) => ({
+                arguments: {
+                  command:
+                    failureBatchExecution && index === 2
+                      ? "fail-indeterminate"
+                      : `printf batch-${index + 1}`,
+                },
+                id: `bash-batch-${index + 1}`,
+                name: "bash",
+              }))
+            : directExecution && latestMessage?.role !== "tool"
             ? [
                 {
                   arguments: { command: "cat > /tmp/hello.html" },
                   id: "bash-1",
                   name: "bash",
+                },
+                {
+                  arguments: {
+                    newText: Array.from(
+                      { length: 8 },
+                      (_, index) => `new line ${index + 1}`,
+                    ).join("\n"),
+                    oldText: Array.from(
+                      { length: 8 },
+                      (_, index) => `old line ${index + 1}`,
+                    ).join("\n"),
+                    path: "demo.html",
+                    replaceAll: false,
+                  },
+                  id: "edit-1",
+                  name: "edit",
                 },
               ]
             : [],
@@ -181,28 +343,195 @@ const bashInput = defineSchema<{ readonly command: string }>({
     return { command: value.command };
   },
 });
-const textOutput = defineSchema<string>({
-  jsonSchema: { type: "string" },
+type BashFixtureOutput = {
+  readonly cancelled: boolean;
+  readonly exitCode: number | null;
+  readonly signal: string | null;
+  readonly stderr: string;
+  readonly stdout: string;
+  readonly timedOut: boolean;
+  readonly truncated: boolean;
+};
+const bashOutput = defineSchema<BashFixtureOutput>({
+  jsonSchema: {
+    additionalProperties: false,
+    properties: {
+      cancelled: { type: "boolean" },
+      exitCode: { type: ["integer", "null"] },
+      signal: { type: ["string", "null"] },
+      stderr: { type: "string" },
+      stdout: { type: "string" },
+      timedOut: { type: "boolean" },
+      truncated: { type: "boolean" },
+    },
+    required: [
+      "stdout",
+      "stderr",
+      "exitCode",
+      "signal",
+      "timedOut",
+      "cancelled",
+      "truncated",
+    ],
+    type: "object",
+  },
   parse(value) {
-    if (typeof value !== "string") throw new TypeError("output must be a string");
-    return value;
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value) ||
+      !("stdout" in value) ||
+      typeof value.stdout !== "string" ||
+      !("stderr" in value) ||
+      typeof value.stderr !== "string" ||
+      !("exitCode" in value) ||
+      (value.exitCode !== null && typeof value.exitCode !== "number") ||
+      !("signal" in value) ||
+      (value.signal !== null && typeof value.signal !== "string") ||
+      !("timedOut" in value) ||
+      typeof value.timedOut !== "boolean" ||
+      !("cancelled" in value) ||
+      typeof value.cancelled !== "boolean" ||
+      !("truncated" in value) ||
+      typeof value.truncated !== "boolean"
+    ) {
+      throw new TypeError("bash fixture output is invalid");
+    }
+    return {
+      cancelled: value.cancelled,
+      exitCode: value.exitCode,
+      signal: value.signal,
+      stderr: value.stderr,
+      stdout: value.stdout,
+      timedOut: value.timedOut,
+      truncated: value.truncated,
+    };
   },
 });
 const bash = defineTool({
   description: "Run a fixture shell command",
-  execute: async () => {
+  execute: async (input, context) => {
+    if (input.command === "fail-indeterminate") {
+      throw new Error("fixture outcome is unknown");
+    }
+    context.signals.emit({
+      data: {
+        delta: "fixture output\n",
+        effectId: context.effectId,
+        name: "bash",
+        stream: "stdout",
+      },
+      kind: "signal",
+      threadId: context.threadId,
+      type: TOOL_OUTPUT_SIGNAL_TYPE,
+    });
     resolveToolStarted();
     await toolGate;
-    return "completed";
+    return {
+      cancelled: false,
+      exitCode: 0,
+      signal: null,
+      stderr: "",
+      stdout: input.command.startsWith("cat >")
+        ? `${Array.from(
+            { length: 12 },
+            (_, index) => `fixture output ${index + 1}`,
+          ).join("\n")}\n`
+        : "fixture output\n",
+      timedOut: false,
+      truncated: false,
+    };
   },
   input: bashInput,
   name: "bash",
-  output: textOutput,
+  output: bashOutput,
+});
+type EditFixtureInput = {
+  readonly newText: string;
+  readonly oldText: string;
+  readonly path: string;
+  readonly replaceAll?: boolean;
+};
+const editInput = defineSchema<EditFixtureInput>({
+  jsonSchema: {
+    additionalProperties: false,
+    properties: {
+      newText: { type: "string" },
+      oldText: { type: "string" },
+      path: { type: "string" },
+      replaceAll: { type: "boolean" },
+    },
+    required: ["path", "oldText", "newText"],
+    type: "object",
+  },
+  parse(value) {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value)
+    ) {
+      throw new TypeError("edit fixture input is invalid");
+    }
+    const replaceAll = "replaceAll" in value ? value.replaceAll : undefined;
+    if (
+      !("path" in value) ||
+      typeof value.path !== "string" ||
+      !("oldText" in value) ||
+      typeof value.oldText !== "string" ||
+      !("newText" in value) ||
+      typeof value.newText !== "string" ||
+      (replaceAll !== undefined && typeof replaceAll !== "boolean")
+    ) {
+      throw new TypeError("edit fixture input is invalid");
+    }
+    return {
+      newText: value.newText,
+      oldText: value.oldText,
+      path: value.path,
+      ...(replaceAll === undefined ? {} : { replaceAll }),
+    };
+  },
+});
+type EditFixtureOutput = {
+  readonly path: string;
+  readonly replacements: number;
+};
+const editOutput = defineSchema<EditFixtureOutput>({
+  jsonSchema: {
+    additionalProperties: false,
+    properties: {
+      path: { type: "string" },
+      replacements: { type: "integer" },
+    },
+    required: ["path", "replacements"],
+    type: "object",
+  },
+  parse(value) {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value) ||
+      !("path" in value) ||
+      typeof value.path !== "string" ||
+      !("replacements" in value) ||
+      typeof value.replacements !== "number"
+    ) {
+      throw new TypeError("edit fixture output is invalid");
+    }
+    return { path: value.path, replacements: value.replacements };
+  },
+});
+const edit = defineTool({
+  description: "Replace a fixture text fragment",
+  execute: async (input) => ({ path: input.path, replacements: 1 }),
+  input: editInput,
+  name: "edit",
+  output: editOutput,
 });
 const agent = defineAgent({
   instructions: "Be useful.",
   model: { model: "vendor/model-example", provider: "openai-compatible" },
-  tools: [bash],
+  tools: [bash, edit],
 });
 const harness = createHarness({
   agent,
@@ -212,11 +541,43 @@ let connected: JixuConnectionConfig | null = null;
 const activeController: { current: ThreadController | null } = { current: null };
 const secret = "openrouter-secret-fixture";
 
+const parserRegistration = await registerJixuCodeParsers();
+assert.equal(parserRegistration.status, "registered");
+
 function containsImageRenderable(renderable: BaseRenderable): boolean {
   return (
     renderable instanceof ImageRenderable ||
     renderable.getChildren().some(containsImageRenderable)
   );
+}
+
+function containsCodeRenderable(renderable: BaseRenderable): boolean {
+  return (
+    renderable instanceof CodeRenderable ||
+    renderable.getChildren().some(containsCodeRenderable)
+  );
+}
+
+function collectCodeRenderables(
+  renderable: BaseRenderable,
+): readonly CodeRenderable[] {
+  const nested = renderable.getChildren().flatMap(collectCodeRenderables);
+  return renderable instanceof CodeRenderable
+    ? [renderable, ...nested]
+    : nested;
+}
+
+function framedScrollAncestor(
+  renderable: BaseRenderable,
+): ScrollBoxRenderable | undefined {
+  let current = renderable.parent;
+  while (current !== null) {
+    if (current instanceof ScrollBoxRenderable && current.border === true) {
+      return current;
+    }
+    current = current.parent;
+  }
+  return undefined;
 }
 
 const setup = await testRender(
@@ -348,10 +709,79 @@ try {
     await setup.flush();
   });
   const configurationFrame = setup.captureCharFrame();
+  // JX-AC-042: Configuration exposes reversible navigation and endpoint presets.
   assert.match(configurationFrame, /Model connection/);
+  assert.match(configurationFrame, /BACK TO CHAT/);
+  assert.match(configurationFrame, /OpenAI/);
+  assert.match(configurationFrame, /OpenRouter/);
+  assert.match(configurationFrame, /DeepSeek/);
+  assert.match(configurationFrame, /Groq/);
+  assert.match(configurationFrame, /Custom/);
+  assert.match(configurationFrame, /SETTINGS ~\/\.jixu\/settings\.json/);
+  assert.match(configurationFrame, /API KEY ~\/\.jixu\/auth\.json/);
+  assert.match(configurationFrame, /Esc Back/);
+  assert.match(configurationFrame, /Workspace \/workspace/);
+  assert.match(configurationFrame, /Ctrl\+C Quit/);
+  assert.doesNotMatch(configurationFrame, /Chat Completions/);
+  assert.doesNotMatch(configurationFrame, /·/);
 
   await act(async () => {
     setup.mockInput.pressEnter();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  await act(async () => {
+    setup.mockInput.pressKey("2");
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.match(setup.captureCharFrame(), /https:\/\/openrouter\.ai\/api\/v1/);
+
+  const configBack = setup.renderer.root.findDescendantById(
+    "config-back",
+  ) as Renderable | undefined;
+  assert.notEqual(configBack, undefined);
+  await act(async () => {
+    if (configBack !== undefined) {
+      await setup.mockMouse.click(configBack.x, configBack.y);
+    }
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.doesNotMatch(setup.captureCharFrame(), /Model connection/);
+  assert.match(setup.captureCharFrame(), /Model not configured/);
+
+  await act(async () => {
+    await setup.mockInput.typeText("/config");
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  await act(async () => {
+    setup.mockInput.pressEnter();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.match(setup.captureCharFrame(), /Model connection/);
+
+  await act(async () => {
+    setup.mockInput.pressEnter();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  await act(async () => {
+    setup.mockInput.pressKey("5");
   });
   await act(async () => {
     await setup.renderOnce();
@@ -465,7 +895,7 @@ try {
   await act(async () => {
     releaseThinkingText();
     await thinkingTextStarted;
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 500));
   });
   await act(async () => {
     await setup.renderOnce();
@@ -476,7 +906,8 @@ try {
     setup.renderer.root.findDescendantById("ephemeral-agent-status"),
     undefined,
   );
-  assert.match(streamingFrame, /A partial answer/);
+  assert.match(streamingFrame, /const partial = true/);
+  assert.equal(containsCodeRenderable(setup.renderer.root), true);
   assert.match(streamingFrame, /MODEL\s+vendor\/model-example/);
 
   await act(async () => {
@@ -488,7 +919,34 @@ try {
     await setup.renderOnce();
     await setup.flush();
   });
-  assert.match(setup.captureCharFrame(), /A complete answer\./);
+  assert.match(setup.captureCharFrame(), /const complete = true/);
+  assert.equal(containsCodeRenderable(setup.renderer.root), true);
+
+  await act(async () => {
+    await activeController.current?.submit("/resume");
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  // JX-AC-046: even one previous Thread receives a readable three-row viewport.
+  const threadSelect = setup.renderer.root.findDescendantById(
+    "thread-select",
+  ) as SelectRenderable | undefined;
+  assert.equal(threadSelect?.height, 3);
+  assert.match(setup.captureCharFrame(), /Threads/);
+  assert.match(setup.captureCharFrame(), /Thinking task/);
+  await act(async () => {
+    setup.mockInput.pressEscape();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.equal(
+    setup.renderer.root.findDescendantById("thread-select"),
+    undefined,
+  );
 
   let directSubmission: Promise<void> | null = null;
   await act(async () => {
@@ -496,6 +954,7 @@ try {
       directSubmission = activeController.current.submit("Direct task");
     }
     await toolStarted;
+    await new Promise((resolve) => setTimeout(resolve, 50));
   });
   await act(async () => {
     await setup.renderOnce();
@@ -511,7 +970,11 @@ try {
     .split("\n")
     .find((line) => line.includes("TOOLS"));
   assert.match(liveToolHeader ?? "", /JIXU.*TOOLS/);
-  assert.match(liveToolFrame, /cat > \/tmp\/hello\.html · In progress/);
+  assert.match(
+    liveToolFrame,
+    /bash\s+cat > \/tmp\/hello\.html\s+· In progress/,
+  );
+  assert.match(liveToolFrame, /fixture output/);
   assert.match(liveToolFrame, /MODEL\s+vendor\/model-example/);
 
   await act(async () => {
@@ -527,7 +990,8 @@ try {
     setup.renderer.root.findDescendantById("ephemeral-agent-status"),
     undefined,
   );
-  assert.match(continuationFrame, /cat > \/tmp\/hello\.html · Completed/);
+  assert.match(continuationFrame, /cat > \/tmp\/hello\.html\s+· exit 0/);
+  assert.doesNotMatch(continuationFrame, /fixture output/);
   assert.match(continuationFrame, /Thinking \.\.\./);
 
   await act(async () => {
@@ -546,8 +1010,162 @@ try {
   assert.match(directFrame, /No intervention required/);
   assert.match(directFrame, /TOOLS/);
   assert.match(directFrame, /bash/);
-  assert.match(directFrame, /cat > \/tmp\/hello\.html · Completed/);
+  assert.match(directFrame, /edit/);
+  assert.match(directFrame, /cat > \/tmp\/hello\.html\s+· exit 0/);
+  assert.match(directFrame, /demo\.html\s+· 1 replacement/);
+  assert.match(directFrame, /Ctrl\+O Expand all/);
+  assert.doesNotMatch(directFrame, /fixture output/);
+  assert.doesNotMatch(directFrame, /REPLACEMENT DIFF/);
   assert.equal(setup.renderer.root.findDescendantById("plan-strip"), undefined);
+
+  const directSnapshot = activeController.current?.getSnapshot();
+  const directThreadId = directSnapshot?.currentThreadId;
+  const directOperations = directSnapshot?.transcript.flatMap((entry) =>
+    entry.kind === "tool-receipts" ? entry.operations : [],
+  ) ?? [];
+  const bashOperation = directOperations.find((operation) => operation.name === "bash");
+  const editOperation = directOperations.find((operation) => operation.name === "edit");
+  assert.notEqual(directThreadId, null);
+  assert.notEqual(directThreadId, undefined);
+  assert.notEqual(bashOperation, undefined);
+  assert.notEqual(editOperation, undefined);
+
+  // JX-AC-041: every row independently discloses bounded durable detail.
+  const editRow = editOperation === undefined
+    ? undefined
+    : setup.renderer.root.findDescendantById(
+        `tool-operation-${editOperation.effectId}`,
+      ) as Renderable | undefined;
+  assert.notEqual(editRow, undefined);
+  await act(async () => {
+    if (editRow !== undefined) {
+      await setup.mockMouse.click(editRow.x, editRow.y);
+    }
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const editDetailFrame = setup.captureCharFrame();
+  assert.match(editDetailFrame, /REPLACEMENT DIFF/);
+  assert.match(editDetailFrame, /- old line 1/);
+  assert.doesNotMatch(editDetailFrame, /fixture output/);
+  const editDetail = editOperation === undefined
+    ? undefined
+    : setup.renderer.root.findDescendantById(
+        `tool-detail-${editOperation.effectId}`,
+      ) as Renderable | undefined;
+  assert.equal(editDetail?.height, 8);
+  await act(async () => {
+    if (editDetail !== undefined) {
+      for (let index = 0; index < 6; index += 1) {
+        await setup.mockMouse.scroll(
+          editDetail.x + 1,
+          editDetail.y + 2,
+          "down",
+        );
+      }
+    }
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.match(setup.captureCharFrame(), /\+ new line 1/);
+
+  if (directThreadId !== null && directThreadId !== undefined) {
+    await act(async () => {
+      await activeController.current?.submit("/new");
+    });
+    await act(async () => {
+      await setup.renderOnce();
+      await setup.flush();
+    });
+    assert.equal(
+      editOperation === undefined
+        ? undefined
+        : setup.renderer.root.findDescendantById(
+            `tool-detail-${editOperation.effectId}`,
+          ),
+      undefined,
+    );
+    await act(async () => {
+      await activeController.current?.selectThread(directThreadId);
+    });
+    await act(async () => {
+      await setup.renderOnce();
+      await setup.flush();
+    });
+    assert.notEqual(
+      editOperation === undefined
+        ? undefined
+        : setup.renderer.root.findDescendantById(
+            `tool-detail-${editOperation.effectId}`,
+          ),
+      undefined,
+    );
+  }
+
+  const restoredEditRow = editOperation === undefined
+    ? undefined
+    : setup.renderer.root.findDescendantById(
+        `tool-operation-${editOperation.effectId}`,
+      ) as Renderable | undefined;
+  await act(async () => {
+    if (restoredEditRow !== undefined) {
+      await setup.mockMouse.click(restoredEditRow.x, restoredEditRow.y);
+    }
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.doesNotMatch(setup.captureCharFrame(), /REPLACEMENT DIFF/);
+
+  const bashRow = bashOperation === undefined
+    ? undefined
+    : setup.renderer.root.findDescendantById(
+        `tool-operation-${bashOperation.effectId}`,
+      ) as Renderable | undefined;
+  assert.notEqual(bashRow, undefined);
+  await act(async () => {
+    if (bashRow !== undefined) {
+      await setup.mockMouse.click(bashRow.x, bashRow.y);
+    }
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const bashDetailFrame = setup.captureCharFrame();
+  assert.match(bashDetailFrame, /COMMAND/);
+  assert.match(bashDetailFrame, /fixture output/);
+  const bashDetail = bashOperation === undefined
+    ? undefined
+    : setup.renderer.root.findDescendantById(
+        `tool-detail-${bashOperation.effectId}`,
+      ) as Renderable | undefined;
+  assert.equal(bashDetail?.height, 8);
+
+  await act(async () => {
+    setup.mockInput.pressKey("o", { ctrl: true });
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const expandedToolFrame = setup.captureCharFrame();
+  assert.match(expandedToolFrame, /fixture output/);
+  assert.match(expandedToolFrame, /REPLACEMENT DIFF/);
+
+  await act(async () => {
+    setup.mockInput.pressKey("o", { ctrl: true });
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.doesNotMatch(setup.captureCharFrame(), /fixture output/);
 
   await act(async () => {
     if (activeController.current !== null) {
@@ -564,13 +1182,332 @@ try {
   assert.match(completedFrame, /PLAN r1/);
   assert.match(completedFrame, /Explain the repository/);
   assert.match(completedFrame, /Inspect the architecture/);
-  assert.match(completedFrame, /cat > \/tmp\/hello\.html · Completed/);
+  assert.match(completedFrame, /cat > \/tmp\/hello\.html\s+· exit 0/);
   assert.notEqual(setup.renderer.root.findDescendantById("plan-strip"), undefined);
   // JX-AC-028: the footer reads durable Thread cost, not UI-local counters.
   assert.match(completedFrame, /USD \$0\.0396/);
   assert.doesNotMatch(completedFrame, /\b\d+%\b|ETA|ACTIVITY|Thread created/);
   assert.doesNotMatch(completedFrame, /Conversation|Run activity|New Run/);
 
+  await act(async () => {
+    await activeController.current?.submit("Code task");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await setup.flush();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const codeFrame = setup.captureCharFrame();
+  // JX-AC-045: fenced code uses adaptive frames, the Jixu palette, and a
+  // documented HTML compatibility parser.
+  assert.doesNotMatch(codeFrame, /```javascript/);
+  assert.equal(containsCodeRenderable(setup.renderer.root), true);
+  const codeRenderables = collectCodeRenderables(setup.renderer.root);
+  const javascriptCode = codeRenderables.find(
+    (renderable) =>
+      renderable.filetype === "javascript" &&
+      renderable.content.includes("function debounce"),
+  );
+  const unknownCode = codeRenderables.find(
+    (renderable) => renderable.content === "raw fallback remains readable",
+  );
+  const htmlCode = codeRenderables.find(
+    (renderable) =>
+      renderable.filetype === "typescriptreact" &&
+      renderable.content.startsWith("<!DOCTYPE html>"),
+  );
+  const jsonCode = codeRenderables.find(
+    (renderable) => renderable.content === '{"ready": true, "count": 2}',
+  );
+  const shellCode = codeRenderables.find(
+    (renderable) =>
+      renderable.filetype === "shell" &&
+      renderable.content.startsWith("set -euo pipefail"),
+  );
+  const pythonCode = codeRenderables.find(
+    (renderable) =>
+      renderable.filetype === "python" &&
+      renderable.content.startsWith("def greet"),
+  );
+  assert.notEqual(javascriptCode, undefined);
+  assert.equal(unknownCode?.filetype, "unknown-language");
+  assert.notEqual(htmlCode, undefined);
+  assert.equal(jsonCode?.filetype, "javascript");
+  assert.notEqual(shellCode, undefined);
+  assert.notEqual(pythonCode, undefined);
+  assert.ok(javascriptCode?.parent instanceof BoxRenderable);
+  assert.equal(javascriptCode?.parent?.height, 6);
+  assert.equal(
+    javascriptCode?.parent instanceof BoxRenderable
+      ? javascriptCode.parent.title
+      : undefined,
+    "JAVASCRIPT",
+  );
+  assert.equal(
+    jsonCode?.parent instanceof BoxRenderable ? jsonCode.parent.title : undefined,
+    "JSON",
+  );
+  assert.equal(
+    shellCode?.parent instanceof BoxRenderable ? shellCode.parent.title : undefined,
+    "SHELL",
+  );
+  assert.equal(
+    pythonCode?.parent instanceof BoxRenderable
+      ? pythonCode.parent.title
+      : undefined,
+    "PYTHON",
+  );
+  assert.equal(
+    javascriptCode?.parent instanceof BoxRenderable
+      ? javascriptCode.parent.border
+      : false,
+    true,
+  );
+  if (htmlCode !== undefined) {
+    await htmlCode.highlightingDone;
+  }
+  assert.ok(
+    htmlCode !== undefined &&
+      Array.from({ length: htmlCode.content.split("\n").length }, (_, index) =>
+        htmlCode.getLineHighlights(index),
+      ).some((highlights) => highlights.length > 0),
+  );
+  if (jsonCode !== undefined) {
+    await jsonCode.highlightingDone;
+  }
+  assert.ok(
+    jsonCode !== undefined && jsonCode.getLineHighlights(0).length > 0,
+  );
+  if (shellCode !== undefined) {
+    await shellCode.highlightingDone;
+  }
+  assert.ok(
+    shellCode !== undefined &&
+      Array.from({ length: shellCode.content.split("\n").length }, (_, index) =>
+        shellCode.getLineHighlights(index),
+      ).some((highlights) => highlights.length > 0),
+  );
+  if (pythonCode !== undefined) {
+    await pythonCode.highlightingDone;
+  }
+  assert.ok(
+    pythonCode !== undefined &&
+      Array.from({ length: pythonCode.content.split("\n").length }, (_, index) =>
+        pythonCode.getLineHighlights(index),
+      ).some((highlights) => highlights.length > 0),
+  );
+  const parserClient = getTreeSitterClient();
+  for (const [filetype, content] of [
+    ["bash", "echo \"$HOME\""],
+    ["sh", "value=ready"],
+    ["shell", "printf '%s\\n' ready"],
+    ["python", "answer: int = 42"],
+    ["py", "print('ready')"],
+  ] as const) {
+    const highlighted = await parserClient.highlightOnce(content, filetype);
+    assert.equal(highlighted.error, undefined);
+    assert.ok((highlighted.highlights?.length ?? 0) > 0);
+  }
+  const htmlFrame = htmlCode === undefined
+    ? undefined
+    : framedScrollAncestor(htmlCode);
+  assert.notEqual(htmlFrame, undefined);
+  assert.equal(htmlFrame?.height, CODE_BLOCK_MAX_CONTENT_HEIGHT + 2);
+  assert.equal(htmlFrame?.border, true);
+  assert.equal(htmlFrame?.title, "HTML");
+  const initialHtmlScrollTop = htmlFrame?.scrollTop ?? 0;
+  await act(async () => {
+    if (htmlFrame !== undefined) {
+      for (let index = 0; index < 5; index += 1) {
+        await setup.mockMouse.scroll(
+          htmlFrame.x + 2,
+          htmlFrame.y + 2,
+          "down",
+        );
+      }
+    }
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.ok((htmlFrame?.scrollTop ?? 0) > initialHtmlScrollTop);
+  assert.equal(
+    jixuMarkdownSyntaxStyle
+      .getStyle("keyword")
+      ?.fg?.equals(RGBA.fromHex(jixuTheme.brand)),
+    true,
+  );
+  assert.equal(
+    jixuMarkdownSyntaxStyle
+      .getStyle("string")
+      ?.fg?.equals(RGBA.fromHex(jixuTheme.success)),
+    true,
+  );
+  assert.equal(
+    jixuMarkdownSyntaxStyle
+      .getStyle("markup.raw.block")
+      ?.bg?.equals(RGBA.fromHex(jixuTheme.elevated)),
+    true,
+  );
+
+  await act(async () => {
+    setup.resize(120, 50);
+  });
+  await act(async () => {
+    await activeController.current?.submit("Markdown task");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await setup.flush();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const markdownFrame = setup.captureCharFrame();
+  // JX-AC-045: complete Markdown uses semantic blocks instead of exposing
+  // source punctuation, including task state and a compact column table.
+  assert.match(markdownFrame, /Project Overview/);
+  assert.match(markdownFrame, /Note: useful guidance with inline code\./);
+  assert.match(markdownFrame, /Checklist/);
+  assert.match(markdownFrame, /✓\s+Chat: durable context/);
+  assert.match(markdownFrame, /○\s+Media: planned/);
+  assert.match(markdownFrame, /Module\s+Status\s+Priority/);
+  assert.match(markdownFrame, /Core\s+Active\s+P0/);
+  assert.match(markdownFrame, /BASH/);
+  assert.match(markdownFrame, /git clone https:\/\/example\.com\/jixu\.git/);
+  assert.match(markdownFrame, /─{10}/);
+  assert.doesNotMatch(
+    markdownFrame,
+    /# Project|## Checklist|> \*\*Note|\*\*Chat\*\*|\[x\]|\[ \]|\| :---|```bash/,
+  );
+
+  const transcriptScrollbox = setup.renderer.root.findDescendantById(
+    "transcript-scrollbox",
+  ) as ScrollBoxRenderable | undefined;
+  assert.notEqual(transcriptScrollbox, undefined);
+  assert.ok(
+    transcriptScrollbox !== undefined &&
+      transcriptScrollbox.scrollHeight > transcriptScrollbox.viewport.height,
+  );
+  await act(async () => {
+    transcriptScrollbox?.scrollTo(0);
+  });
+  assert.equal(transcriptScrollbox?.scrollTop, 0);
+  await act(async () => {
+    composerEditor?.focus();
+    await setup.mockInput.typeText("Scroll task");
+    setup.mockInput.pressEnter();
+    await scrollSubmissionStarted;
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  // JX-AC-046: Composer submission leaves history view and follows the new turn.
+  assert.match(setup.captureCharFrame(), /Scroll task/);
+  assert.equal(
+    transcriptScrollbox?.scrollTop,
+    transcriptScrollbox === undefined
+      ? undefined
+      : Math.max(
+          0,
+          transcriptScrollbox.scrollHeight - transcriptScrollbox.viewport.height,
+        ),
+  );
+  await act(async () => {
+    releaseScrollSubmission();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (activeController.current?.getSnapshot().busy === false) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await setup.flush();
+  });
+  assert.equal(activeController.current?.getSnapshot().busy, false);
+
+  await act(async () => {
+    setup.resize(120, 30);
+    await setup.renderOnce();
+    await setup.flush();
+  });
+
+  await act(async () => {
+    if (activeController.current !== null) {
+      await activeController.current.submit("Batch task");
+    }
+    await setup.flush();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const collapsedBatchFrame = setup.captureCharFrame();
+  assert.match(collapsedBatchFrame, /5 done\s+Ctrl\+O Expand all/);
+  assert.doesNotMatch(collapsedBatchFrame, /printf batch-1/);
+
+  await act(async () => {
+    setup.mockInput.pressKey("o", { ctrl: true });
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const batchOperations = activeController.current?.getSnapshot().transcript
+    .flatMap((entry) => entry.kind === "tool-receipts" ? entry.operations : [])
+    .filter((operation) => operation.detail?.startsWith("printf batch-")) ?? [];
+  assert.equal(batchOperations.length, 5);
+  const batchRows = batchOperations.map((operation) =>
+    setup.renderer.root.findDescendantById(
+      `tool-operation-${operation.effectId}`,
+    ) as Renderable | undefined,
+  );
+  assert.ok(batchRows.every((row) => row !== undefined));
+  assert.ok(
+    batchRows.slice(1).every((row, index) =>
+      row !== undefined && batchRows[index] !== undefined
+        ? row.y > batchRows[index].y
+        : false,
+    ),
+  );
+  assert.ok(
+    batchOperations.every((operation) =>
+      setup.renderer.root.findDescendantById(
+        `tool-detail-${operation.effectId}`,
+      ) !== undefined,
+    ),
+  );
+  const shortBatchDetail = setup.renderer.root.findDescendantById(
+    `tool-detail-${batchOperations[0]?.effectId ?? "missing"}`,
+  );
+  assert.ok(
+    shortBatchDetail !== undefined &&
+      shortBatchDetail.height < 8,
+  );
+
+  await act(async () => {
+    setup.mockInput.pressKey("o", { ctrl: true });
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+
+  await act(async () => {
+    if (activeController.current !== null) {
+      await activeController.current.submit("Failure batch");
+    }
+    await setup.flush();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const failedBatchFrame = setup.captureCharFrame();
+  assert.match(failedBatchFrame, /4 done · 1 unknown\s+Ctrl\+O Expand all/);
+  assert.match(failedBatchFrame, /fail-indeterminate/);
+  assert.match(failedBatchFrame, /Outcome unknown/);
+
+  const controllerBeforeConfiguration = activeController.current;
   let reconfiguredFrame = "";
   await act(async () => {
     if (activeController.current !== null) {
@@ -585,9 +1522,99 @@ try {
   reconfiguredFrame = setup.captureCharFrame();
   assert.match(reconfiguredFrame, /openrouter-secret-fixture/);
   assert.match(reconfiguredFrame, /vendor\/model-example/);
+  await act(async () => {
+    setup.mockInput.pressEscape();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const returnedFrame = setup.captureCharFrame();
+  assert.doesNotMatch(returnedFrame, /Model connection/);
+  assert.match(returnedFrame, /vendor\/model-example/);
+  assert.equal(activeController.current, controllerBeforeConfiguration);
 } finally {
   act(() => {
     setup.renderer.destroy();
+  });
+}
+
+const compactConfigSetup = await testRender(
+  <JixuApp
+    connect={async (_config, controls) =>
+      createThreadController({ harness, ...controls })
+    }
+    initial={{ api: "openai-chat-completions" }}
+    onQuit={() => undefined}
+    workspace="/workspace"
+  />,
+  { height: 24, kittyKeyboard: true, width: 80 },
+);
+
+try {
+  await act(async () => {
+    await compactConfigSetup.renderOnce();
+    await compactConfigSetup.flush();
+  });
+  await act(async () => {
+    await compactConfigSetup.mockInput.typeText("/config");
+  });
+  await act(async () => {
+    compactConfigSetup.mockInput.pressEnter();
+  });
+  await act(async () => {
+    await compactConfigSetup.renderOnce();
+    await compactConfigSetup.flush();
+  });
+  const compactConfigFrame = compactConfigSetup.captureCharFrame();
+  // JX-AC-029 JX-AC-042: presets and reversible navigation survive 80x24.
+  assert.match(compactConfigFrame, /JIXU  Configuration/);
+  assert.match(compactConfigFrame, /BACK TO CHAT/);
+  assert.match(compactConfigFrame, /Model connection/);
+  assert.match(compactConfigFrame, /OpenAI/);
+  assert.match(compactConfigFrame, /Groq/);
+  assert.match(compactConfigFrame, /BASE URL/);
+  assert.match(compactConfigFrame, /API KEY/);
+  assert.match(compactConfigFrame, /MODEL ID/);
+  assert.match(compactConfigFrame, /CONNECT/);
+  assert.match(compactConfigFrame, /SETTINGS settings\.json/);
+  assert.match(compactConfigFrame, /API KEY auth\.json/);
+  assert.match(compactConfigFrame, /Esc Back/);
+  assert.match(compactConfigFrame, /Tab Next/);
+  assert.match(compactConfigFrame, /Enter Select/);
+  assert.match(compactConfigFrame, /Ctrl\+C Quit/);
+  assert.doesNotMatch(compactConfigFrame, /Chat Completions/);
+  assert.doesNotMatch(compactConfigFrame, /·/);
+
+  await act(async () => {
+    compactConfigSetup.mockInput.pressKey("2");
+  });
+  await act(async () => {
+    compactConfigSetup.mockInput.pressEnter();
+  });
+  await act(async () => {
+    compactConfigSetup.mockInput.pressKey("2");
+  });
+  await act(async () => {
+    await compactConfigSetup.renderOnce();
+    await compactConfigSetup.flush();
+  });
+  assert.match(
+    compactConfigSetup.captureCharFrame(),
+    /https:\/\/openrouter\.ai\/api(?:\s|$)/,
+  );
+
+  await act(async () => {
+    compactConfigSetup.mockInput.pressEscape();
+  });
+  await act(async () => {
+    await compactConfigSetup.renderOnce();
+    await compactConfigSetup.flush();
+  });
+  assert.match(compactConfigSetup.captureCharFrame(), /Model not configured/);
+} finally {
+  act(() => {
+    compactConfigSetup.renderer.destroy();
   });
 }
 

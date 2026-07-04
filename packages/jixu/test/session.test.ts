@@ -21,7 +21,7 @@ import { createNodeTools } from "@jixu/tools-node";
 import { createThreadController } from "../src/thread-controller.ts";
 import type { ThreadControllerSnapshot } from "../src/tui-model.ts";
 
-test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 JX-AC-040 TUI keeps public text, Tool progress, and durable receipts continuous", async () => {
+test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 JX-AC-040 JX-AC-041 TUI keeps public text, Tool progress, and durable receipts continuous", async () => {
   const root = await mkdtemp(join(tmpdir(), "jixu-controller-"));
   try {
     await writeFile(join(root, "note.txt"), "durable hello", "utf8");
@@ -211,7 +211,15 @@ test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 JX-AC-040 TUI keeps public text, T
       assert.equal(firstReceipt.operations.length, 1);
       assert.equal(firstReceipt.operations[0]?.detail, "note.txt");
       assert.equal(firstReceipt.operations[0]?.name, "read");
+      assert.equal(firstReceipt.operations[0]?.outcome, "1 line · 13 B");
+      assert.equal(firstReceipt.operations[0]?.preview, "durable hello");
+      assert.deepEqual(firstReceipt.operations[0]?.requestDetail, {
+        content: "note.txt",
+        kind: "text",
+        label: "PATH",
+      });
       assert.equal(firstReceipt.operations[0]?.status, "succeeded");
+      assert.notEqual(firstReceipt.requestEventId, "");
     }
     const firstFinal = first.transcript.at(-1);
     assert.equal(
@@ -247,6 +255,7 @@ test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 JX-AC-040 TUI keeps public text, T
     assert.equal(retainedReceipt?.kind, "tool-receipts");
     if (retainedReceipt?.kind === "tool-receipts") {
       assert.equal(retainedReceipt.operations[0]?.detail, "note.txt");
+      assert.equal(retainedReceipt.operations[0]?.outcome, "1 line · 13 B");
       assert.equal(retainedReceipt.operations[0]?.status, "succeeded");
     }
     await controller.selectThread(originalThreadId);
@@ -256,6 +265,7 @@ test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 JX-AC-040 TUI keeps public text, T
     assert.equal(reopenedReceipt?.kind, "tool-receipts");
     if (reopenedReceipt?.kind === "tool-receipts") {
       assert.equal(reopenedReceipt.operations[0]?.detail, "note.txt");
+      assert.equal(reopenedReceipt.operations[0]?.outcome, "1 line · 13 B");
       assert.equal(reopenedReceipt.operations[0]?.status, "succeeded");
     }
 
@@ -302,6 +312,105 @@ test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 JX-AC-040 TUI keeps public text, T
     await controller.submit("/quit");
     assert.equal(quit, true);
     unsubscribe();
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("JX-AC-041 Tool-only model decisions retain causal batches and bounded live output", async () => {
+  const root = await mkdtemp(join(tmpdir(), "jixu-tool-batches-"));
+  try {
+    await Promise.all([
+      writeFile(join(root, "first.txt"), "a", "utf8"),
+      writeFile(join(root, "second.txt"), "b", "utf8"),
+    ]);
+    let calls = 0;
+    const driver: ModelDriver = {
+      async generate(): Promise<ModelOutcome> {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            status: "succeeded",
+            value: {
+              content: "",
+              toolCalls: [
+                { arguments: { path: "first.txt" }, id: "read-1", name: "read" },
+                { arguments: { path: "second.txt" }, id: "read-2", name: "read" },
+              ],
+            },
+          };
+        }
+        if (calls === 2) {
+          return {
+            status: "succeeded",
+            value: {
+              content: "",
+              toolCalls: [
+                {
+                  arguments: { command: "printf chained-output; sleep 0.08" },
+                  id: "bash-1",
+                  name: "bash",
+                },
+              ],
+            },
+          };
+        }
+        return {
+          status: "succeeded",
+          value: { content: "Checked both batches.", toolCalls: [] },
+        };
+      },
+    };
+    const tools = createNodeTools({ root });
+    const harness = createHarness({
+      agent: defineAgent({
+        instructions: "Use the available tools.",
+        model: { model: "deterministic", provider: "mock" },
+        tools: tools.all,
+      }),
+      modelDrivers: { mock: driver },
+    });
+    const controller = createThreadController({ harness });
+    const observedLiveOutput: string[] = [];
+    const unsubscribe = controller.subscribe(() => {
+      observedLiveOutput.push(
+        Object.values(controller.getSnapshot().toolLiveOutput)
+          .map((output) => output.text)
+          .join("\n"),
+      );
+    });
+
+    await controller.submit("Inspect in stages");
+    unsubscribe();
+
+    const receipts = controller.getSnapshot().transcript.filter(
+      (entry) => entry.kind === "tool-receipts",
+    );
+    assert.equal(receipts.length, 2);
+    const first = receipts[0];
+    const second = receipts[1];
+    assert.equal(first?.kind, "tool-receipts");
+    assert.equal(second?.kind, "tool-receipts");
+    if (first?.kind !== "tool-receipts" || second?.kind !== "tool-receipts") {
+      return;
+    }
+    assert.deepEqual(
+      first.operations.map((operation) => operation.detail),
+      ["first.txt", "second.txt"],
+    );
+    assert.deepEqual(
+      first.operations.map((operation) => operation.outcome),
+      ["1 line · 1 B", "1 line · 1 B"],
+    );
+    assert.notEqual(first.requestEventId, second.requestEventId);
+    assert.equal(second.operations[0]?.name, "bash");
+    assert.equal(second.operations[0]?.outcome, "exit 0");
+    assert.equal(second.operations[0]?.preview, "chained-output");
+    assert.ok(observedLiveOutput.some((output) => output.includes("chained-output")));
+    assert.ok(
+      observedLiveOutput.every((output) => output.length <= 1_200),
+    );
+    assert.deepEqual(controller.getSnapshot().toolLiveOutput, {});
   } finally {
     await rm(root, { force: true, recursive: true });
   }

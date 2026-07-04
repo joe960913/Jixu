@@ -142,6 +142,9 @@ interface ThreadPickerProps {
   readonly threads: readonly ThreadSummary[];
 }
 
+const THREAD_PICKER_MIN_ROWS = 3;
+const THREAD_PICKER_MAX_ROWS = 6;
+
 export function ThreadPicker({
   input,
   onClose,
@@ -150,6 +153,10 @@ export function ThreadPicker({
   threads,
 }: ThreadPickerProps) {
   const picker = useRef<SelectRenderable>(null);
+  const visibleRows = Math.max(
+    THREAD_PICKER_MIN_ROWS,
+    Math.min(THREAD_PICKER_MAX_ROWS, threads.length),
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -174,7 +181,7 @@ export function ThreadPicker({
       borderColor={jixuTheme.brand}
       bottomTitle=" ↑/↓ select · Enter open · Esc close "
       bottomTitleAlignment="right"
-      height={Math.min(6, threads.length) + 2}
+      height={visibleRows + 2}
       title=" Threads "
       titleColor={jixuTheme.text}
       style={{ flexShrink: 0, width: "100%" }}
@@ -185,7 +192,7 @@ export function ThreadPicker({
         focused
         focusedBackgroundColor={jixuTheme.surface}
         focusedTextColor={jixuTheme.text}
-        height={Math.min(6, threads.length)}
+        height={visibleRows}
         id="thread-select"
         onKeyDown={(key) => {
           if (key.name !== "escape") return;
@@ -207,7 +214,7 @@ export function ThreadPicker({
         selectedDescriptionColor={jixuTheme.brand}
         selectedTextColor={jixuTheme.brand}
         showDescription
-        showScrollIndicator={threads.length > 6}
+        showScrollIndicator={threads.length > THREAD_PICKER_MAX_ROWS}
         showSelectionIndicator
         textColor={jixuTheme.secondary}
         width="100%"

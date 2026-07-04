@@ -8,7 +8,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build:packages": "tsc -b tsconfig.build.json",
+    "build:packages": "tsc -b tsconfig.build.json && node scripts/copy-package-assets.mjs",
     "clean:packages": "tsc -b tsconfig.build.json --clean",
     "pack:packages": "node scripts/package-artifacts.mjs --out .artifacts/packages",
     "dev": "pnpm run build:packages && bun run packages/jixu/src/cli.tsx",
