@@ -102,48 +102,60 @@ function ToolLedger({ operations }: { readonly operations: readonly ToolOperatio
   const hidden = operations.length - visible.length;
   return (
     <box
-      border={["left"]}
-      borderColor={jixuTheme.divider}
       style={{
-        flexDirection: "column",
+        flexDirection: "row",
         marginBottom: 1,
-        marginLeft: MESSAGE_ROLE_WIDTH,
-        marginRight: 1,
         paddingLeft: 1,
+        paddingRight: 1,
+        width: "100%",
       }}
     >
-      <box style={{ flexDirection: "row", height: 1 }}>
-        <text fg={jixuTheme.info}><strong>TOOLS</strong></text>
-        {hidden > 0 ? <text fg={jixuTheme.secondary}>  +{hidden} earlier</text> : null}
-      </box>
-      {visible.map((operation) => {
-        const tone: JixuTone =
-          operation.status === "failed"
-            ? "danger"
-            : operation.status === "running"
-              ? "warning"
-              : "success";
-        const status =
-          operation.status === "failed"
-            ? "Failed"
-            : operation.status === "running"
-              ? "In progress"
-              : "Completed";
-        return (
-          <box
-            key={operation.effectId}
-            style={{ flexDirection: "column", height: 2, width: "100%" }}
-          >
-            <box style={{ flexDirection: "row", height: 1, minWidth: 0 }}>
-              <JixuIcon name={iconForTool(operation.name)} tone={tone} />
-              <text fg={toneColor(tone)}>{operation.name}</text>
+      <text fg={jixuTheme.brand} style={{ width: MESSAGE_ROLE_WIDTH }}>
+        <strong>JIXU</strong>
+      </text>
+      <box
+        border={["left"]}
+        borderColor={jixuTheme.divider}
+        style={{
+          flexDirection: "column",
+          flexGrow: 1,
+          minWidth: 0,
+          paddingLeft: 1,
+        }}
+      >
+        <box style={{ flexDirection: "row", height: 1 }}>
+          <text fg={jixuTheme.info}><strong>TOOLS</strong></text>
+          {hidden > 0 ? <text fg={jixuTheme.secondary}>  +{hidden} earlier</text> : null}
+        </box>
+        {visible.map((operation) => {
+          const tone: JixuTone =
+            operation.status === "failed"
+              ? "danger"
+              : operation.status === "running"
+                ? "warning"
+                : "success";
+          const status =
+            operation.status === "failed"
+              ? "Failed"
+              : operation.status === "running"
+                ? "In progress"
+                : "Completed";
+          return (
+            <box
+              key={operation.effectId}
+              style={{ flexDirection: "column", height: 2, width: "100%" }}
+            >
+              <box style={{ flexDirection: "row", height: 1, minWidth: 0 }}>
+                <JixuIcon name={iconForTool(operation.name)} tone={tone} />
+                <text fg={toneColor(tone)}>{operation.name}</text>
+              </box>
+              <text fg={jixuTheme.secondary} style={{ paddingLeft: 2 }}>
+                {operation.detail === undefined ? status : `${operation.detail} · ${status}`}
+              </text>
             </box>
-            <text fg={jixuTheme.secondary} style={{ paddingLeft: 2 }}>
-              {operation.detail === undefined ? status : `${operation.detail} · ${status}`}
-            </text>
-          </box>
-        );
-      })}
+          );
+        })}
+      </box>
     </box>
   );
 }

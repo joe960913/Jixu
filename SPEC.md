@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.11
+**Version:** 0.4.12
 **Status:** normative, pre-release
 **Last updated:** 2026-08-20
 
@@ -768,6 +768,10 @@ not own execution truth.
   The transcript MUST derive durable receipt groups from `tool.requested` and
   matching outcome Events, place them in causal order with surrounding model
   messages, and retain them after the final response and later input.
+  Every Tool receipt group MUST retain a visible `JIXU` role anchor in the same
+  compact role gutter as ordinary Agent messages. Its `TOOLS` heading MUST NOT
+  appear beneath or visually attach to the preceding `YOU` row when an empty
+  Tool-calling model response produces no public Agent text.
   Historical groups MAY be collapsed or bounded for presentation, but MUST
   keep the Tool name, factual target or command summary, and terminal status
   discoverable. Neither transient status nor receipt projection may replace
@@ -1014,8 +1018,10 @@ frameworks, and UI frameworks.
   ephemeral Agent row appears after that receipt. At a final model boundary, the
   transient stream is atomically replaced by the exact committed response, with
   no duplicate or empty intermediate frame; presentation-only updates preserve
-  unchanged committed transcript identities. The Composer footer remains
-  stable model, local-I/O, cost, and quit context throughout the turn.
+  unchanged committed transcript identities. A receipt group remains visibly
+  anchored to `JIXU` even when the preceding model result contains only Tool
+  calls and therefore produces no public Agent message. The Composer footer
+  remains stable model, local-I/O, cost, and quit context throughout the turn.
 - **JX-AC-037 — Premium attention workspace.** Before a Thread exists and after
   a simple no-Plan turn, a wide TUI renders the same `NOW`, `PLAN`, `VERIFIED`,
   and `NEEDS YOU` rail with an explicit direct-execution Plan state. During a
@@ -1188,6 +1194,13 @@ redundant `YOU` label from the Composer. The editor keeps its accent rule and
 normal focus behavior, while committed user messages retain their `YOU` role in
 transcript history. This is presentation-only and requires no Event,
 configuration, or stored Thread migration.
+
+Version 0.4.12 corrects Tool receipt authorship in the transcript. A receipt
+group now retains the `JIXU` role anchor even when the model emits no public text
+before requesting a Tool, so it cannot appear to belong to the preceding user
+message. Receipt ordering and durable projection remain unchanged. This is
+presentation-only and requires no Event, configuration, or stored Thread
+migration.
 
 ## 19. Implementation order
 
