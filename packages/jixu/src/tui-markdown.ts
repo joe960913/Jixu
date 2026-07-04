@@ -177,7 +177,48 @@ function createCodeRenderable(
   });
 }
 
-function createShortCodeFrame(
+function createCodeHeader(
+  renderer: CliRenderer,
+  code: CodeRenderable,
+  label: string,
+  contentHeight: number,
+): BoxRenderable {
+  const header = new BoxRenderable(renderer, {
+    backgroundColor: jixuTheme.surface,
+    flexDirection: "row",
+    flexShrink: 0,
+    height: 1,
+    paddingLeft: 1,
+    paddingRight: 1,
+    width: "100%",
+  });
+  header.add(
+    new TextRenderable(renderer, {
+      content: label,
+      fg: jixuTheme.info,
+      id: `code-language-${code.num}`,
+      selectable: false,
+    }),
+  );
+  header.add(
+    new BoxRenderable(renderer, {
+      backgroundColor: jixuTheme.surface,
+      flexGrow: 1,
+      height: 1,
+    }),
+  );
+  header.add(
+    new TextRenderable(renderer, {
+      content: `${contentHeight} ${contentHeight === 1 ? "LINE" : "LINES"}`,
+      fg: jixuTheme.secondary,
+      id: `code-lines-${code.num}`,
+      selectable: false,
+    }),
+  );
+  return header;
+}
+
+function createCodeFrame(
   renderer: CliRenderer,
   code: CodeRenderable,
   contentHeight: number,
@@ -190,35 +231,60 @@ function createShortCodeFrame(
     borderStyle: "rounded",
     flexDirection: "column",
     flexShrink: 0,
-    height: contentHeight + 2,
+    height: Math.min(contentHeight, CODE_BLOCK_MAX_CONTENT_HEIGHT) + 3,
+    id: `code-frame-${code.num}`,
     marginBottom: 1,
-    paddingLeft: 1,
-    paddingRight: 1,
-    title: label,
-    titleColor: jixuTheme.info,
     width: "100%",
   });
-  frame.add(code);
-  return frame;
-}
+  frame.add(createCodeHeader(renderer, code, label, contentHeight));
 
-function createScrollableCodeFrame(
-  renderer: CliRenderer,
-  code: CodeRenderable,
-  label: string,
-): ScrollBoxRenderable {
-  const frame = new ScrollBoxRenderable(renderer, {
-    flexShrink: 0,
-    height: CODE_BLOCK_MAX_CONTENT_HEIGHT + 2,
-    marginBottom: 1,
-    rootOptions: {
+  if (contentHeight <= CODE_BLOCK_MAX_CONTENT_HEIGHT) {
+    const content = new BoxRenderable(renderer, {
       backgroundColor: jixuTheme.elevated,
-      border: true,
-      borderColor: jixuTheme.divider,
-      borderStyle: "rounded",
-      title: label,
-      titleColor: jixuTheme.info,
+      flexDirection: "column",
+      flexShrink: 0,
+      height: contentHeight,
+      paddingLeft: 1,
+      paddingRight: 1,
+      width: "100%",
+    });
+    content.add(code);
+    frame.add(content);
+    return frame;
+  }
+
+  const viewport = new ScrollBoxRenderable(renderer, {
+    flexShrink: 0,
+    height: CODE_BLOCK_MAX_CONTENT_HEIGHT,
+    id: `code-scrollbox-${code.num}`,
+    onMouseScroll(event) {
+      let direction = event.scroll?.direction;
+      if (event.modifiers.shift) {
+        switch (direction) {
+          case "up":
+            direction = "left";
+            break;
+          case "down":
+            direction = "right";
+            break;
+          case "left":
+            direction = "up";
+            break;
+          case "right":
+            direction = "down";
+            break;
+        }
+      }
+      const maxScrollTop = Math.max(
+        0,
+        viewport.scrollHeight - viewport.viewport.height,
+      );
+      const canScrollInDirection =
+        (direction === "up" && viewport.scrollTop > 0) ||
+        (direction === "down" && viewport.scrollTop < maxScrollTop);
+      if (canScrollInDirection) event.stopPropagation();
     },
+    rootOptions: { backgroundColor: jixuTheme.elevated },
     scrollY: true,
     scrollbarOptions: {
       showArrows: false,
@@ -236,7 +302,8 @@ function createScrollableCodeFrame(
     },
     width: "100%",
   });
-  frame.add(code);
+  viewport.add(code);
+  frame.add(viewport);
   return frame;
 }
 
@@ -264,8 +331,6 @@ export function createJixuMarkdownNodeRenderer(
       context,
       streaming,
     );
-    return contentHeight > CODE_BLOCK_MAX_CONTENT_HEIGHT
-      ? createScrollableCodeFrame(renderer, code, label)
-      : createShortCodeFrame(renderer, code, contentHeight, label);
+    return createCodeFrame(renderer, code, contentHeight, label);
   };
 }

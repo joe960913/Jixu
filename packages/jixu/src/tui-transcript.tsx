@@ -17,7 +17,7 @@ import { jixuTheme } from "./theme.ts";
 import { JixuCreationMark } from "./tui-creation-mark.tsx";
 import { iconForTool, JixuIcon } from "./tui-icons.tsx";
 import { createJixuMarkdownNodeRenderer } from "./tui-markdown.ts";
-import { JixuMotionText, JixuWordmark } from "./tui-motion.tsx";
+import { JixuWordmark, ThinkingMotionText } from "./tui-motion.tsx";
 import { jixuMarkdownSyntaxStyle } from "./tui-syntax-theme.ts";
 
 function toneColor(tone: JixuTone): string {
@@ -494,19 +494,12 @@ function EphemeralAgentStatus({
           width: MESSAGE_ROLE_WIDTH,
         }}
       >
-        <JixuWordmark
-          enabled={motion}
-          phase={status.phase}
-          tone={status.tone}
-        />
+        <JixuWordmark />
       </box>
       {status.phase === "thinking" && status.label === "Thinking" ? (
-        <JixuMotionText
+        <ThinkingMotionText
           enabled={motion}
           id="thinking-motion-label"
-          label="Thinking ..."
-          phase={status.phase}
-          staticTone={status.tone}
           tone={status.tone}
         />
       ) : (

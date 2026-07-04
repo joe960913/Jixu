@@ -16,6 +16,7 @@ import {
   RGBA,
   ScrollBoxRenderable,
   SelectRenderable,
+  TextRenderable,
   type BaseRenderable,
   type Renderable,
   type TextareaRenderable,
@@ -567,14 +568,28 @@ function collectCodeRenderables(
     : nested;
 }
 
-function framedScrollAncestor(
+function codeFrameAncestor(
+  renderable: BaseRenderable,
+): BoxRenderable | undefined {
+  let current = renderable.parent;
+  while (current !== null) {
+    if (
+      current instanceof BoxRenderable &&
+      current.id.startsWith("code-frame-")
+    ) {
+      return current;
+    }
+    current = current.parent;
+  }
+  return undefined;
+}
+
+function scrollAncestor(
   renderable: BaseRenderable,
 ): ScrollBoxRenderable | undefined {
   let current = renderable.parent;
   while (current !== null) {
-    if (current instanceof ScrollBoxRenderable && current.border === true) {
-      return current;
-    }
+    if (current instanceof ScrollBoxRenderable) return current;
     current = current.parent;
   }
   return undefined;
@@ -887,10 +902,27 @@ try {
   assert.notEqual(thinkingMotion, undefined);
   assert.equal(thinkingMotion?.width, "Thinking ...".length);
   assert.equal(thinkingMotion?.getChildren().length, "Thinking ...".length);
+  const thinkingWordmark = setup.renderer.root.findDescendantById(
+    "ephemeral-jixu-wordmark",
+  );
+  assert.ok(thinkingWordmark instanceof TextRenderable);
+  assert.equal(thinkingWordmark.plainText, "JIXU");
   assert.match(thinkingFrame, /Thinking task/);
   assert.match(thinkingFrame, /Thinking \.\.\./);
   assert.match(thinkingFrame, /MODEL\s+vendor\/model-example/);
   assert.match(thinkingFrame, /LOCAL I\/O · process access/);
+
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1_050));
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  // JX-AC-033: the forward sweep reaches the dots while the JIXU wordmark
+  // remains one static renderable.
+  assert.match(setup.captureCharFrame(), /Thinking [.•]*•[.•]*/);
+  assert.equal(thinkingWordmark.plainText, "JIXU");
 
   await act(async () => {
     releaseThinkingText();
@@ -1199,8 +1231,8 @@ try {
     await setup.flush();
   });
   const codeFrame = setup.captureCharFrame();
-  // JX-AC-045: fenced code uses adaptive frames, the Jixu palette, and a
-  // documented HTML compatibility parser.
+  // JX-AC-045: fenced code uses adaptive frames, compact factual headers, the
+  // Jixu palette, and a documented HTML compatibility parser.
   assert.doesNotMatch(codeFrame, /```javascript/);
   assert.equal(containsCodeRenderable(setup.renderer.root), true);
   const codeRenderables = collectCodeRenderables(setup.renderer.root);
@@ -1236,34 +1268,36 @@ try {
   assert.equal(jsonCode?.filetype, "javascript");
   assert.notEqual(shellCode, undefined);
   assert.notEqual(pythonCode, undefined);
-  assert.ok(javascriptCode?.parent instanceof BoxRenderable);
-  assert.equal(javascriptCode?.parent?.height, 6);
+  const javascriptFrame = javascriptCode === undefined
+    ? undefined
+    : codeFrameAncestor(javascriptCode);
+  assert.notEqual(javascriptFrame, undefined);
   assert.equal(
-    javascriptCode?.parent instanceof BoxRenderable
-      ? javascriptCode.parent.title
-      : undefined,
-    "JAVASCRIPT",
+    javascriptFrame?.height,
+    (javascriptCode?.content.split("\n").length ?? 0) + 3,
   );
-  assert.equal(
-    jsonCode?.parent instanceof BoxRenderable ? jsonCode.parent.title : undefined,
-    "JSON",
-  );
-  assert.equal(
-    shellCode?.parent instanceof BoxRenderable ? shellCode.parent.title : undefined,
-    "SHELL",
-  );
-  assert.equal(
-    pythonCode?.parent instanceof BoxRenderable
-      ? pythonCode.parent.title
-      : undefined,
-    "PYTHON",
-  );
-  assert.equal(
-    javascriptCode?.parent instanceof BoxRenderable
-      ? javascriptCode.parent.border
-      : false,
-    true,
-  );
+  assert.equal(javascriptFrame?.border, true);
+  assert.equal(javascriptFrame?.title, undefined);
+  for (const [code, label] of [
+    [javascriptCode, "JAVASCRIPT"],
+    [jsonCode, "JSON"],
+    [shellCode, "SHELL"],
+    [pythonCode, "PYTHON"],
+  ] as const) {
+    assert.notEqual(code, undefined);
+    if (code === undefined) continue;
+    const frame = codeFrameAncestor(code);
+    const language = frame?.findDescendantById(`code-language-${code.num}`);
+    const lines = frame?.findDescendantById(`code-lines-${code.num}`);
+    assert.ok(language instanceof TextRenderable);
+    assert.equal(language.plainText, label);
+    assert.ok(lines instanceof TextRenderable);
+    const lineCount = code.content.split("\n").length;
+    assert.equal(
+      lines.plainText,
+      `${lineCount} ${lineCount === 1 ? "LINE" : "LINES"}`,
+    );
+  }
   if (htmlCode !== undefined) {
     await htmlCode.highlightingDone;
   }
@@ -1311,28 +1345,106 @@ try {
   }
   const htmlFrame = htmlCode === undefined
     ? undefined
-    : framedScrollAncestor(htmlCode);
+    : codeFrameAncestor(htmlCode);
+  const htmlViewport = htmlCode === undefined
+    ? undefined
+    : scrollAncestor(htmlCode);
+  const codeTranscriptScrollbox = setup.renderer.root.findDescendantById(
+    "transcript-scrollbox",
+  ) as ScrollBoxRenderable | undefined;
   assert.notEqual(htmlFrame, undefined);
-  assert.equal(htmlFrame?.height, CODE_BLOCK_MAX_CONTENT_HEIGHT + 2);
+  assert.notEqual(htmlViewport, undefined);
+  assert.notEqual(codeTranscriptScrollbox, undefined);
+  assert.equal(htmlFrame?.height, CODE_BLOCK_MAX_CONTENT_HEIGHT + 3);
   assert.equal(htmlFrame?.border, true);
-  assert.equal(htmlFrame?.title, "HTML");
-  const initialHtmlScrollTop = htmlFrame?.scrollTop ?? 0;
+  assert.equal(htmlFrame?.title, undefined);
+  const htmlLanguage = htmlCode === undefined
+    ? undefined
+    : htmlFrame?.findDescendantById(`code-language-${htmlCode.num}`);
+  assert.ok(htmlLanguage instanceof TextRenderable);
+  assert.equal(htmlLanguage.plainText, "HTML");
+  const initialHtmlScrollTop = htmlViewport?.scrollTop ?? 0;
+  const initialTranscriptScrollTop = codeTranscriptScrollbox?.scrollTop ?? 0;
   await act(async () => {
-    if (htmlFrame !== undefined) {
-      for (let index = 0; index < 5; index += 1) {
-        await setup.mockMouse.scroll(
-          htmlFrame.x + 2,
-          htmlFrame.y + 2,
-          "down",
-        );
-      }
+    if (htmlViewport !== undefined) {
+      await setup.mockMouse.scroll(
+        htmlViewport.x + 2,
+        htmlViewport.y + 2,
+        "down",
+      );
     }
   });
   await act(async () => {
     await setup.renderOnce();
     await setup.flush();
   });
-  assert.ok((htmlFrame?.scrollTop ?? 0) > initialHtmlScrollTop);
+  assert.ok((htmlViewport?.scrollTop ?? 0) > initialHtmlScrollTop);
+  assert.equal(codeTranscriptScrollbox?.scrollTop, initialTranscriptScrollTop);
+
+  const maxTranscriptScrollTop = codeTranscriptScrollbox === undefined
+    ? 0
+    : Math.max(
+        0,
+        codeTranscriptScrollbox.scrollHeight -
+          codeTranscriptScrollbox.viewport.height,
+      );
+  assert.ok(maxTranscriptScrollTop > 2);
+  await act(async () => {
+    htmlViewport?.scrollTo(0);
+    codeTranscriptScrollbox?.scrollTo(maxTranscriptScrollTop);
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const transcriptBeforeTopChain = codeTranscriptScrollbox?.scrollTop ?? 0;
+  await act(async () => {
+    if (htmlViewport !== undefined) {
+      await setup.mockMouse.scroll(
+        htmlViewport.x + 2,
+        htmlViewport.y + 2,
+        "up",
+      );
+    }
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.equal(htmlViewport?.scrollTop, 0);
+  assert.ok(
+    (codeTranscriptScrollbox?.scrollTop ?? 0) < transcriptBeforeTopChain,
+  );
+
+  const maxHtmlScrollTop = htmlViewport === undefined
+    ? 0
+    : Math.max(0, htmlViewport.scrollHeight - htmlViewport.viewport.height);
+  await act(async () => {
+    htmlViewport?.scrollTo(maxHtmlScrollTop);
+    codeTranscriptScrollbox?.scrollTo(maxTranscriptScrollTop - 2);
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const transcriptBeforeBottomChain = codeTranscriptScrollbox?.scrollTop ?? 0;
+  await act(async () => {
+    if (htmlViewport !== undefined) {
+      await setup.mockMouse.scroll(
+        htmlViewport.x + 2,
+        htmlViewport.y + 2,
+        "down",
+      );
+    }
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.equal(htmlViewport?.scrollTop, maxHtmlScrollTop);
+  assert.ok(
+    (codeTranscriptScrollbox?.scrollTop ?? 0) > transcriptBeforeBottomChain,
+  );
   assert.equal(
     jixuMarkdownSyntaxStyle
       .getStyle("keyword")
