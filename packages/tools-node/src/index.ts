@@ -9,6 +9,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { realpathSync, statSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import {
   dirname,
   isAbsolute,
@@ -22,6 +23,8 @@ import {
   cloneJson,
   defineSchema,
   defineTool,
+  MAX_TOOL_OUTPUT_DELTA_LENGTH,
+  TOOL_OUTPUT_SIGNAL_TYPE,
   ToolExecutionError,
 } from "@jixu/core";
 import type {
@@ -465,6 +468,7 @@ function runShell(
     readonly cancellation: AbortSignal;
     readonly cwd: string;
     readonly maxOutputBytes: number;
+    readonly onOutput: (stream: "stderr" | "stdout", delta: string) => void;
     readonly shell: boolean | string;
     readonly timeoutMs: number;
   },
@@ -489,23 +493,34 @@ function runShell(
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
     let captured = 0;
     let total = 0;
     let timedOut = false;
     let cancelled = false;
     let settled = false;
 
-    const capture = (target: Buffer[], chunk: Buffer) => {
+    const capture = (
+      target: Buffer[],
+      chunk: Buffer,
+      stream: "stderr" | "stdout",
+      decoder: StringDecoder,
+    ) => {
       total += chunk.length;
       const remaining = options.maxOutputBytes - captured;
       if (remaining > 0) {
         const kept = chunk.subarray(0, remaining);
         target.push(kept);
         captured += kept.length;
+        const delta = decoder.write(kept);
+        if (delta.length > 0) options.onOutput(stream, delta);
       }
     };
-    child.stdout.on("data", (chunk: Buffer) => capture(stdout, chunk));
-    child.stderr.on("data", (chunk: Buffer) => capture(stderr, chunk));
+    child.stdout.on("data", (chunk: Buffer) =>
+      capture(stdout, chunk, "stdout", stdoutDecoder));
+    child.stderr.on("data", (chunk: Buffer) =>
+      capture(stderr, chunk, "stderr", stderrDecoder));
 
     const stop = () => child.kill("SIGTERM");
     const abort = () => {
@@ -532,6 +547,10 @@ function runShell(
       if (settled) return;
       settled = true;
       cleanup();
+      const finalStdout = stdoutDecoder.end();
+      const finalStderr = stderrDecoder.end();
+      if (finalStdout.length > 0) options.onOutput("stdout", finalStdout);
+      if (finalStderr.length > 0) options.onOutput("stderr", finalStderr);
       resolvePromise({
         cancelled,
         exitCode,
@@ -649,6 +668,25 @@ export function createNodeTools(config: NodeToolsConfig): NodeTools {
         cancellation: context.cancellation,
         cwd: paths.root,
         maxOutputBytes,
+        onOutput: (stream, delta) => {
+          for (
+            let offset = 0;
+            offset < delta.length;
+            offset += MAX_TOOL_OUTPUT_DELTA_LENGTH
+          ) {
+            context.signals.emit({
+              data: {
+                delta: delta.slice(offset, offset + MAX_TOOL_OUTPUT_DELTA_LENGTH),
+                effectId: context.effectId,
+                name: "bash",
+                stream,
+              },
+              kind: "signal",
+              threadId: context.threadId,
+              type: TOOL_OUTPUT_SIGNAL_TYPE,
+            });
+          }
+        },
         shell: config.shell ?? true,
         timeoutMs,
       });

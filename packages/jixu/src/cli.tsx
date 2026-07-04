@@ -11,6 +11,10 @@ import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 
 import { JIXU_REFERENCE_AGENT_INSTRUCTIONS } from "./agent-instructions.ts";
+import {
+  createJixuExitOutput,
+  type JixuExitReason,
+} from "./cli-exit.ts";
 import { JixuConfigStore } from "./config.ts";
 import type {
   JixuApi,
@@ -19,6 +23,7 @@ import type {
 import { createThreadController } from "./thread-controller.ts";
 import { jixuTheme } from "./theme.ts";
 import { JixuApp } from "./tui.tsx";
+import { registerJixuCodeParsers } from "./tui-parsers.ts";
 
 interface CliOptions {
   readonly api?: JixuApi;
@@ -140,6 +145,13 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
     return;
   }
 
+  const parserRegistration = await registerJixuCodeParsers();
+  if (parserRegistration.status === "unavailable") {
+    process.stderr.write(
+      `Jixu syntax highlighting is using raw-code fallback: ${parserRegistration.message}\n`,
+    );
+  }
+
   const configStore = process.env.JIXU_HOME === undefined
     ? new JixuConfigStore()
     : new JixuConfigStore(resolve(process.env.JIXU_HOME));
@@ -161,10 +173,16 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
     root: options.root,
   });
 
-  let quit!: () => void;
+  let exitReason: JixuExitReason | null = null;
+  let finish!: () => void;
   const done = new Promise<void>((resolveDone) => {
-    quit = resolveDone;
+    finish = resolveDone;
   });
+  const requestQuit = (reason: JixuExitReason) => {
+    if (exitReason === null) exitReason = reason;
+    finish();
+  };
+  const quitInteractively = () => requestQuit("interactive");
   const connect = async (
     config: JixuConnectionConfig,
     controls: { readonly onConfigure: () => void; readonly onQuit: () => void },
@@ -196,9 +214,10 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
     exitSignals: [],
   });
   const root = createRoot(renderer);
-  const stop = () => quit();
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
+  const stopOnInterrupt = () => requestQuit("interrupt");
+  const stopOnTerminate = () => requestQuit("terminate");
+  process.once("SIGINT", stopOnInterrupt);
+  process.once("SIGTERM", stopOnTerminate);
   try {
     root.render(
       <JixuApp
@@ -211,17 +230,25 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
           ...(model === undefined ? {} : { model }),
         }}
         motion={process.env.JIXU_MOTION !== "off"}
-        onQuit={quit}
+        onQuit={quitInteractively}
         workspace={options.root}
       />,
     );
     await done;
   } finally {
-    process.off("SIGINT", stop);
-    process.off("SIGTERM", stop);
+    process.off("SIGINT", stopOnInterrupt);
+    process.off("SIGTERM", stopOnTerminate);
     root.unmount();
     renderer.destroy();
   }
+
+  const exitOutput = createJixuExitOutput({
+    color:
+      process.env.NO_COLOR === undefined && process.env.TERM !== "dumb",
+    reason: exitReason,
+    stdoutIsTTY: process.stdout.isTTY === true,
+  });
+  if (exitOutput.length > 0) process.stdout.write(exitOutput);
 }
 
 await runCli();

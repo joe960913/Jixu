@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.12
+**Version:** 0.4.22
 **Status:** normative, pre-release
 **Last updated:** 2026-08-20
 
@@ -299,6 +299,13 @@ The v0.4 families are:
   non-whitespace public content, valid Plan change, or ordinary Tool call MUST
   fail closed as a typed, non-retryable model failure. It MUST NOT be recorded as
   an empty successful reply or trigger a hidden follow-up model request.
+- **JX-SIG-006.** A Tool MAY emit bounded `tool.output.delta` Signals for
+  user-visible live output. Each Signal MUST identify the Effect, Tool, output
+  stream, and delta; it MUST NOT change execution correctness or become a
+  durable result. The first-party Node `bash` Tool MUST emit only the portion of
+  stdout or stderr admitted by its configured output bound. Consumers MUST
+  bound retained live output independently because Signals may still arrive in
+  bursts, and MUST discard it when the matching terminal Event arrives.
 
 ## 8. Effects and Drivers
 
@@ -714,7 +721,9 @@ not own execution truth.
 - **JX-TUI-008.** `/new` MUST create and select one empty Thread.
 - **JX-TUI-009.** `/resume` MUST open a keyboard-selectable list from
   `harness.listThreads()` and select a compatible Thread. It MUST NOT continue a
-  paused Thread.
+  paused Thread. The picker MUST reserve a viewport of at least three Thread
+  rows even when fewer Threads exist, show up to six rows without paging, and
+  scroll the native selection list internally beyond that bound.
 - **JX-TUI-010.** `/continue` MUST continue only a paused Thread.
 - **JX-TUI-011.** `/fork` MUST create and select a distinct child Thread with
   explicit lineage.
@@ -841,6 +850,114 @@ not own execution truth.
   discovery path. The empty workspace MUST replace its static slash-command
   inventory with one concise prompt to type \`/\`; the filtered keyboard-operable
   menu required by \`JX-TUI-003\` remains the command authority.
+- **JX-TUI-026.** Tool receipts MUST form a compact `JIXU` action stream rather
+  than a generic execution log. Requests produced by the same model decision
+  MUST share one receipt group by their durable `requestedByEventId`; a later
+  Tool-only model decision MUST start a new group even when no public Agent text
+  separates it from the previous group. Operations inside a group MUST retain
+  model source order while their running and terminal state updates in place.
+
+  By default, each visible Tool occupies one line containing its category,
+  name, factual target or command summary, and current or terminal result.
+  Terminal results SHOULD use the Tool's typed output, such as bytes written,
+  replacements made, lines read, or shell exit status, instead of the generic
+  word `Completed`. A non-zero shell exit remains a successful Tool Driver
+  outcome but MUST use warning presentation; failed and indeterminate outcomes
+  MUST remain visibly distinct.
+
+  A live group MUST remain fully visible. A running `bash` receipt MAY render a
+  bounded output tail from `tool.output.delta` Signals beneath its compact row;
+  the tail is transient, MUST NOT enter transcript history, and MUST disappear
+  at the matching terminal Event. Historical terminal groups larger than four
+  operations SHOULD collapse to a factual aggregate rather than an arbitrary
+  last-N slice. Failed and indeterminate operations MUST remain visible while
+  collapsed, and the complete operation list plus bounded durable output
+  previews MUST be discoverable through a visible keyboard affordance. Every
+  visible operation row MUST also be an independent disclosure target with a
+  distinct open or closed marker; primary-button input toggles only that row.
+  Expanded content MUST identify the relevant request input and terminal output
+  without pretending to contain unavailable evidence. In particular, `edit`
+  renders its requested old/new fragments as a replacement diff rather than a
+  fabricated whole-file diff. Each expanded detail surface MUST use its natural
+  content height through eight rows, MUST NOT reserve the full eight rows for
+  shorter content, and MUST scroll internally only after its content exceeds
+  that bound instead of displacing the transcript without limit.
+
+  The reference TUI uses `Ctrl+O` to expand or collapse every Tool row without
+  moving focus away from the Composer. Disclosure state is non-authoritative
+  presentation state keyed by Thread and Effect: switching away from and back
+  to a Thread in the same process SHOULD preserve it, while a new process MAY
+  begin with every row closed. The detail content itself MUST remain
+  reconstructible from durable request and outcome Events; disclosure state
+  MUST NOT enter Events, State, Replay, or model context.
+- **JX-TUI-027.** Entering Configuration from the workspace MUST be reversible
+  through both visible primary-button UI and the `Escape` key. Leaving
+  Configuration MUST return to the same workspace without discarding its active
+  model connection or selected Thread; incomplete form edits are not saved.
+  Navigation MUST be disabled only while a new connection attempt is in flight,
+  so a late connection result cannot replace a workspace after the user leaves.
+- **JX-TUI-028.** Configuration MUST offer a small protocol-specific set of
+  maintained endpoint presets plus `Custom` before the editable Base URL. A
+  preset MUST only populate the ordinary Base URL field: it MUST NOT introduce
+  provider routing state, a model catalog, a second configuration authority, or
+  a new persisted schema field. Preset selection and the following edit focus
+  MUST be equivalent for keyboard and primary-button mouse input; arbitrary
+  normalized Base URLs remain supported.
+- **JX-TUI-029.** Configuration chrome MUST identify the non-secret settings
+  file and API-key file as separate labeled layout groups, and MUST label the
+  workspace path rather than presenting an unexplained raw path. Keyboard help
+  MUST render as distinct key/action groups instead of one punctuation-delimited
+  status sentence. A compact viewport MAY omit paths and secondary shortcuts,
+  but MUST preserve visible Back and Quit actions.
+- **JX-TUI-030.** After the interactive CLI restores terminal ownership for a
+  user-requested quit or `SIGINT`, it SHOULD print one bounded terminal-native
+  `JIXU` exit wordmark before returning control to the shell. It MUST NOT print
+  the wordmark for help output, non-TTY stdout, `SIGTERM`, startup failure, or an
+  unhandled crash. The wordmark MAY use ANSI color when stdout is a color-capable
+  TTY, MUST honor `NO_COLOR`, and MUST always reset terminal styling.
+- **JX-TUI-031.** Assistant transcript and streaming Markdown MUST render fenced
+  code blocks as code surfaces rather than flattening them into ordinary prose.
+  Stable, syntactically complete Markdown blocks MUST render semantic document
+  structure instead of exposing source delimiters: headings omit hash markers,
+  block quotes use a visual rail, thematic breaks use a real rule, task items
+  distinguish checked and unchecked state without `[x]` or `[ ]`, tables use
+  aligned cells without pipe or delimiter rows, and inline emphasis, code, and
+  links omit their formatting punctuation. Incomplete trailing streaming input
+  MAY remain literal until the parser can identify a complete construct.
+
+  A recognized fence language MUST use the maintained parser available through
+  the current OpenTUI runtime; an unknown or unavailable language MUST retain
+  readable fenced-code layout with a stable raw-code fallback. HTML and HTM
+  fences MUST use the bundled TypeScript-React parser as an explicitly bounded
+  compatibility highlighter for markup, attributes, strings, and embedded
+  JavaScript tokens; JSON and JSONC fences MUST similarly use the bundled
+  JavaScript parser. These mappings MUST NOT be advertised as complete HTML,
+  CSS, or script injection support. Every fenced block MUST sit inside a visible
+  code frame whose border identifies the normalized fence language. The frame
+  MUST use its natural content height through twelve content rows and become
+  internally vertically scrollable only above that bound.
+  Syntax colors MUST be derived from the existing Jixu theme: brand for
+  keywords, information blue for callable symbols, success green for strings,
+  warning gold for numbers and types, secondary text for comments, and the
+  elevated surface for code background. Highlighting and scroll position MUST
+  NOT change transcript content, durable Events, model context, or streaming
+  order.
+
+  The reference TUI MUST additionally register pinned, local Tree-sitter assets
+  for Bash and Python before initializing the renderer. `bash`, `sh`, and
+  `shell` MUST resolve to the Bash parser; `python` and `py` MUST resolve to the
+  Python parser. Parser WASM and highlight queries MUST be generated from one
+  checked-in, immutable-source configuration, travel with the local package
+  artifact, and require no runtime network access. A missing or unloadable
+  parser MUST preserve readable raw code rather than prevent the Thread from
+  rendering.
+- **JX-TUI-032.** When the user submits ordinary input from the Composer while
+  inspecting older transcript content, the TUI MUST reveal the newly accepted
+  `YOU` entry and restore bottom-following for the resulting live turn. Ordinary
+  model, Tool, or Signal-driven transcript growth MUST continue to respect a
+  deliberate historical scroll position until the user submits new input or
+  returns to the bottom. This is transient viewport behavior and MUST NOT enter
+  Events, State, Replay, Checkpoints, or model context.
 
 Configuration stores credentials separately from non-secret settings, uses
 restrictive POSIX permissions, and never records secrets in Thread data.
@@ -1052,6 +1169,68 @@ frameworks, and UI frameworks.
   status after the turn becomes idle, after the next input, and after reopening
   the Thread; `/clear` removes it only from the visible transcript projection
   while preserving the underlying Events.
+- **JX-AC-041 — Tool action stream.** Two consecutive Tool-only model decisions
+  render two `JIXU` receipt groups, while concurrent Tool calls from one model
+  response retain source order inside one group. Every visible operation uses
+  one compact row and transitions in place from running to a Tool-specific
+  terminal result. A running Node `bash` call exposes only a bounded transient
+  output tail; its committed receipt is reconstructed from request and outcome
+  Events after reopen. A terminal group larger than four operations collapses
+  to status counts without hiding failed or indeterminate operations, advertises
+  `Ctrl+O`, and expands back to the complete ordered list and any bounded durable
+  previews. Primary-button input independently opens and closes every visible
+  operation, with a separate disclosure marker that does not overload the Tool
+  category glyph. An expanded `edit` operation shows its old/new replacement
+  fragments as a colored diff. An expanded detail shorter than eight rows uses
+  only its natural height; a longer detail stays inside an eight-row vertically
+  scrollable surface. Switching Threads and back in one process preserves the
+  open rows; reopening after process restart may close them but reconstructs
+  the same detail content from Events. Dropping every Tool Signal changes
+  neither the final receipt nor Thread State.
+- **JX-AC-042 — Reversible Configuration and endpoint presets.** From an active
+  workspace, `/config` followed by `Escape` returns to the same selected Thread
+  and usable model connection without reconnecting. The visible Back control
+  performs the same transition. For each supported protocol, arrows move preset
+  focus; numbered shortcuts, Enter, and primary-button selection apply a
+  documented endpoint preset and move to the still-editable Base URL; `Custom`
+  accepts an arbitrary valid URL. Connecting persists only the resulting
+  protocol and normalized Base URL through the existing configuration schema.
+- **JX-AC-043 — Configuration chrome semantics.** A wide Configuration frame
+  names `~/.jixu/settings.json` and `~/.jixu/auth.json` independently, labels
+  the workspace path, and presents Back, focus movement, selection, and Quit as
+  separately laid-out key/action groups with no punctuation separator standing
+  in for hierarchy. At 80x24 the same frame identifies `settings.json` and
+  `auth.json`, remains fully operable, and retains visible Back and Quit.
+- **JX-AC-044 — CLI exit wordmark.** Both the TUI Quit action and `SIGINT`
+  resolve the ordinary CLI shutdown, unmount and destroy the renderer, then
+  write exactly one bounded `JIXU` wordmark to TTY stdout. `SIGTERM`, help,
+  non-TTY output, and failures write none. Colored output ends with an ANSI
+  reset; `NO_COLOR` emits the same rows without escape sequences.
+- **JX-AC-045 — Themed code blocks.** A committed and a streaming assistant
+  response containing a JavaScript or TypeScript fence creates an OpenTUI code
+  renderable with concealed fence markers and language-aware token styles. The
+  registered syntax palette maps keywords, functions, strings, numbers, types,
+  comments, punctuation, and raw-code fallback to existing Jixu colors and an
+  elevated code background. An HTML fence uses the documented bundled
+  TypeScript-React compatibility parser and produces styled markup tokens; a
+  JSON fence uses the JavaScript compatibility parser. A short fenced block
+  uses a labeled, bordered natural-height surface; a block longer than twelve
+  content rows uses a bordered twelve-row viewport whose vertical scroll
+  position changes under pointer-wheel input. An unsupported fence remains
+  readable as code and preserves its exact textual content. A stable fixture
+  containing headings, a quote, thematic break, checked and unchecked tasks,
+  inline emphasis and code, a table, and a fenced shell block renders without
+  the corresponding Markdown delimiters while retaining their semantic visual
+  distinctions. Bash, `sh`, and `shell` samples plus Python and `py` samples
+  each resolve to their registered local parser and produce non-empty highlight
+  ranges with networking unavailable.
+- **JX-AC-046 — Thread picker density and submit reveal.** With one previous
+  Thread, `/resume` renders a three-row native selection viewport instead of a
+  one-row strip; additional Threads remain directly visible through six rows
+  and then scroll inside the picker. After the transcript has enough content to
+  scroll, moving to historical content and submitting ordinary input through
+  the Composer makes the new `YOU` entry visible, moves the transcript to its
+  bottom edge, and lets the following live response continue from there.
 
 The minimum validation for a code change is targeted tests, typecheck, lint, and
 `git diff --check`. Release work also runs the complete acceptance suite and
@@ -1201,6 +1380,85 @@ before requesting a Tool, so it cannot appear to belong to the preceding user
 message. Receipt ordering and durable projection remain unchanged. This is
 presentation-only and requires no Event, configuration, or stored Thread
 migration.
+
+Version 0.4.13 turns durable Tool receipts into a compact Agent action stream.
+Receipt grouping now follows the model Event that requested the Effects instead
+of merging adjacent Tool-only decisions, terminal rows derive concise outcomes
+from typed Tool results, and large historical groups collapse to factual counts
+with a keyboard expansion path. The Node `bash` Tool emits bounded transient
+`tool.output.delta` Signals for a live tail; those Signals remain optional and
+non-authoritative, while completed previews are reconstructed from durable Tool
+outcomes. This changes the pre-release exported receipt projection types and
+adds an observable Signal type, but requires no Event, configuration, or stored
+Thread migration.
+
+Version 0.4.14 makes Configuration a reversible workspace view and adds
+protocol-specific Base URL presets. Opening the form no longer clears the
+active connection, while `Escape` and the visible Back control abandon
+incomplete edits and return to the same selected Thread. Presets populate the
+existing Base URL field and persist no provider identity, so settings schema
+version 3, Events, State, Replay, and stored Threads require no migration.
+
+Version 0.4.15 replaces ambiguous Configuration chrome with separately laid-out
+file, keyboard-action, workspace, and quit groups. The wide frame names the
+settings and API-key files explicitly; compact frames retain the filenames and
+essential actions without punctuation-delimited status prose. This is a
+presentation-only correction and requires no Event, configuration, or stored
+Thread migration.
+
+Version 0.4.16 adds a bounded terminal-native `JIXU` wordmark after ordinary
+interactive CLI shutdown. It is emitted only after the OpenTUI renderer returns
+terminal ownership, distinguishes user/SIGINT exit from termination or failure,
+and respects TTY and `NO_COLOR` boundaries. This changes no Harness, Thread,
+Event, configuration, or package API semantics and requires no migration.
+
+Version 0.4.17 turns each visible Tool operation into an independent disclosure
+row and bounds expanded details to an internally scrollable eight-row surface.
+The `edit` disclosure presents the durable requested old/new fragments as a
+replacement diff, while other first-party Tools expose bounded request and
+outcome detail reconstructed from their existing Events. Disclosure state is
+remembered per Thread only for the current TUI process and never enters durable
+State. The pre-release exported `ToolOperation` projection gains typed request
+detail, but Event schema version 5, configuration, Replay, and stored Threads
+require no migration.
+
+Version 0.4.18 gives transcript Markdown a Jixu-native syntax palette for fenced
+code. JavaScript and TypeScript fences use the parsers bundled with the current
+OpenTUI runtime; other fences remain readable through the themed raw-code
+fallback unless a maintained parser is available. This is a presentation-only
+change and requires no Event, State, configuration, Replay, or stored Thread
+migration.
+
+Version 0.4.19 corrects bounded detail and code layout after real-terminal
+review showed that a maximum height alone caused short Tool details to reserve
+the full viewport and that long code blocks could dominate the transcript.
+Tool detail and framed code surfaces now use natural height before their eight-
+and twelve-row bounds, respectively, and only overflowing content scrolls.
+HTML and HTM fences use the already bundled TypeScript-React parser as a
+documented compatibility highlighter instead of silently falling through as an
+unknown language. This changes no dependency, Event, State, configuration,
+Replay, or stored Thread data.
+
+Version 0.4.20 replaces source-like Markdown presentation with compact semantic
+document surfaces. Stable headings, quotes, rules, task lists, tables, inline
+styles, and fenced code no longer expose their Markdown delimiters; code frames
+also label their normalized language. JSON and JSONC join HTML and HTM as
+zero-dependency compatibility mappings to parsers already bundled by OpenTUI.
+The change is presentation-only and adds no dependency, Event, State,
+configuration, Replay, or stored Thread migration.
+
+Version 0.4.21 adds pinned, local Bash and Python Tree-sitter assets to the
+reference TUI. Bash covers the `bash`, `sh`, and `shell` fence labels; Python
+covers `python` and `py`. The generated runtime descriptors and copied package
+assets are derived from one immutable-source configuration and perform no
+runtime download. This is a presentation and package-artifact change only; it
+changes no Event, State, configuration, Replay, or stored Thread data.
+
+Version 0.4.22 gives `/resume` a three-to-six-row native selection viewport and
+restores transcript bottom-following when the user explicitly submits new input
+from a historical scroll position. Model and Tool growth alone still does not
+steal the user's reading position. Both changes are presentation-only and
+require no Event, State, configuration, Replay, or stored Thread migration.
 
 ## 19. Implementation order
 

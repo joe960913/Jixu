@@ -6,7 +6,7 @@ import {
 } from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useRef, useState } from "react";
-import type { RefObject } from "react";
+import type { ReactNode, RefObject } from "react";
 
 import { normalizeJixuBaseUrl } from "./config.ts";
 import type { JixuApi, JixuConnectionConfig } from "./config.ts";
@@ -23,16 +23,95 @@ export interface JixuInitialConfiguration {
 interface SetupProps {
   readonly initial: JixuInitialConfiguration | undefined;
   readonly initialError: string | null;
+  readonly onBack: () => void;
   readonly onConnect: (config: JixuConnectionConfig) => Promise<void>;
   readonly workspace: string;
 }
 
-type SetupFocus = 0 | 1 | 2 | 3;
+type SetupFocus = 0 | 1 | 2 | 3 | 4;
+type SetupStep = 0 | 1 | 2 | 3;
+
+interface EndpointPreset {
+  readonly baseUrl: string | null;
+  readonly label: string;
+}
+
+const ENDPOINT_PRESETS = {
+  "anthropic-messages": [
+    { baseUrl: "https://api.anthropic.com", label: "Anthropic" },
+    { baseUrl: "https://openrouter.ai/api", label: "OpenRouter" },
+    {
+      baseUrl: "https://api.deepseek.com/anthropic",
+      label: "DeepSeek",
+    },
+    { baseUrl: null, label: "Custom" },
+  ],
+  "openai-chat-completions": [
+    { baseUrl: "https://api.openai.com/v1", label: "OpenAI" },
+    { baseUrl: "https://openrouter.ai/api/v1", label: "OpenRouter" },
+    { baseUrl: "https://api.deepseek.com", label: "DeepSeek" },
+    { baseUrl: "https://api.groq.com/openai/v1", label: "Groq" },
+    { baseUrl: null, label: "Custom" },
+  ],
+} satisfies Record<JixuApi, readonly EndpointPreset[]>;
+
+function comparableBaseUrl(value: string): string {
+  return value.trim().replace(/\/+$/u, "");
+}
+
+function selectedEndpointPresetIndex(api: JixuApi, baseUrl: string): number {
+  const presets = ENDPOINT_PRESETS[api];
+  const comparable = comparableBaseUrl(baseUrl);
+  const matched = presets.findIndex(
+    (preset) =>
+      preset.baseUrl !== null && comparableBaseUrl(preset.baseUrl) === comparable,
+  );
+  return matched === -1 ? presets.length - 1 : matched;
+}
 
 function onPrimaryMouseDown(action: () => void) {
   return (event: OpenTUIMouseEvent) => {
     if (event.button === MouseButton.LEFT) action();
   };
+}
+
+function truncatePathStart(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `…${value.slice(-(maxLength - 1))}`;
+}
+
+function LabeledValue({
+  label,
+  value,
+}: {
+  readonly label: string;
+  readonly value: string;
+}) {
+  return (
+    <box style={{ flexDirection: "row" }}>
+      <text fg={jixuTheme.secondary} selectable={false}>
+        <strong>{label}</strong>
+      </text>
+      <text fg={jixuTheme.text} selectable={false}>{` ${value}`}</text>
+    </box>
+  );
+}
+
+function KeyAction({
+  action,
+  keyName,
+}: {
+  readonly action: string;
+  readonly keyName: string;
+}) {
+  return (
+    <box style={{ flexDirection: "row" }}>
+      <text fg={jixuTheme.info} selectable={false}>
+        <strong>{keyName}</strong>
+      </text>
+      <text fg={jixuTheme.secondary} selectable={false}>{` ${action}`}</text>
+    </box>
+  );
 }
 
 function FieldLabel({
@@ -44,7 +123,7 @@ function FieldLabel({
   readonly active: boolean;
   readonly hint: string;
   readonly label: string;
-  readonly number: SetupFocus;
+  readonly number: SetupStep;
 }) {
   return (
     <box
@@ -104,8 +183,10 @@ function FormatOption({
 
 interface SetupFieldProps {
   readonly active: boolean;
+  readonly beforeInput?: ReactNode;
   readonly hint: string;
   readonly inputRef: RefObject<InputRenderable | null>;
+  readonly labelActive?: boolean;
   readonly label: string;
   readonly maxLength?: number;
   readonly number: 1 | 2 | 3;
@@ -118,8 +199,10 @@ interface SetupFieldProps {
 
 function SetupField({
   active,
+  beforeInput,
   hint,
   inputRef,
+  labelActive,
   label,
   maxLength,
   number,
@@ -131,7 +214,13 @@ function SetupField({
 }: SetupFieldProps) {
   return (
     <>
-      <FieldLabel active={active} hint={hint} label={label} number={number} />
+      <FieldLabel
+        active={labelActive ?? active}
+        hint={hint}
+        label={label}
+        number={number}
+      />
+      {beforeInput}
       <box
         backgroundColor={jixuTheme.surface}
         border
@@ -159,7 +248,62 @@ function SetupField({
   );
 }
 
-export function Setup({ initial, initialError, onConnect, workspace }: SetupProps) {
+function EndpointPresetRow({
+  api,
+  baseUrl,
+  cursor,
+  focused,
+  onSelect,
+}: {
+  readonly api: JixuApi;
+  readonly baseUrl: string;
+  readonly cursor: number;
+  readonly focused: boolean;
+  readonly onSelect: (index: number) => void;
+}) {
+  const presets = ENDPOINT_PRESETS[api];
+  const selected = selectedEndpointPresetIndex(api, baseUrl);
+
+  return (
+    <box style={{ flexDirection: "row", gap: 1, height: 1, width: "100%" }}>
+      {presets.map((preset, index) => {
+        const cursorAtPreset = focused && cursor === index;
+        const applied = selected === index;
+        return (
+          <box
+            id={`endpoint-preset-${index + 1}`}
+            key={`${api}-${preset.label}`}
+            backgroundColor={cursorAtPreset ? jixuTheme.elevated : jixuTheme.surface}
+            onMouseDown={onPrimaryMouseDown(() => onSelect(index))}
+            style={{ paddingLeft: 1, paddingRight: 1 }}
+          >
+            <text
+              fg={
+                cursorAtPreset
+                  ? jixuTheme.brand
+                  : applied
+                    ? jixuTheme.info
+                    : jixuTheme.secondary
+              }
+              selectable={false}
+            >
+              <strong>{cursorAtPreset ? "›" : applied ? "●" : " "}</strong>
+              {` ${index + 1} ${preset.label}`}
+            </text>
+          </box>
+        );
+      })}
+    </box>
+  );
+}
+
+export function Setup({
+  initial,
+  initialError,
+  onBack,
+  onConnect,
+  workspace,
+}: SetupProps) {
   const [api, setApi] = useState<JixuApi>(
     initial?.api ?? "openai-chat-completions",
   );
@@ -167,28 +311,50 @@ export function Setup({ initial, initialError, onConnect, workspace }: SetupProp
   const [apiKey, setApiKey] = useState(initial?.apiKey ?? "");
   const [model, setModel] = useState(initial?.model ?? "");
   const [focus, setFocus] = useState<SetupFocus>(0);
+  const [presetCursor, setPresetCursor] = useState(() =>
+    selectedEndpointPresetIndex(
+      initial?.api ?? "openai-chat-completions",
+      initial?.baseUrl ?? "",
+    ),
+  );
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(initialError);
   const baseUrlInput = useRef<InputRenderable>(null);
   const apiKeyInput = useRef<InputRenderable>(null);
   const modelInput = useRef<InputRenderable>(null);
-  const { width } = useTerminalDimensions();
-  const compact = width < 72;
+  const { height, width } = useTerminalDimensions();
+  const compact = width < 80;
+  const compactHeight = height < 28;
+  const wideChrome = width >= 110;
+  const workspaceLabel = truncatePathStart(
+    workspace,
+    Math.max(12, width - 77),
+  );
 
   useEffect(() => {
-    if (focus !== 1) baseUrlInput.current?.blur();
-    if (focus !== 2) apiKeyInput.current?.blur();
-    if (focus !== 3) modelInput.current?.blur();
+    if (focus !== 2) baseUrlInput.current?.blur();
+    if (focus !== 3) apiKeyInput.current?.blur();
+    if (focus !== 4) modelInput.current?.blur();
   }, [focus]);
 
   const selectApi = (next: JixuApi) => {
     setApi(next);
+    setPresetCursor(selectedEndpointPresetIndex(next, baseUrl));
     setError(null);
   };
 
   const selectApiByPointer = (next: JixuApi) => {
     setFocus(0);
     selectApi(next);
+  };
+
+  const selectEndpointPreset = (index: number) => {
+    const preset = ENDPOINT_PRESETS[api][index];
+    if (preset === undefined) return;
+    setPresetCursor(index);
+    if (preset.baseUrl !== null) setBaseUrl(preset.baseUrl);
+    setError(null);
+    setFocus(2);
   };
 
   const connect = async () => {
@@ -202,18 +368,18 @@ export function Setup({ initial, initialError, onConnect, workspace }: SetupProp
       setError(
         urlError instanceof Error ? urlError.message : "Base URL is invalid.",
       );
-      setFocus(1);
+      setFocus(2);
       return;
     }
 
     if (cleanKey.length === 0) {
       setError("API Key is required.");
-      setFocus(2);
+      setFocus(3);
       return;
     }
     if (cleanModel.length === 0) {
       setError("Model ID is required.");
-      setFocus(3);
+      setFocus(4);
       return;
     }
     if (connecting) return;
@@ -238,11 +404,17 @@ export function Setup({ initial, initialError, onConnect, workspace }: SetupProp
   };
 
   useKeyboard((key) => {
+    if (key.name === "escape") {
+      key.preventDefault();
+      if (!connecting) onBack();
+      return;
+    }
+
     if (key.name === "tab") {
       key.preventDefault();
       setFocus((current) => {
-        if (key.shift) return current === 0 ? 3 : ((current - 1) as SetupFocus);
-        return current === 3 ? 0 : ((current + 1) as SetupFocus);
+        if (key.shift) return current === 0 ? 4 : ((current - 1) as SetupFocus);
+        return current === 4 ? 0 : ((current + 1) as SetupFocus);
       });
       return;
     }
@@ -278,7 +450,41 @@ export function Setup({ initial, initialError, onConnect, workspace }: SetupProp
       return;
     }
 
-    if (focus === 3 && key.name === "return") {
+    if (focus === 1) {
+      const presets = ENDPOINT_PRESETS[api];
+      if (
+        key.name === "left" ||
+        key.name === "right" ||
+        key.name === "up" ||
+        key.name === "down"
+      ) {
+        key.preventDefault();
+        const direction = key.name === "left" || key.name === "up" ? -1 : 1;
+        setPresetCursor(
+          (current) => (current + direction + presets.length) % presets.length,
+        );
+        return;
+      }
+
+      const numbered = Number(key.sequence);
+      if (
+        Number.isInteger(numbered) &&
+        numbered >= 1 &&
+        numbered <= presets.length
+      ) {
+        key.preventDefault();
+        selectEndpointPreset(numbered - 1);
+        return;
+      }
+
+      if (key.name === "return") {
+        key.preventDefault();
+        selectEndpointPreset(presetCursor);
+      }
+      return;
+    }
+
+    if (focus === 4 && key.name === "return") {
       key.preventDefault();
       void connect();
     }
@@ -306,9 +512,32 @@ export function Setup({ initial, initialError, onConnect, workspace }: SetupProp
           </text>
           <text fg={jixuTheme.text} selectable={false}>  Configuration</text>
           <box style={{ flexGrow: 1 }} />
-          <text fg={jixuTheme.secondary} selectable={false}>
-            {compact ? "~/.jixu" : "saved locally · ~/.jixu"}
-          </text>
+          {!compact && (
+            <box style={{ flexDirection: "row", gap: 2 }}>
+              <LabeledValue
+                label="SETTINGS"
+                value={wideChrome ? "~/.jixu/settings.json" : "settings.json"}
+              />
+              <LabeledValue
+                label="API KEY"
+                value={wideChrome ? "~/.jixu/auth.json" : "auth.json"}
+              />
+            </box>
+          )}
+          {!compact && <text selectable={false}>  </text>}
+          <box
+            id="config-back"
+            onMouseDown={onPrimaryMouseDown(() => {
+              if (!connecting) onBack();
+            })}
+          >
+            <text
+              fg={connecting ? jixuTheme.secondary : jixuTheme.info}
+              selectable={false}
+            >
+              <strong>{compact ? "← BACK" : "← BACK TO CHAT"}</strong>
+            </text>
+          </box>
         </box>
         <text fg={jixuTheme.divider} selectable={false}>
           {"─".repeat(Math.max(1, width - 2))}
@@ -323,7 +552,7 @@ export function Setup({ initial, initialError, onConnect, workspace }: SetupProp
         titleColor={jixuTheme.brand}
         style={{
           flexDirection: "column",
-          padding: 1,
+          padding: compactHeight ? 0 : 1,
           width: width >= 80 ? 76 : "100%",
         }}
       >
@@ -349,50 +578,71 @@ export function Setup({ initial, initialError, onConnect, workspace }: SetupProp
             selected={api === "anthropic-messages"}
           />
         </box>
-        <text fg={focus === 0 ? jixuTheme.brand : jixuTheme.secondary} selectable={false}>
-          ←/→ or 1/2 choose · click select · Enter next
-        </text>
+        {!compactHeight && (
+          <text fg={focus === 0 ? jixuTheme.brand : jixuTheme.secondary} selectable={false}>
+            Arrows choose    1/2 select    Enter next    Click select
+          </text>
+        )}
 
         <SetupField
-          active={focus === 1}
-          hint={api === "openai-chat-completions" ? "OPENAI-COMPATIBLE" : "ANTHROPIC"}
+          active={focus === 2}
+          beforeInput={
+            <EndpointPresetRow
+              api={api}
+              baseUrl={baseUrl}
+              cursor={presetCursor}
+              focused={focus === 1}
+              onSelect={selectEndpointPreset}
+            />
+          }
+          hint={
+            focus === 1
+              ? `ARROWS CHOOSE  1–${ENDPOINT_PRESETS[api].length} APPLY  ENTER EDIT`
+              : api === "openai-chat-completions"
+                ? "OPENAI-COMPATIBLE"
+                : "ANTHROPIC"
+          }
           inputRef={baseUrlInput}
+          labelActive={focus === 1 || focus === 2}
           label="BASE URL"
           number={1}
-          onFocus={() => setFocus(1)}
-          onInput={setBaseUrl}
+          onFocus={() => setFocus(2)}
+          onInput={(value) => {
+            setBaseUrl(value);
+            setPresetCursor(selectedEndpointPresetIndex(api, value));
+          }}
           onSubmit={() => {
             baseUrlInput.current?.blur();
-            setFocus(2);
+            setFocus(3);
           }}
           placeholder="https://api.example.com/v1"
           value={baseUrl}
         />
 
         <SetupField
-          active={focus === 2}
+          active={focus === 3}
           hint="SAVED SEPARATELY"
           inputRef={apiKeyInput}
           label="API KEY"
           maxLength={8192}
           number={2}
-          onFocus={() => setFocus(2)}
+          onFocus={() => setFocus(3)}
           onInput={setApiKey}
           onSubmit={() => {
             apiKeyInput.current?.blur();
-            setFocus(3);
+            setFocus(4);
           }}
           placeholder="Paste or type the endpoint API key"
           value={apiKey}
         />
 
         <SetupField
-          active={focus === 3}
+          active={focus === 4}
           hint="VENDOR / MODEL"
           inputRef={modelInput}
           label="MODEL ID"
           number={3}
-          onFocus={() => setFocus(3)}
+          onFocus={() => setFocus(4)}
           onInput={setModel}
           onSubmit={submitModel}
           placeholder="e.g. vendor/model-name"
@@ -407,7 +657,10 @@ export function Setup({ initial, initialError, onConnect, workspace }: SetupProp
           }}
         >
           <text fg={error === null ? jixuTheme.secondary : jixuTheme.danger} selectable={false}>
-            {error ?? (connecting ? "Verifying endpoint…" : "Tab / Shift+Tab move · Enter advance")}
+            {error ??
+              (connecting
+                ? "Verifying endpoint…"
+                : "Tab Next    Shift+Tab Previous    Enter Select")}
           </text>
           <box onMouseDown={onPrimaryMouseDown(() => void connect())}>
             <text fg={connecting ? jixuTheme.warning : jixuTheme.brand} selectable={false}>
@@ -422,11 +675,22 @@ export function Setup({ initial, initialError, onConnect, workspace }: SetupProp
           {"─".repeat(Math.max(1, width - 2))}
         </text>
         <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
-          <text fg={jixuTheme.info} selectable={false}>Chat Completions · Anthropic Messages</text>
+          <box style={{ flexDirection: "row", gap: 2 }}>
+            <KeyAction action="Back" keyName="Esc" />
+            {!compact && <KeyAction action="Next" keyName="Tab" />}
+            {wideChrome && (
+              <KeyAction action="Previous" keyName="Shift+Tab" />
+            )}
+            {!compact && <KeyAction action="Select" keyName="Enter" />}
+          </box>
           <box style={{ flexGrow: 1 }} />
-          <text fg={jixuTheme.secondary} selectable={false}>
-            {compact ? "Ctrl+C quit" : `Ctrl+C quit · ${workspace}`}
-          </text>
+          {wideChrome && (
+            <box style={{ flexDirection: "row", gap: 2 }}>
+              <LabeledValue label="Workspace" value={workspaceLabel} />
+              <KeyAction action="Quit" keyName="Ctrl+C" />
+            </box>
+          )}
+          {!wideChrome && <KeyAction action="Quit" keyName="Ctrl+C" />}
         </box>
       </box>
     </box>

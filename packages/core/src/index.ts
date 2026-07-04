@@ -128,6 +128,12 @@ export type {
   ProgressControlDescriptor,
   ProgressUpdate,
 } from "./progress.ts";
+export {
+  MAX_TOOL_OUTPUT_DELTA_LENGTH,
+  parseToolOutputDelta,
+  TOOL_OUTPUT_SIGNAL_TYPE,
+} from "./tool-output.ts";
+export type { ToolOutputDelta } from "./tool-output.ts";
 export type {
   Clock,
   EventStore,

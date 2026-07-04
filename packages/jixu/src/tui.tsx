@@ -66,7 +66,6 @@ export function JixuApp({
     async (config: JixuConnectionConfig) => {
       const controller = await connect(config, {
         onConfigure: () => {
-          setActive(null);
           setBooting(false);
           setView("config");
         },
@@ -121,6 +120,7 @@ export function JixuApp({
       <Setup
         initial={configuration}
         initialError={connectionError}
+        onBack={() => setView("workspace")}
         onConnect={activate}
         workspace={workspace}
       />
@@ -133,7 +133,6 @@ export function JixuApp({
       connectionError={connectionError}
       motion={motion}
       onConfigure={() => {
-        setActive(null);
         setView("config");
       }}
       onQuit={onQuit}
