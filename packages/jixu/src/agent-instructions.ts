@@ -1,6 +1,42 @@
-export const JIXU_REFERENCE_AGENT_INSTRUCTIONS_VERSION = 4;
+import type { ExecutableTool } from "@jixu/core";
 
-export const JIXU_REFERENCE_AGENT_INSTRUCTIONS = `<jixu_agent_contract version="${JIXU_REFERENCE_AGENT_INSTRUCTIONS_VERSION}">
+export const JIXU_REFERENCE_AGENT_INSTRUCTIONS_VERSION = 5;
+
+type InstructionTool = {
+  readonly descriptor: Pick<ExecutableTool["descriptor"], "description" | "name">;
+};
+
+function toolCapability(
+  tool: InstructionTool,
+  fileScope: "process" | "workspace",
+): string {
+  const scope =
+    fileScope === "workspace"
+      ? "inside the configured workspace root"
+      : "with the permissions and filesystem reach of the Jixu process";
+  switch (tool.descriptor.name) {
+    case "read":
+      return `- read reads a bounded UTF-8 file ${scope}.`;
+    case "write":
+      return `- write writes complete UTF-8 content ${scope}.`;
+    case "edit":
+      return `- edit replaces an exact text occurrence ${scope}.`;
+    case "bash":
+      return "- bash runs a local shell from the workspace root. It is not an OS sandbox and has the permissions of the Jixu process, so use it deliberately.";
+    default:
+      return `- ${tool.descriptor.name}: ${tool.descriptor.description}`;
+  }
+}
+
+export function createJixuReferenceAgentInstructions(config: {
+  readonly fileScope: "process" | "workspace";
+  readonly tools: readonly InstructionTool[];
+}): string {
+  const capabilities = config.tools
+    .map((tool) => toolCapability(tool, config.fileScope))
+    .join("\n");
+
+  return `<jixu_agent_contract version="${JIXU_REFERENCE_AGENT_INSTRUCTIONS_VERSION}">
 You are Jixu, the single Agent operating inside the Jixu Agent Harness.
 
 <mission>
@@ -14,10 +50,7 @@ Carry the user's request to a concrete, verified outcome with the fewest safe st
 </working_model>
 
 <capabilities>
-- read reads a bounded UTF-8 file with the permissions of the Jixu process. Relative paths resolve from the workspace root; user-authorized absolute paths are supported.
-- write writes complete UTF-8 content with the same process permissions and path rules.
-- edit replaces an exact text occurrence with the same process permissions and path rules.
-- bash runs a local shell from the workspace root. It is unsandboxed and has the permissions of the Jixu process, so use it deliberately.
+${capabilities.length === 0 ? "- No ordinary Tools are enabled for this Agent." : capabilities}
 - The reserved Plan control coordinates non-trivial work. The reserved progress control reports a short public next action. Neither control performs or authorizes work. A Plan control is not a user-facing response: in the same turn, continue with useful public text or ordinary Tool calls instead of ending on the control alone.
 - Do not claim capabilities that are not exposed in the current request.
 </capabilities>
@@ -53,3 +86,15 @@ Carry the user's request to a concrete, verified outcome with the fewest safe st
 - During work, keep public progress brief and factual. In the final response, lead with the outcome, then include only the evidence, caveats, and next action needed for a reliable handoff.
 </communication>
 </jixu_agent_contract>`;
+}
+
+export const JIXU_REFERENCE_AGENT_INSTRUCTIONS =
+  createJixuReferenceAgentInstructions({
+    fileScope: "process",
+    tools: ["read", "write", "edit", "bash"].map((name) => ({
+      descriptor: {
+        description: `${name} Tool`,
+        name,
+      },
+    })),
+  });

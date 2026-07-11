@@ -73,6 +73,15 @@ export interface NodeToolsConfig {
   readonly shell?: boolean | string;
 }
 
+export const NODE_TOOL_NAMES = Object.freeze([
+  "read",
+  "write",
+  "edit",
+  "bash",
+] as const);
+
+export type NodeToolName = (typeof NODE_TOOL_NAMES)[number];
+
 export interface NodeTools {
   readonly all: readonly ExecutableTool[];
   readonly bash: Tool<BashInput, BashOutput>;
@@ -338,6 +347,11 @@ class WorkspacePaths {
     }
   }
 
+  authorizationResource(path: string): string {
+    if (path.length === 0) return path;
+    return displayPath(this.root, resolve(this.root, path));
+  }
+
   async existing(path: string): Promise<{ absolute: string; path: string }> {
     const candidate = this.#lexical(path);
     let resolved: string;
@@ -587,6 +601,10 @@ export function createNodeTools(config: NodeToolsConfig): NodeTools {
   }
 
   const read = defineTool({
+    authorization: {
+      action: "read",
+      resources: (input) => [paths.authorizationResource(input.path)],
+    },
     description:
       filesystemScope === "workspace"
         ? "Read a bounded UTF-8 file inside the workspace root."
@@ -598,10 +616,16 @@ export function createNodeTools(config: NodeToolsConfig): NodeTools {
     idempotency: "idempotent",
     input: readInput,
     name: "read",
+    origin: "builtin",
     output: readOutput,
+    risk: "read",
   });
 
   const write = defineTool({
+    authorization: {
+      action: "write",
+      resources: (input) => [paths.authorizationResource(input.path)],
+    },
     description:
       filesystemScope === "workspace"
         ? "Write UTF-8 content to a file inside the workspace root."
@@ -614,10 +638,16 @@ export function createNodeTools(config: NodeToolsConfig): NodeTools {
     idempotency: "idempotent",
     input: writeInput,
     name: "write",
+    origin: "builtin",
     output: writeOutput,
+    risk: "write",
   });
 
   const edit = defineTool({
+    authorization: {
+      action: "edit",
+      resources: (input) => [paths.authorizationResource(input.path)],
+    },
     description:
       filesystemScope === "workspace"
         ? "Replace one exact text occurrence in a UTF-8 workspace file."
@@ -651,10 +681,16 @@ export function createNodeTools(config: NodeToolsConfig): NodeTools {
     idempotency: "non-idempotent",
     input: editInput,
     name: "edit",
+    origin: "builtin",
     output: editOutput,
+    risk: "write",
   });
 
   const bash = defineTool({
+    authorization: {
+      action: "bash",
+      resources: () => ["process"],
+    },
     description: "Run a command in the local shell. Unsandboxed: it has the Jixu process permissions.",
     execute: async (input, context) => {
       const timeoutMs = input.timeoutMs ?? bashTimeoutMs;
@@ -694,7 +730,9 @@ export function createNodeTools(config: NodeToolsConfig): NodeTools {
     idempotency: "non-idempotent",
     input: bashInput,
     name: "bash",
+    origin: "builtin",
     output: bashOutput,
+    risk: "execute",
   });
 
   const all = Object.freeze([read, write, edit, bash] as ExecutableTool[]);

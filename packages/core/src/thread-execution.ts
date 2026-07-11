@@ -1,5 +1,10 @@
 import { decodeCheckpoint, decodeThreadEvent } from "./codec.ts";
-import type { AgentSnapshot, Checkpoint, ThreadState } from "./domain.ts";
+import type {
+  AgentSnapshot,
+  Checkpoint,
+  ThreadState,
+  ToolApprovalDecision,
+} from "./domain.ts";
 import type { EffectRequest } from "./effects.ts";
 import type { EffectDispatcher, OutcomeProposal } from "./effect-dispatcher.ts";
 import {
@@ -72,6 +77,42 @@ export class ThreadExecution implements Thread {
 
   clear(): Promise<ThreadState> {
     return this.#commit("context.cleared", {}).then(() => this.state());
+  }
+
+  async decideApproval(
+    effectId: string,
+    decision: ToolApprovalDecision,
+  ): Promise<ThreadState> {
+    if (decision !== "allow_once" && decision !== "deny") {
+      throw new InvalidTransitionError(`Unknown approval decision ${decision}`);
+    }
+    const approval = this.#state.toolApprovals[effectId];
+    const effect = this.#state.pendingEffects[effectId];
+    if (
+      approval === undefined ||
+      approval.decision !== null ||
+      effect === undefined ||
+      effect.type !== "tool.execute"
+    ) {
+      throw new InvalidTransitionError(
+        `Tool Effect ${effectId} is not awaiting approval`,
+      );
+    }
+
+    const decided = await this.#commit("approval.decided", {
+      decision,
+      effectId,
+    });
+    const proposal =
+      decision === "deny"
+        ? this.#dispatcher.rejectToolPermission(
+            effect,
+            `Tool ${effect.input.name} was denied by the user`,
+          )
+        : await this.#dispatcher.dispatch(effect);
+    await this.#commitProposal(proposal, decided.event.id);
+    this.#schedule();
+    return this.wait();
   }
 
   async continue(): Promise<ThreadState> {
@@ -279,6 +320,25 @@ export class ThreadExecution implements Thread {
         await this.#commit("plan.updated", { plan });
         continue;
       }
+      const deniedApproval = Object.values(state.toolApprovals).find(
+        (approval) => approval.decision === "deny",
+      );
+      if (deniedApproval !== undefined) {
+        const effect = state.pendingEffects[deniedApproval.effectId];
+        if (effect === undefined || effect.type !== "tool.execute") {
+          throw new InvalidTransitionError(
+            `Denied approval ${deniedApproval.effectId} has no pending Tool Effect`,
+          );
+        }
+        await this.#commitProposal(
+          this.#dispatcher.rejectToolPermission(
+            effect,
+            `Tool ${effect.input.name} was denied by the user`,
+          ),
+          deniedApproval.decisionEventId ?? effect.requestedByEventId,
+        );
+        continue;
+      }
       if (state.status !== "running") {
         await this.#writeCheckpoint();
         return;
@@ -338,11 +398,53 @@ export class ThreadExecution implements Thread {
       prepared.push({ effect, requestEventId: committed.event.id });
     }
 
-    const proposals = await Promise.all(
-      prepared.map(async ({ effect, requestEventId }) => ({
-        proposal: await this.#dispatcher.dispatch(effect),
-        requestEventId,
-      })),
+    const dispatchable: PreparedEffect[] = [];
+    const proposals: Array<{
+      readonly proposal: OutcomeProposal;
+      readonly requestEventId: string;
+    }> = [];
+    for (const item of prepared) {
+      if (item.effect.type === "model.generate") {
+        dispatchable.push(item);
+        continue;
+      }
+      const approved = this.#state.toolApprovals[item.effect.id];
+      if (approved?.decision === "allow_once") {
+        dispatchable.push(item);
+        continue;
+      }
+      const permission = this.#dispatcher.inspectToolPermission(item.effect);
+      if (permission === null || permission.effect === "allow") {
+        dispatchable.push(item);
+        continue;
+      }
+      if (permission.effect === "deny") {
+        proposals.push({
+          proposal: this.#dispatcher.rejectToolPermission(item.effect),
+          requestEventId: item.requestEventId,
+        });
+        continue;
+      }
+      await this.#commit(
+        "approval.requested",
+        {
+          action: permission.request.action,
+          effectId: item.effect.id,
+          name: item.effect.input.name,
+          resources: permission.request.resources,
+          toolCallId: item.effect.input.toolCallId,
+        },
+        item.requestEventId,
+      );
+    }
+
+    proposals.push(
+      ...(await Promise.all(
+        dispatchable.map(async ({ effect, requestEventId }) => ({
+          proposal: await this.#dispatcher.dispatch(effect),
+          requestEventId,
+        })),
+      )),
     );
     for (const { proposal, requestEventId } of proposals) {
       await this.#commitProposal(proposal, requestEventId);

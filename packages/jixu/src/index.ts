@@ -1,8 +1,18 @@
-export { JixuConfigStore, normalizeJixuBaseUrl } from "./config.ts";
+export {
+  DEFAULT_JIXU_TOOL_SETTINGS,
+  effectiveJixuToolPermission,
+  JixuConfigStore,
+  jixuToolPermissionPolicy,
+  normalizeJixuBaseUrl,
+} from "./config.ts";
 export type {
   JixuApi,
   JixuConnectionConfig,
+  JixuFileScope,
   JixuStoredConfiguration,
+  JixuToolName,
+  JixuToolPermissionProfile,
+  JixuToolSettings,
 } from "./config.ts";
 export { createThreadController, ThreadController } from "./thread-controller.ts";
 export type {

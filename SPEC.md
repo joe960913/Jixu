@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.24
+**Version:** 0.4.25
 **Status:** normative, pre-release
 **Last updated:** 2026-08-20
 
@@ -279,6 +279,8 @@ The v0.4 families are:
 - `model.completed`
 - `model.failed`
 - `tool.requested`
+- `approval.requested`
+- `approval.decided`
 - `tool.completed`
 - `tool.failed`
 
@@ -327,6 +329,13 @@ Every Effect carries `id`, `threadId`, `type`, `input`, and idempotency metadata
   The Tool Driver MUST preserve that error code, message, retryability, and
   `failed` disposition. An untyped exception after Tool dispatch MUST remain
   `indeterminate`; the Driver MUST NOT guess that no side effect occurred.
+- **JX-EFF-008.** A Tool permission decision MUST be resolved from the parsed
+  Tool input before Driver dispatch. `allow` proceeds through the ordinary
+  durable Tool request, `deny` records a deterministic `tool.failed` outcome
+  without invoking the Tool Driver, and `ask` records `approval.requested` and
+  leaves the Thread `waiting`. Only a matching durable `approval.decided`
+  decision may resume or reject that exact pending Tool Effect. An approval
+  decision MUST NOT mutate the configured policy or approve another Effect.
 
 Jixu provides at-least-once dispatch for Effects declared idempotent. For
 non-idempotent Effects whose durable outcome is unknown, recovery MUST enter
@@ -601,6 +610,21 @@ continue safely without treating the compacted text as Thread authority.
   existing targets, ancestors, and symbolic links before access. A known scope
   rejection MUST be a typed deterministic Tool failure rather than an
   indeterminate Driver exception.
+- **JX-TOOL-008.** Executable Tools MUST form one typed catalogue derived from
+  the Agent's actual Tool definitions. A catalogue entry MUST expose the Tool
+  name, origin, risk class, descriptor, and deterministic authorization action
+  and resource projection. Configuration and UI MAY select or describe
+  catalogue entries by name, but MUST NOT duplicate Tool schemas, construct
+  executable Tools, or become a second registration authority. Unknown enabled
+  Tool names MUST fail closed before an Agent is created.
+- **JX-TOOL-009.** A Tool permission policy MUST contain a default effect and an
+  ordered list of `{ action, resource, effect }` rules, where effect is exactly
+  `allow`, `ask`, or `deny`. Action and resource patterns use documented
+  whole-value `*` and `?` matching; broad rules precede exceptions and the last
+  matching rule wins. If one Tool call projects multiple resources, any
+  `deny` denies the call, otherwise any `ask` asks, otherwise the call is
+  allowed. The resolver MUST be pure, deterministic, and independent of UI or
+  Driver I/O.
 
 ### 11.2 Skills
 
@@ -979,6 +1003,22 @@ not own execution truth.
   deliberate historical scroll position until the user submits new input or
   returns to the bottom. This is transient viewport behavior and MUST NOT enter
   Events, State, Replay, Checkpoints, or model context.
+- **JX-TUI-033.** Configuration MUST expose the first-party Tool catalogue as a
+  Tool Center backed by the same typed configuration used to construct the
+  reference Agent. It MUST show each Tool's source, enabled state, effective
+  permission, and actual file or process boundary without claiming an
+  unavailable sandbox. A user can change a maintained permission profile,
+  enable or disable a Tool, and set a whole-Tool permission override through
+  keyboard or primary-button input. Saving MUST preserve unedited
+  resource-specific rules and apply the resulting immutable Tool set to newly
+  constructed Agents; an incompatible existing Thread remains protected by the
+  ordinary Agent snapshot check.
+
+  When a Tool call is waiting for approval, the workspace MUST identify the
+  Tool and bounded resource summary and offer explicit allow-once and deny
+  actions. The decision MUST call the public Thread approval API and render from
+  the resulting durable Events rather than dispatching a Tool directly from
+  the TUI.
 
 Configuration stores credentials separately from non-secret settings, uses
 restrictive POSIX permissions, and never records secrets in Thread data.
@@ -996,6 +1036,11 @@ restrictive POSIX permissions, and never records secrets in Thread data.
   scope MUST be opt-in at the application boundary and visibly disclosed.
 - **JX-SEC-006.** Stored credentials MUST be written atomically and, on POSIX,
   with user-only permissions.
+- **JX-SEC-007.** Permission configuration is an application-boundary policy,
+  not a sandbox. The reference CLI MUST continue to disclose unsandboxed shell
+  execution and the selected file scope. A rule or approval MAY reduce or grant
+  a particular Tool dispatch, but MUST NOT be described as OS isolation,
+  network isolation, or process containment.
 
 ## 16. Package boundaries
 
@@ -1263,6 +1308,21 @@ frameworks, and UI frameworks.
   scroll, moving to historical content and submitting ordinary input through
   the Composer makes the new `YOU` entry visible, moves the transcript to its
   bottom edge, and lets the following live response continue from there.
+- **JX-AC-047 — Tool catalogue, policy, and durable approval.** The reference
+  Agent is constructed from the enabled entries of one typed first-party Tool
+  catalogue. Settings schema v4 persists the enabled names, explicit file
+  scope, maintained permission profile, and ordered custom rules separately
+  from credentials; loading schema v3 migrates in place without a backup and
+  preserves its previously disclosed process-wide behavior. Unknown Tool names,
+  malformed rules, and unknown effects fail closed. Policy fixtures prove
+  whole-value wildcard order and multi-resource deny precedence. An allowed
+  Tool dispatches normally, a denied Tool records `tool.requested` then
+  `tool.failed` without invoking its implementation, and an asked Tool records
+  `tool.requested` then `approval.requested`, survives Replay and reopen in
+  `waiting`, and invokes the Tool only after a matching `approval.decided`
+  allow-once Event. Denial produces the ordinary Tool failure path. The
+  Configuration Tool Center and workspace approval actions exercise these same
+  public paths.
 
 The minimum validation for a code change is targeted tests, typecheck, lint, and
 `git diff --check`. Release work also runs the complete acceptance suite and
@@ -1513,6 +1573,16 @@ their older descriptions and input schemas remain replayable without rewriting
 stored Events. Reducer version 10 invalidates disposable Checkpoints; no stored
 Thread migration is required.
 
+Version 0.4.25 adds a typed Tool catalogue, Settings schema v4 Tool policy,
+pure ordered permission resolution, and Event-backed allow-once or deny
+approval. Existing schema v3 settings migrate atomically in place without a
+backup and retain all four first-party Tools, process file scope, and
+unrestricted permission behavior; new configurations default to the maintained
+balanced profile and workspace-bounded file Tools. Event schema version 5 gains
+additive approval Event types and remains replay-compatible. Reducer version 11
+invalidates disposable Checkpoints. This version does not add an OS sandbox:
+the unsandboxed shell and selected file scope remain explicitly disclosed.
+
 ## 19. Implementation order
 
 1. Reconcile public and durable Runtime/Run remnants to Harness/Thread and keep
@@ -1528,6 +1598,6 @@ Thread migration is required.
 6. Run targeted acceptance, Store and Driver contracts, typecheck, lint,
    package portability, and the ordinary public Harness path.
 
-Later capabilities such as more model adapters, MCP Tools, approvals, richer
+Later capabilities such as more model adapters, MCP Tools, OS sandbox backends, richer
 observation, and deployment coordinators MUST extend this same single-Agent
 Thread model.

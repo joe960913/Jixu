@@ -125,9 +125,30 @@ export interface ForkLineage {
   readonly parentSequence: number;
 }
 
-export interface WaitingReason {
+export interface EffectOutcomeWaitingReason {
   readonly effectId: string;
   readonly reasonCode: "effect_outcome_unknown";
+}
+
+export interface ToolApprovalWaitingReason {
+  readonly effectId: string;
+  readonly reasonCode: "tool_approval_required";
+}
+
+export type WaitingReason =
+  | EffectOutcomeWaitingReason
+  | ToolApprovalWaitingReason;
+
+export type ToolApprovalDecision = "allow_once" | "deny";
+
+export interface ToolApproval {
+  readonly action: string;
+  readonly decision: ToolApprovalDecision | null;
+  readonly decisionEventId: string | null;
+  readonly effectId: string;
+  readonly name: string;
+  readonly resources: readonly string[];
+  readonly toolCallId: string;
 }
 
 export interface QueuedInput {
@@ -158,6 +179,7 @@ export interface ThreadState {
   readonly revision: number;
   readonly threadId: string;
   readonly status: ThreadStatus;
+  readonly toolApprovals: Readonly<Record<string, ToolApproval>>;
   readonly waitingReason: WaitingReason | null;
 }
 
@@ -189,6 +211,7 @@ export function createInitialThreadState(threadId: string): ThreadState {
     revision: 0,
     threadId,
     status: "idle",
+    toolApprovals: {},
     waitingReason: null,
   };
 }

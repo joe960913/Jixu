@@ -167,6 +167,62 @@ test("JX-AC-004 JX-AC-005 recovery does not repeat an unsafe pending Tool", asyn
   assert.equal(state.waitingReason?.reasonCode, "effect_outcome_unknown");
 });
 
+test("JX-AC-004 JX-AC-047 pending Tool approval survives restart", async () => {
+  const store = new InMemoryEventStore();
+  let executions = 0;
+  const tool = defineTool({
+    description: "Recoverable read",
+    execute: () => {
+      executions += 1;
+      return "recovered";
+    },
+    idempotency: "idempotent",
+    input: objectSchema,
+    name: "recoverable",
+    output: stringSchema,
+  });
+  const agent = defineTestAgent([tool]);
+  const first = createHarness({
+    agent,
+    ids: new SequenceIdGenerator(),
+    modelDrivers: {
+      mock: new SequenceModelDriver([
+        succeed({
+          content: "",
+          toolCalls: [
+            { arguments: {}, id: "recoverable-1", name: "recoverable" },
+          ],
+        }),
+      ]),
+    },
+    store,
+    toolPermissionPolicy: { defaultEffect: "ask", rules: [] },
+  });
+  const original = await first.createThread();
+  const waiting = await original.send("Read after approval");
+  const effectId = waiting.waitingReason?.effectId;
+  assert.equal(waiting.waitingReason?.reasonCode, "tool_approval_required");
+  assert.ok(effectId !== undefined);
+
+  const recovered = await createHarness({
+    agent,
+    ids: new SequenceIdGenerator(100),
+    modelDrivers: {
+      mock: new SequenceModelDriver([
+        succeed({ content: "Recovered after approval.", toolCalls: [] }),
+      ]),
+    },
+    store,
+    toolPermissionPolicy: { defaultEffect: "ask", rules: [] },
+  }).openThread(original.id);
+  assert.equal((await recovered.state()).status, "waiting");
+
+  const complete = await recovered.decideApproval(effectId, "allow_once");
+  assert.equal(complete.status, "idle");
+  assert.equal(complete.result, "Recovered after approval.");
+  assert.equal(executions, 1);
+});
+
 test("JX-AC-004 JX-AC-020 queued input survives restart and activates once", async () => {
   const inner = new InMemoryEventStore();
   const store = new CrashStore(inner, (event) => event.type === "model.completed");

@@ -3,6 +3,7 @@ import type {
   DriverError,
   ModelResponse,
   PendingPlanRejection,
+  ToolApprovalDecision,
 } from "./domain.ts";
 import type {
   ModelGenerateEffect,
@@ -31,6 +32,17 @@ export interface ThreadEvent<TType extends string, TPayload> {
 }
 
 export interface ThreadEventPayloads {
+  readonly "approval.decided": {
+    readonly decision: ToolApprovalDecision;
+    readonly effectId: string;
+  };
+  readonly "approval.requested": {
+    readonly action: string;
+    readonly effectId: string;
+    readonly name: string;
+    readonly resources: readonly string[];
+    readonly toolCallId: string;
+  };
   readonly "context.cleared": Record<string, never>;
   readonly "input.received": { readonly content: string };
   readonly "model.completed": {

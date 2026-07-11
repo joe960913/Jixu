@@ -10,6 +10,8 @@ import type {
   Thread,
   ThreadState,
   ThreadStreamItem,
+  ToolApproval,
+  ToolApprovalDecision,
   ToolOutputDelta,
 } from "@jixu/core";
 
@@ -148,6 +150,7 @@ export class ThreadController {
     threadPickerOpen: false,
     threads: Object.freeze([]),
     threadStatus: "none",
+    toolApproval: null,
     toolLiveOutput: Object.freeze({}),
     toolOperations: Object.freeze([]),
     transcript: Object.freeze([]),
@@ -216,6 +219,26 @@ export class ThreadController {
     }
   }
 
+  async decideToolApproval(decision: ToolApprovalDecision): Promise<void> {
+    const thread = this.#requireThread();
+    if (thread === null) return;
+    const approval = this.#snapshot.toolApproval;
+    if (approval === null) {
+      this.#notice("No Tool approval is waiting.");
+      return;
+    }
+    try {
+      this.#beginWork();
+      const state = await thread.decideApproval(approval.effectId, decision);
+      await this.#sync(thread, state);
+      this.#showStableOutcome(state);
+    } catch (error) {
+      this.#notice(errorMessage(error), "ERROR", "danger");
+    } finally {
+      this.#endWork();
+    }
+  }
+
   async #command(input: string): Promise<void> {
     const [command] = input.split(/\s+/, 1);
     switch (command) {
@@ -243,6 +266,12 @@ export class ThreadController {
         return;
       case "/continue":
         await this.#continue();
+        return;
+      case "/approve":
+        await this.decideToolApproval("allow_once");
+        return;
+      case "/deny":
+        await this.decideToolApproval("deny");
         return;
       case "/events":
         await this.#inspectEvents();
@@ -441,6 +470,7 @@ export class ThreadController {
         current: summary.id === thread.id,
       })),
       threadStatus: state.status,
+      toolApproval: this.#currentApproval(state),
       toolLiveOutput: Object.freeze({}),
       toolOperations: state.status === "running" ? projection.toolOperations : [],
       workStatus: null,
@@ -553,14 +583,25 @@ export class ThreadController {
       metrics: currentState.metrics,
       streamingText: "",
       threadStatus: currentState.status,
+      toolApproval: this.#currentApproval(currentState),
     });
+  }
+
+  #currentApproval(state: ThreadState): ToolApproval | null {
+    return (
+      Object.values(state.toolApprovals).find(
+        (approval) => approval.decision === null,
+      ) ?? null
+    );
   }
 
   #showStableOutcome(state: ThreadState): void {
     if (state.status === "paused") {
       this.#notice("Thread paused. Use /continue when ready.");
     } else if (state.status === "waiting") {
-      this.#notice("Thread is waiting on an indeterminate external outcome.");
+      if (this.#currentApproval(state) === null) {
+        this.#notice("Thread is waiting on an indeterminate external outcome.");
+      }
     } else if (state.error !== null) {
       this.#notice(state.error.message, "ERROR", "danger");
     }

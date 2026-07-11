@@ -8,9 +8,19 @@ import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode, RefObject } from "react";
 
-import { normalizeJixuBaseUrl } from "./config.ts";
-import type { JixuApi, JixuConnectionConfig } from "./config.ts";
+import type { ExecutableTool } from "@jixu/core";
+
+import {
+  DEFAULT_JIXU_TOOL_SETTINGS,
+  normalizeJixuBaseUrl,
+} from "./config.ts";
+import type {
+  JixuApi,
+  JixuConnectionConfig,
+  JixuToolSettings,
+} from "./config.ts";
 import { jixuTheme } from "./theme.ts";
+import { ToolCenter } from "./tui-tool-center.tsx";
 
 export interface JixuInitialConfiguration {
   readonly api?: JixuApi;
@@ -18,6 +28,7 @@ export interface JixuInitialConfiguration {
   readonly autoConnect?: boolean;
   readonly baseUrl?: string;
   readonly model?: string;
+  readonly tools?: JixuToolSettings;
 }
 
 interface SetupProps {
@@ -25,6 +36,7 @@ interface SetupProps {
   readonly initialError: string | null;
   readonly onBack: () => void;
   readonly onConnect: (config: JixuConnectionConfig) => Promise<void>;
+  readonly toolCatalogue: readonly ExecutableTool[];
   readonly workspace: string;
 }
 
@@ -302,6 +314,7 @@ export function Setup({
   initialError,
   onBack,
   onConnect,
+  toolCatalogue,
   workspace,
 }: SetupProps) {
   const [api, setApi] = useState<JixuApi>(
@@ -310,6 +323,10 @@ export function Setup({
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "");
   const [apiKey, setApiKey] = useState(initial?.apiKey ?? "");
   const [model, setModel] = useState(initial?.model ?? "");
+  const [tools, setTools] = useState(
+    initial?.tools ?? DEFAULT_JIXU_TOOL_SETTINGS,
+  );
+  const [panel, setPanel] = useState<"connection" | "tools">("connection");
   const [focus, setFocus] = useState<SetupFocus>(0);
   const [presetCursor, setPresetCursor] = useState(() =>
     selectedEndpointPresetIndex(
@@ -392,6 +409,7 @@ export function Setup({
         apiKey: cleanKey,
         baseUrl: cleanBaseUrl,
         model: cleanModel,
+        tools,
       });
     } catch (connectionError) {
       setConnecting(false);
@@ -404,6 +422,7 @@ export function Setup({
   };
 
   useKeyboard((key) => {
+    if (panel === "tools") return;
     if (key.name === "escape") {
       key.preventDefault();
       if (!connecting) onBack();
@@ -511,8 +530,32 @@ export function Setup({
             <strong>JIXU</strong>
           </text>
           <text fg={jixuTheme.text} selectable={false}>  Configuration</text>
+          <text fg={jixuTheme.secondary} selectable={false}>  </text>
+          <box
+            id="config-connection-tab"
+            onMouseDown={onPrimaryMouseDown(() => setPanel("connection"))}
+          >
+            <text
+              fg={panel === "connection" ? jixuTheme.brand : jixuTheme.secondary}
+              selectable={false}
+            >
+              <strong>CONNECTION</strong>
+            </text>
+          </box>
+          <text fg={jixuTheme.secondary} selectable={false}>  </text>
+          <box
+            id="config-tools-tab"
+            onMouseDown={onPrimaryMouseDown(() => setPanel("tools"))}
+          >
+            <text
+              fg={panel === "tools" ? jixuTheme.brand : jixuTheme.secondary}
+              selectable={false}
+            >
+              <strong>TOOLS</strong>
+            </text>
+          </box>
           <box style={{ flexGrow: 1 }} />
-          {!compact && (
+          {wideChrome && (
             <box style={{ flexDirection: "row", gap: 2 }}>
               <LabeledValue
                 label="SETTINGS"
@@ -524,7 +567,7 @@ export function Setup({
               />
             </box>
           )}
-          {!compact && <text selectable={false}>  </text>}
+          {wideChrome && <text selectable={false}>  </text>}
           <box
             id="config-back"
             onMouseDown={onPrimaryMouseDown(() => {
@@ -535,7 +578,7 @@ export function Setup({
               fg={connecting ? jixuTheme.secondary : jixuTheme.info}
               selectable={false}
             >
-              <strong>{compact ? "← BACK" : "← BACK TO CHAT"}</strong>
+              <strong>{wideChrome ? "← BACK TO CHAT" : "← BACK"}</strong>
             </text>
           </box>
         </box>
@@ -544,18 +587,29 @@ export function Setup({
         </text>
       </box>
 
-      <box
-        backgroundColor={jixuTheme.surface}
-        borderStyle="single"
-        borderColor={jixuTheme.divider}
-        title=" Model connection "
-        titleColor={jixuTheme.brand}
-        style={{
-          flexDirection: "column",
-          padding: compactHeight ? 0 : 1,
-          width: width >= 80 ? 76 : "100%",
-        }}
-      >
+      {panel === "tools" ? (
+        <ToolCenter
+          busy={connecting}
+          error={error}
+          onApply={() => void connect()}
+          onBack={() => setPanel("connection")}
+          onChange={setTools}
+          tools={toolCatalogue}
+          value={tools}
+        />
+      ) : (
+        <box
+          backgroundColor={jixuTheme.surface}
+          borderStyle="single"
+          borderColor={jixuTheme.divider}
+          title=" Model connection "
+          titleColor={jixuTheme.brand}
+          style={{
+            flexDirection: "column",
+            padding: compactHeight ? 0 : 1,
+            width: width >= 80 ? 76 : "100%",
+          }}
+        >
         <FieldLabel
           active={focus === 0}
           hint="COMPATIBILITY MODE"
@@ -668,7 +722,8 @@ export function Setup({
             </text>
           </box>
         </box>
-      </box>
+        </box>
+      )}
 
       <box style={{ flexDirection: "column", height: 2, width: "100%" }}>
         <text fg={jixuTheme.divider} selectable={false}>

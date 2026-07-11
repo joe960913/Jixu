@@ -109,9 +109,11 @@ shows `Model not configured` and `use /config`; setup is never a forced gate.
 The endpoint can implement OpenAI-compatible `/v1/chat/completions` or
 Anthropic `/v1/messages` with client-side Tool calling.
 Jixu stores credentials separately in `~/.jixu/auth.json` and non-secret settings
-in `~/.jixu/settings.json` using schema version 3 with restrictive POSIX
-permissions. Pre-release schema versions 1 and 2 are not migrated; re-enter the
-connection through `/config`.
+in `~/.jixu/settings.json` using settings schema version 4 with restrictive POSIX
+permissions. A schema v3 settings file is migrated in place without a backup;
+the migration preserves its four enabled Tools, process-level file reach, and
+unrestricted permission behavior. Pre-release schema versions 1 and 2 are not
+migrated; re-enter the connection through `/config`.
 The footer shows the selected Thread's known USD cost; `USD —` means no trusted
 price is available, and a trailing `+` marks a known partial total.
 
@@ -133,6 +135,7 @@ Normal prompts continue the selected Thread. Useful controls are:
 - `/clear` clears the selected Thread context without changing its ID;
 - `/resume` opens a keyboard-selectable list of previous Threads;
 - `/pause` and `/continue` control a Thread at durable dispatch boundaries;
+- `/approve` allows the waiting Tool call once and `/deny` rejects it;
 - `/fork <event-id> <input>` creates a child Thread with explicit lineage;
 - `/events`, `/state`, and `/replay` inspect durable behavior; and
 - `/config`, `/help`, and `/quit` manage the local application.
@@ -140,10 +143,19 @@ Normal prompts continue the selected Thread. Useful controls are:
 Typing `/` or a command prefix opens a filtered menu above the composer. Use Up
 and Down to select, Escape to close, and Enter to invoke or insert a command.
 
+`/config` includes a Tool Center backed by the executable Agent catalogue. It
+enables or disables first-party Tools and applies ordered `allow`, `ask`, or
+`deny` rules before Driver dispatch; the last matching action/resource rule wins.
+`balanced` allows the three file Tools and asks for `bash`, `review` only allows
+`read` by default, and `unrestricted` allows every enabled Tool. An `ask`
+decision is an Event-backed waiting boundary and survives restart.
+
 `@jixu/tools-node` keeps `read`, `write`, and `edit` workspace-bounded by
-default. The reference TUI explicitly selects process-level file access because
-it also exposes an unsandboxed local `bash` Tool; the footer discloses that
-shared boundary as `LOCAL I/O · process access`.
+default. The Tool Center can deliberately restore process-level file reach.
+`bash` always remains an unsandboxed local process Tool; permission policy
+controls whether Jixu dispatches it but does not create an OS sandbox. The
+footer therefore reports the enabled Tool names, the current file scope, and
+the separate `BASH process` boundary.
 
 ## Validation
 

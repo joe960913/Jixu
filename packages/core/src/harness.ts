@@ -24,6 +24,7 @@ import type {
 import { reduce, replayEvents } from "./reducer.ts";
 import { InMemoryEventStore } from "./store.ts";
 import type { ForkOptions, Thread } from "./thread.ts";
+import type { ToolPermissionPolicy } from "./tool-permissions.ts";
 import {
   restoreThreadState,
   ThreadExecution,
@@ -53,6 +54,7 @@ export interface HarnessConfig {
   readonly modelDrivers: Readonly<Record<string, ModelDriver>>;
   readonly signals?: SignalSink;
   readonly store?: EventStore;
+  readonly toolPermissionPolicy?: ToolPermissionPolicy;
 }
 
 export class Harness {
@@ -77,6 +79,9 @@ export class Harness {
       modelDrivers: config.modelDrivers,
       observations: this.#observations,
       signals: config.signals ?? new NoopSignalSink(),
+      ...(config.toolPermissionPolicy === undefined
+        ? {}
+        : { toolPermissionPolicy: config.toolPermissionPolicy }),
     });
   }
 
@@ -294,6 +299,8 @@ export class Harness {
     if (
       event.type === "model.completed" ||
       event.type === "model.failed" ||
+      event.type === "approval.requested" ||
+      event.type === "approval.decided" ||
       event.type === "tool.completed" ||
       event.type === "tool.failed" ||
       event.type === "thread.waiting"

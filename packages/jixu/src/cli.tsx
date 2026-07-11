@@ -10,12 +10,13 @@ import { createNodeTools } from "@jixu/tools-node";
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 
-import { JIXU_REFERENCE_AGENT_INSTRUCTIONS } from "./agent-instructions.ts";
+import { createJixuReferenceAgentInstructions } from "./agent-instructions.ts";
 import {
   createJixuExitOutput,
   type JixuExitReason,
 } from "./cli-exit.ts";
 import { JixuConfigStore } from "./config.ts";
+import { jixuToolPermissionPolicy } from "./config.ts";
 import type {
   JixuApi,
   JixuConnectionConfig,
@@ -168,10 +169,10 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
     options.api === undefined &&
     options.baseUrl === undefined &&
     options.model === undefined;
-  const tools = createNodeTools({
-    filesystemScope: "process",
+  const toolCatalogue = createNodeTools({
+    filesystemScope: stored.tools.fileScope,
     root: options.root,
-  });
+  }).all;
 
   let exitReason: JixuExitReason | null = null;
   let finish!: () => void;
@@ -188,6 +189,20 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
     controls: { readonly onConfigure: () => void; readonly onQuit: () => void },
   ) => {
     await configStore.saveConnection(config);
+    const availableTools = createNodeTools({
+      filesystemScope: config.tools.fileScope,
+      root: options.root,
+    }).all;
+    const toolsByName = new Map(
+      availableTools.map((tool) => [tool.descriptor.name, tool] as const),
+    );
+    const enabledTools = config.tools.enabled.map((name) => {
+      const tool = toolsByName.get(name);
+      if (tool === undefined) {
+        throw new TypeError(`Configured Tool ${name} is not registered`);
+      }
+      return tool;
+    });
     const driver = createLLMModelDriver({
       api: config.api,
       apiKey: config.apiKey,
@@ -195,14 +210,18 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
       provider: MODEL_DRIVER_ID,
     });
     const agent = defineAgent({
-      instructions: JIXU_REFERENCE_AGENT_INSTRUCTIONS,
+      instructions: createJixuReferenceAgentInstructions({
+        fileScope: config.tools.fileScope,
+        tools: enabledTools,
+      }),
       model: { model: config.model, provider: MODEL_DRIVER_ID },
-      tools: tools.all,
+      tools: enabledTools,
     });
     const harness = createHarness({
       agent,
       modelDrivers: createLLMAdapter({ [MODEL_DRIVER_ID]: driver }),
       store: new JsonlEventStore(resolve(options.root, ".jixu")),
+      toolPermissionPolicy: jixuToolPermissionPolicy(config.tools),
     });
     return createThreadController({ harness, ...controls });
   };
@@ -228,9 +247,11 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
           ...(apiKey === undefined ? {} : { apiKey }),
           ...(baseUrl === undefined ? {} : { baseUrl }),
           ...(model === undefined ? {} : { model }),
+          tools: stored.tools,
         }}
         motion={process.env.JIXU_MOTION !== "off"}
         onQuit={quitInteractively}
+        toolCatalogue={toolCatalogue}
         workspace={options.root}
       />,
     );

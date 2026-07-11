@@ -18,6 +18,16 @@ import type { ModelAccounting } from "./metrics.ts";
 import type { ModelDriver, Signal, SignalSink } from "./ports.ts";
 import type { ThreadEventPayloads } from "./events.ts";
 import type { ObservationBroker } from "./observation.ts";
+import {
+  ALLOW_ALL_TOOL_POLICY,
+  defineToolPermissionPolicy,
+  resolveToolPermission,
+} from "./tool-permissions.ts";
+import type {
+  ToolAuthorizationRequest,
+  ToolPermissionEffect,
+  ToolPermissionPolicy,
+} from "./tool-permissions.ts";
 
 export type OutcomeProposal = {
   [TType in
@@ -39,6 +49,12 @@ export interface EffectDispatcherConfig {
   readonly modelDrivers: Readonly<Record<string, ModelDriver>>;
   readonly observations: ObservationBroker;
   readonly signals: SignalSink;
+  readonly toolPermissionPolicy?: ToolPermissionPolicy;
+}
+
+export interface ToolPermissionInspection {
+  readonly effect: ToolPermissionEffect;
+  readonly request: ToolAuthorizationRequest;
 }
 
 function driverError(code: string, message: string, retryable: boolean): DriverError {
@@ -73,18 +89,54 @@ export class EffectDispatcher {
   readonly #modelDrivers: Readonly<Record<string, ModelDriver>>;
   readonly #observations: ObservationBroker;
   readonly #signals: SignalSink;
+  readonly #toolPermissionPolicy: ToolPermissionPolicy;
 
   constructor(config: EffectDispatcherConfig) {
     this.#agent = config.agent;
     this.#modelDrivers = config.modelDrivers;
     this.#observations = config.observations;
     this.#signals = config.signals;
+    this.#toolPermissionPolicy = defineToolPermissionPolicy(
+      config.toolPermissionPolicy ?? ALLOW_ALL_TOOL_POLICY,
+    );
   }
 
   dispatch(effect: EffectRequest): Promise<OutcomeProposal> {
     return effect.type === "model.generate"
       ? this.#dispatchModel(effect)
       : this.#dispatchTool(effect);
+  }
+
+  inspectToolPermission(
+    effect: ToolExecuteEffect,
+  ): ToolPermissionInspection | null {
+    const tool = this.#agent.tools.find(
+      (candidate) => candidate.descriptor.name === effect.input.name,
+    );
+    if (tool === undefined) return null;
+    try {
+      const input = tool.parseInput(cloneJson(effect.input.arguments));
+      const request = tool.authorize(input);
+      return Object.freeze({
+        effect: resolveToolPermission(this.#toolPermissionPolicy, request).effect,
+        request,
+      });
+    } catch {
+      // Missing Tools and invalid inputs still use the ordinary typed Tool
+      // failure path after their durable request is accepted.
+      return null;
+    }
+  }
+
+  rejectToolPermission(
+    effect: ToolExecuteEffect,
+    message = `Tool ${effect.input.name} is denied by the configured permission policy`,
+  ): OutcomeProposal {
+    return this.#toolFailure(
+      effect,
+      "failed",
+      driverError("tool_permission_denied", message, false),
+    );
   }
 
   async #dispatchModel(effect: ModelGenerateEffect): Promise<OutcomeProposal> {
