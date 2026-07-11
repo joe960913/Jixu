@@ -11,6 +11,11 @@ import type {
   ToolExecuteEffect,
 } from "./effects.ts";
 import {
+  compileModelContext,
+  MAX_PLAN_REPAIR_ATTEMPTS,
+} from "./context.ts";
+import type { ModelContinuation } from "./context.ts";
+import {
   InvalidTransitionError,
   UnsupportedEventError,
 } from "./errors.ts";
@@ -24,13 +29,12 @@ import {
 } from "./metrics.ts";
 import {
   assertPlanUpdateTransition,
-  createPlanControl,
+  expandPlanUpdateProposals,
   materializePlanUpdates,
   samePlan,
 } from "./plan.ts";
-import { PROGRESS_CONTROL } from "./progress.ts";
 
-export const REDUCER_VERSION = 11;
+export const REDUCER_VERSION = 12;
 
 export interface TransitionResult {
   readonly effects: readonly EffectRequest[];
@@ -186,59 +190,58 @@ function sameReadyEffect(
     return false;
   }
 
+  const expectedBase = {
+    activePlan: expected.input.activePlan,
+    instructions: expected.input.instructions,
+    messages: expected.input.messages,
+    model: expected.input.model,
+    planControlName: expected.input.planControl.name,
+    planRejectionFeedback: expected.input.planRejectionFeedback ?? null,
+    progressControlName: expected.input.progressControl.name,
+    tools: expected.input.tools,
+  };
+  const persistedBase = {
+    activePlan: persisted.input.activePlan,
+    instructions: persisted.input.instructions,
+    messages: persisted.input.messages,
+    model: persisted.input.model,
+    planControlName: persisted.input.planControl.name,
+    planRejectionFeedback: persisted.input.planRejectionFeedback ?? null,
+    progressControlName: persisted.input.progressControl.name,
+    tools: persisted.input.tools,
+  };
+  if (
+    persisted.input.contextManifest === undefined &&
+    persisted.input.runtimeContext === undefined
+  ) {
+    return jsonEquals(expectedBase, persistedBase);
+  }
   return jsonEquals(
     {
-      activePlan: expected.input.activePlan,
-      instructions: expected.input.instructions,
-      messages: expected.input.messages,
-      model: expected.input.model,
-      planControlName: expected.input.planControl.name,
-      planRejectionFeedback: expected.input.planRejectionFeedback ?? null,
-      progressControlName: expected.input.progressControl.name,
-      tools: expected.input.tools,
+      ...expectedBase,
+      contextManifest: expected.input.contextManifest ?? null,
+      runtimeContext: expected.input.runtimeContext ?? null,
     },
     {
-      activePlan: persisted.input.activePlan,
-      instructions: persisted.input.instructions,
-      messages: persisted.input.messages,
-      model: persisted.input.model,
-      planControlName: persisted.input.planControl.name,
-      planRejectionFeedback: persisted.input.planRejectionFeedback ?? null,
-      progressControlName: persisted.input.progressControl.name,
-      tools: persisted.input.tools,
+      ...persistedBase,
+      contextManifest: persisted.input.contextManifest ?? null,
+      runtimeContext: persisted.input.runtimeContext ?? null,
     },
   );
 }
 
 function createModelEffect(
   state: ThreadState,
-  requestedByEventId: string,
+  continuation: ModelContinuation,
   index: number,
-  planRejectionFeedback?: string,
 ): ModelGenerateEffect {
-  const agent = requireAgent(state);
-  const id = `${requestedByEventId}:effect:${index}`;
-  const feedback = planRejectionFeedback
-    ?.trim()
-    .replace(/\s+/gu, " ")
-    .slice(0, 500);
+  const id = `${continuation.eventId}:effect:${index}`;
   return {
     attempt: 1,
     id,
     idempotencyKey: id,
-    input: {
-      activePlan: state.activePlan,
-      instructions: agent.instructions,
-      messages: state.messages,
-      model: agent.model,
-      planControl: createPlanControl(state.activePlan),
-      ...(feedback === undefined || feedback.length === 0
-        ? {}
-        : { planRejectionFeedback: feedback }),
-      progressControl: PROGRESS_CONTROL,
-      tools: agent.tools,
-    },
-    requestedByEventId,
+    input: compileModelContext(state, continuation),
+    requestedByEventId: continuation.eventId,
     threadId: state.threadId,
     type: "model.generate",
   };
@@ -341,11 +344,18 @@ function settleTurn(
     error: null,
     inputQueue: remaining,
     messages: [...state.messages, { content: next.content, role: "user" }],
+    planRepairAttempts: 0,
     result: null,
     status: "running",
     waitingReason: null,
   });
-  const effects = [createModelEffect(nextState, next.eventId, 0)];
+  const effects = [
+    createModelEffect(
+      nextState,
+      { eventId: next.eventId, reason: "input_received" },
+      0,
+    ),
+  ];
   return withReadyEffects(nextState, sequence, effects);
 }
 
@@ -393,6 +403,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           lineage: event.payload,
           pauseRequested: false,
           pendingEffects: {},
+          planRepairAttempts: 0,
           pendingPlanRejections: [],
           pendingPlanUpdates: [],
           readyEffects: [],
@@ -425,9 +436,16 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           { content: event.payload.content, role: "user" },
         ],
         result: null,
+        planRepairAttempts: 0,
         status: "running",
       });
-      const effects = [createModelEffect(nextState, event.id, 0)];
+      const effects = [
+        createModelEffect(
+          nextState,
+          { eventId: event.id, reason: "input_received" },
+          0,
+        ),
+      ];
       return withReadyEffects(nextState, event.sequence, effects);
     }
 
@@ -440,6 +458,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           inputQueue: [],
           messages: [],
           activePlan: null,
+          planRepairAttempts: 0,
           pendingPlanRejections: [],
           pendingPlanUpdates: [],
           result: null,
@@ -603,6 +622,12 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
 
     case "model.completed": {
       requireStatus(state, event.type, "running");
+      const completedEffect = state.pendingEffects[event.payload.effectId];
+      if (completedEffect === undefined || completedEffect.type !== "model.generate") {
+        throw new InvalidTransitionError(
+          `Effect ${event.payload.effectId} is not pending as model.generate`,
+        );
+      }
       const remaining = removePending(
         state,
         event.payload.effectId,
@@ -610,15 +635,27 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
       );
       const response = event.payload.response;
       const identitySeed = `sequence-${event.sequence}`;
-      let pendingPlanUpdates = (response.planUpdates ?? []).map(
+      const repairAttempt =
+        Math.max(
+          state.planRepairAttempts,
+          completedEffect.input.runtimeContext?.planRepair?.attempt ?? 0,
+        ) + 1;
+      const expandedPlanUpdates =
+        completedEffect.input.runtimeContext === undefined
+          ? response.planUpdates ?? []
+          : expandPlanUpdateProposals(
+              state.activePlan,
+              response.planUpdates ?? [],
+            );
+      let pendingPlanUpdates = expandedPlanUpdates.map(
         (proposal, index) => ({
           identitySeed: `${identitySeed}-${index}`,
           proposal,
         }),
       );
-      const pendingPlanRejections = [
-        ...(event.payload.planRejections ?? []),
-      ];
+      const pendingPlanRejections = (event.payload.planRejections ?? []).map(
+        (rejection) => ({ ...rejection, repairAttempt }),
+      );
       for (const rejection of pendingPlanRejections) {
         if (rejection.effectId !== event.payload.effectId) {
           throw new InvalidTransitionError(
@@ -629,8 +666,12 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
       try {
         materializePlanUpdates(
           state.activePlan,
-          response.planUpdates ?? [],
+          expandedPlanUpdates,
           identitySeed,
+          {
+            expandAtomicSupersede:
+              completedEffect.input.runtimeContext !== undefined,
+          },
         );
       } catch (error) {
         pendingPlanRejections.push({
@@ -642,6 +683,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
             retryable: false,
           },
           proposals: response.planUpdates ?? [],
+          repairAttempt,
         });
         pendingPlanUpdates = [];
       }
@@ -716,7 +758,17 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         Object.keys(state.pendingEffects).length === 0 &&
         state.readyEffects.length === 0
       ) {
-        const effects = [createModelEffect(nextState, event.id, 0)];
+        const effects = [
+          createModelEffect(
+            nextState,
+            {
+              eventId: event.id,
+              plan: event.payload.plan,
+              reason: "plan_updated",
+            },
+            0,
+          ),
+        ];
         return withReadyEffects(nextState, event.sequence, effects);
       }
       return { effects: [], state: nextState };
@@ -734,14 +786,25 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           state: advance(state, event.sequence, {}),
         };
       }
-      if (!jsonEquals(expected, event.payload)) {
+      const comparableExpected =
+        event.payload.repairAttempt === undefined
+          ? {
+              effectId: expected.effectId,
+              error: expected.error,
+              proposals: expected.proposals,
+            }
+          : expected;
+      if (!jsonEquals(comparableExpected, event.payload)) {
         throw new InvalidTransitionError(
           `Plan rejection for ${event.payload.effectId} is not pending`,
         );
       }
       const pendingPlanRejections = state.pendingPlanRejections.slice(1);
+      const repairAttempt =
+        event.payload.repairAttempt ?? state.planRepairAttempts + 1;
       const nextState = advance(state, event.sequence, {
         pendingPlanRejections,
+        planRepairAttempts: Math.max(state.planRepairAttempts, repairAttempt),
       });
       if (
         state.status !== "running" ||
@@ -755,12 +818,29 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           state: nextState,
         };
       }
+      if (
+        event.payload.repairAttempt !== undefined &&
+        repairAttempt > MAX_PLAN_REPAIR_ATTEMPTS
+      ) {
+        return settleTurn(nextState, event.sequence, {
+          error: {
+            code: "plan_repair_exhausted",
+            message:
+              "Plan control correction limit reached; the last accepted Plan was preserved",
+            retryable: false,
+          },
+          result: null,
+        });
+      }
       const effects = [
         createModelEffect(
           nextState,
-          event.id,
+          {
+            error: event.payload.error,
+            eventId: event.id,
+            reason: "plan_rejected",
+          },
           0,
-          event.payload.error.message,
         ),
       ];
       return withReadyEffects(nextState, event.sequence, effects);
@@ -836,7 +916,18 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           result: null,
         });
       }
-      const effects = [createModelEffect(nextState, event.id, 0)];
+      const effects = [
+        createModelEffect(
+          nextState,
+          {
+            eventId: event.id,
+            reason: "tool_completed",
+            toolCallId: event.payload.toolCallId,
+            toolName: event.payload.name,
+          },
+          0,
+        ),
+      ];
       return withReadyEffects(nextState, event.sequence, effects);
     }
 

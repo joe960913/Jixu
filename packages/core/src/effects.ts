@@ -10,6 +10,10 @@ import type { JsonObject } from "./json.ts";
 import type { ModelAccounting } from "./metrics.ts";
 import type { PlanControlDescriptor, PlanSnapshot } from "./plan.ts";
 import type { ProgressControlDescriptor } from "./progress.ts";
+import type {
+  ModelContextManifest,
+  ModelRuntimeContext,
+} from "./context.ts";
 
 export interface EffectEnvelope<TType extends string, TInput> {
   readonly attempt: number;
@@ -23,12 +27,14 @@ export interface EffectEnvelope<TType extends string, TInput> {
 
 export interface ModelGenerateInput {
   readonly activePlan: PlanSnapshot | null;
+  readonly contextManifest?: ModelContextManifest;
   readonly instructions: string;
   readonly messages: readonly ModelMessage[];
   readonly model: ModelRef;
   readonly planControl: PlanControlDescriptor;
   readonly planRejectionFeedback?: string;
   readonly progressControl: ProgressControlDescriptor;
+  readonly runtimeContext?: ModelRuntimeContext;
   readonly tools: readonly ToolDescriptor[];
 }
 

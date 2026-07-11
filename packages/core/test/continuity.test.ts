@@ -3,11 +3,16 @@ import { test } from "node:test";
 
 import {
   AgentMismatchError,
+  createInitialThreadState,
   createHarness,
+  createThreadEvent,
   defineAgent,
   defineSchema,
   defineTool,
+  EMPTY_MODEL_ACCOUNTING,
   InMemoryEventStore,
+  materializePlanUpdates,
+  reduce,
   replayEvents,
 } from "../src/index.ts";
 import type {
@@ -17,8 +22,12 @@ import type {
   EventStore,
   JsonObject,
   ModelDriver,
+  ModelGenerateEffect,
   ModelOutcome,
   PlanUpdateProposal,
+  ThreadEventPayloads,
+  ThreadEventType,
+  TransitionResult,
 } from "../src/index.ts";
 import {
   SequenceIdGenerator,
@@ -430,6 +439,142 @@ test("JX-AC-004 JX-AC-031 rejected Plan-only control survives restart and retrie
   assert.deepEqual(
     events.slice(-4).map((event) => event.type),
     ["plan.rejected", "model.requested", "model.completed", "plan.updated"],
+  );
+});
+
+test("JX-AC-004 JX-AC-049 historical unbounded Plan repair settles before redispatch", async () => {
+  const threadId = "thread-historical-plan-repair";
+  const agent = defineTestAgent();
+  const events: AnyThreadEvent[] = [];
+  let state = createInitialThreadState(threadId);
+  let sequence = 0;
+  const apply = <TType extends ThreadEventType>(
+    type: TType,
+    payload: ThreadEventPayloads[TType],
+  ): TransitionResult => {
+    sequence += 1;
+    const event = createThreadEvent({
+      id: `event-${sequence}`,
+      payload,
+      threadId,
+      sequence,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      type,
+    }) as AnyThreadEvent;
+    const transition = reduce(state, event);
+    state = transition.state;
+    events.push(event);
+    return transition;
+  };
+  const legacyEffect = (effect: ModelGenerateEffect): ModelGenerateEffect => ({
+    ...effect,
+    input: {
+      activePlan: effect.input.activePlan,
+      instructions: effect.input.instructions,
+      messages: effect.input.messages,
+      model: effect.input.model,
+      planControl: effect.input.planControl,
+      ...(effect.input.planRejectionFeedback === undefined
+        ? {}
+        : { planRejectionFeedback: effect.input.planRejectionFeedback }),
+      progressControl: effect.input.progressControl,
+      tools: effect.input.tools,
+    },
+  });
+  apply("thread.created", { agent: agent.snapshot });
+  let next = apply("input.received", {
+    content: "Create a Plan but do not execute it",
+  }).effects[0];
+  assert.equal(next?.type, "model.generate");
+  if (next?.type !== "model.generate") return;
+  const initialRequest = legacyEffect(next);
+  apply("model.requested", { effect: initialRequest });
+  apply("model.completed", {
+    accounting: EMPTY_MODEL_ACCOUNTING,
+    effectId: initialRequest.id,
+    response: {
+      content: "",
+      planUpdates: [recoveryPlan("create", "in_progress")],
+      toolCalls: [],
+    },
+  });
+  const initialPendingPlan = state.pendingPlanUpdates[0];
+  assert.notEqual(initialPendingPlan, undefined);
+  if (initialPendingPlan === undefined) return;
+  const initialPlan = materializePlanUpdates(
+    state.activePlan,
+    [initialPendingPlan.proposal],
+    initialPendingPlan.identitySeed,
+  )[0];
+  assert.notEqual(initialPlan, undefined);
+  if (initialPlan === undefined) return;
+  next = apply("plan.updated", { plan: initialPlan }).effects[0];
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    assert.equal(next?.type, "model.generate");
+    if (next?.type !== "model.generate") return;
+    const persisted = legacyEffect(next);
+    apply("model.requested", { effect: persisted });
+    apply("model.completed", {
+      accounting: EMPTY_MODEL_ACCOUNTING,
+      effectId: persisted.id,
+      response: {
+        content: "",
+        planUpdates: [{
+          ...recoveryPlan("revise", "in_progress"),
+          objective: `Historical replacement ${attempt + 1}`,
+          operation: "supersede",
+        }],
+        toolCalls: [],
+      },
+    });
+    const pending = state.pendingPlanRejections[0];
+    assert.notEqual(pending, undefined);
+    if (pending === undefined) return;
+    next = apply("plan.rejected", {
+      effectId: pending.effectId,
+      error: pending.error,
+      proposals: pending.proposals,
+    }).effects[0];
+  }
+  assert.equal(next?.type, "model.generate");
+  if (next?.type !== "model.generate") return;
+  const historicalPendingEffect = legacyEffect(next);
+  apply("model.requested", { effect: historicalPendingEffect });
+  assert.equal(state.planRepairAttempts, 3);
+  assert.equal(state.status, "running");
+
+  const store = new InMemoryEventStore();
+  await store.createThread(threadId);
+  for (const event of events) {
+    await store.append(threadId, event.sequence - 1, event);
+  }
+  let calls = 0;
+  const recovered = await createHarness({
+    agent,
+    ids: new SequenceIdGenerator(100),
+    modelDrivers: {
+      mock: {
+        generate() {
+          calls += 1;
+          return Promise.resolve(
+            succeed({ content: "should not run", toolCalls: [] }),
+          );
+        },
+      },
+    },
+    store,
+  }).openThread(threadId);
+  const recoveredState = await recovered.wait();
+  const recoveredEvents = await recovered.events();
+
+  assert.equal(calls, 0);
+  assert.equal(recoveredState.status, "idle");
+  assert.equal(recoveredState.error?.code, "plan_repair_exhausted");
+  assert.equal(recoveredEvents.length, events.length + 1);
+  assert.equal(recoveredEvents.at(-1)?.type, "model.failed");
+  assert.equal(
+    recoveredEvents.filter((event) => event.type === "model.requested").length,
+    5,
   );
 });
 

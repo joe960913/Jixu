@@ -106,6 +106,7 @@ test("JX-AC-001 JX-AC-002 JX-AC-014 Tool use and later send continue one Thread"
   const thread = await harness.createThread();
   await thread.send("What is the weather?");
   await thread.send("Challenge that answer.");
+  const events = await thread.events();
 
   assert.equal((await thread.state()).status, "idle");
   assert.equal((await thread.state()).activePlan, null);
@@ -114,12 +115,36 @@ test("JX-AC-001 JX-AC-002 JX-AC-014 Tool use and later send continue one Thread"
     false,
   );
   assert.equal(model.effects.length, 3);
+  assert.deepEqual(model.effects[0]?.input.runtimeContext?.continuation, {
+    causedByEventId: events[1]?.id,
+    reason: "input_received",
+    receipt: { eventId: events[1]?.id, type: "input.received" },
+  });
+  assert.deepEqual(model.effects[1]?.input.runtimeContext?.continuation, {
+    causedByEventId: events[5]?.id,
+    reason: "tool_completed",
+    receipt: {
+      eventId: events[5]?.id,
+      toolCallId: "weather-1",
+      toolName: "weather",
+      type: "tool.completed",
+    },
+  });
+  assert.deepEqual(model.effects[1]?.input.runtimeContext?.obligations, [
+    "respond_or_act",
+  ]);
+  assert.equal(
+    model.effects[1]?.input.contextManifest?.sources.find(
+      (source) => source.kind === "runtime",
+    )?.disposition,
+    "included",
+  );
   assert.deepEqual(model.effects[2]?.input.messages.slice(-2), [
     { content: "Shanghai is sunny.", role: "assistant", toolCalls: [] },
     { content: "Challenge that answer.", role: "user" },
   ]);
   assert.deepEqual(
-    (await thread.events()).map((event) => event.type),
+    events.map((event) => event.type),
     [
       "thread.created",
       "input.received",
@@ -415,8 +440,12 @@ test("JX-AC-021 JX-AC-035 adaptive Plan lifecycle keeps instructions stable with
     succeed({
       content: "Objective replaced.",
       planUpdates: [
-        planUpdate("supersede", secondObjective, ["pending"], null),
-        planUpdate("create", replacementObjective, ["in_progress"], "Run checks"),
+        planUpdate(
+          "supersede",
+          replacementObjective,
+          ["in_progress"],
+          "Run checks",
+        ),
       ],
       toolCalls: [],
     }),
@@ -515,6 +544,34 @@ test("JX-AC-031 Plan-only control commits before a model-generated public contin
   assert.equal(state.activePlan?.objective, objective);
   assert.equal(model.effects.length, 2);
   assert.equal(model.effects[1]?.input.activePlan?.objective, objective);
+  assert.equal(
+    model.effects[1]?.input.runtimeContext?.continuation.reason,
+    "plan_updated",
+  );
+  assert.deepEqual(
+    model.effects[1]?.input.runtimeContext?.continuation.receipt,
+    {
+      eventId: events[4]?.id,
+      planId: state.activePlan?.id,
+      planRevision: 1,
+      planStatus: "active",
+      type: "plan.updated",
+    },
+  );
+  assert.deepEqual(model.effects[1]?.input.runtimeContext?.obligations, [
+    "respond_or_act",
+  ]);
+  assert.deepEqual(model.effects[1]?.input.runtimeContext?.prohibitions, [
+    "repeat_accepted_plan_change",
+  ]);
+  assert.equal(
+    model.effects[1]?.input.contextManifest?.activePlanRevision,
+    1,
+  );
+  assert.deepEqual(
+    model.effects[1]?.input.contextManifest?.sources.map((source) => source.kind),
+    ["agent", "messages", "active_plan", "tools", "runtime"],
+  );
   assert.deepEqual(model.effects[1]?.input.messages, [
     { content: "Create a Plan", role: "user" },
   ]);
@@ -564,6 +621,31 @@ test("JX-AC-031 rejected Plan-only control feeds correction back to the model", 
     model.effects[1]?.input.planRejectionFeedback ?? "",
     /nextAction is required while active/,
   );
+  assert.equal(
+    model.effects[1]?.input.runtimeContext?.continuation.reason,
+    "plan_rejected",
+  );
+  assert.deepEqual(
+    model.effects[1]?.input.runtimeContext?.continuation.receipt,
+    {
+      errorCode: "plan_update_invalid",
+      errorMessage:
+        "Plan updates[0].nextAction is required while active",
+      eventId: events[4]?.id,
+      type: "plan.rejected",
+    },
+  );
+  assert.deepEqual(model.effects[1]?.input.runtimeContext?.obligations, [
+    "repair_plan_control",
+    "respond_or_act",
+  ]);
+  assert.deepEqual(model.effects[1]?.input.runtimeContext?.planRepair, {
+    attempt: 1,
+    limit: 1,
+  });
+  assert.deepEqual(model.effects[1]?.input.runtimeContext?.prohibitions, [
+    "repeat_rejected_plan_change",
+  ]);
   assert.deepEqual(
     model.effects[1]?.input.planControl,
     model.effects[0]?.input.planControl,
@@ -583,6 +665,49 @@ test("JX-AC-031 rejected Plan-only control feeds correction back to the model", 
       "model.completed",
       "plan.updated",
     ],
+  );
+});
+
+test("JX-AC-049 repeated invalid Plan repair settles without an unbounded model loop", async () => {
+  const rejection = {
+    code: "plan_update_invalid",
+    message: "Plan control call-invalid.steps[0] must be a JSON object",
+    retryable: false,
+  } as const;
+  const invalid = {
+    planRejections: [rejection],
+    status: "succeeded" as const,
+    value: { content: "", planUpdates: [], toolCalls: [] },
+  };
+  const model = new SequenceModelDriver([invalid, invalid]);
+  const thread = await createHarness({
+    agent: agentWith(),
+    modelDrivers: { mock: model },
+  }).createThread();
+
+  const state = await thread.send("Create a Plan but do not execute it");
+  const events = await thread.events();
+
+  assert.equal(state.status, "idle");
+  assert.equal(state.error?.code, "plan_repair_exhausted");
+  assert.equal(state.planRepairAttempts, 2);
+  assert.equal(model.effects.length, 2);
+  assert.deepEqual(
+    events.map((event) => event.type),
+    [
+      "thread.created",
+      "input.received",
+      "model.requested",
+      "model.completed",
+      "plan.rejected",
+      "model.requested",
+      "model.completed",
+      "plan.rejected",
+    ],
+  );
+  assert.equal(
+    events.filter((event) => event.type === "model.requested").length,
+    2,
   );
 });
 
