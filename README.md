@@ -108,12 +108,38 @@ The first launch enters the ordinary workspace even without credentials. It
 shows `Model not configured` and `use /config`; setup is never a forced gate.
 The endpoint can implement OpenAI-compatible `/v1/chat/completions` or
 Anthropic `/v1/messages` with client-side Tool calling.
-Jixu stores credentials separately in `~/.jixu/auth.json` and non-secret settings
-in `~/.jixu/settings.json` using settings schema version 4 with restrictive POSIX
-permissions. A schema v3 settings file is migrated in place without a backup;
-the migration preserves its four enabled Tools, process-level file reach, and
-unrestricted permission behavior. Pre-release schema versions 1 and 2 are not
-migrated; re-enter the connection through `/config`.
+Jixu is local BYOK. Model credentials, Tool credentials, endpoint configuration,
+and Tool policy live in `~/.jixu/settings.json` using settings schema version 5
+with restrictive POSIX permissions. Existing schema v3/v4 settings and the
+legacy schema v3 `auth.json` are consolidated in place without a backup; the
+migration preserves the prior Tool selection, file reach, and permission policy,
+then removes `auth.json`. Pre-release schema versions 1 and 2 are not migrated;
+re-enter the connection through `/config`.
+
+Jina-backed Web Search is a first-party Tool. Enable `web_search` and add the
+raw Jina key without a `Bearer ` prefix:
+
+```json
+{
+  "version": 5,
+  "connection": {
+    "api": "openai-chat-completions",
+    "apiKey": "your-model-key",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "model": "your-model"
+  },
+  "tools": {
+    "enabled": ["read", "write", "edit", "bash", "web_search"],
+    "fileScope": "workspace",
+    "permissions": { "profile": "balanced", "rules": [] },
+    "webSearch": { "provider": "jina", "apiKey": "your-jina-key" }
+  }
+}
+```
+
+Configuration changes apply to the immutable Agent used by Threads created
+after restarting Jixu. If the Jina key is absent, `web_search` performs no
+network request and points to this settings field.
 The footer shows the selected Thread's known USD cost; `USD —` means no trusted
 price is available, and a trailing `+` marks a known partial total.
 

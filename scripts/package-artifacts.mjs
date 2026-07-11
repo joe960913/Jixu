@@ -17,6 +17,7 @@ const packageDirectories = [
   "store-jsonl",
   "store-sqlite",
   "testkit",
+  "tools-jina",
   "tools-node",
   "jixu",
 ];

@@ -44,6 +44,7 @@ import { JsonlEventStore } from "@jixu/store-jsonl";
 import { SqliteEventStore } from "@jixu/store-sqlite";
 import { SequenceModelDriver } from "@jixu/testkit";
 import { defineStoreContract } from "@jixu/testkit/store-contract";
+import { createJinaWebSearchTool } from "@jixu/tools-jina";
 import { createNodeTools } from "@jixu/tools-node";
 import { JixuConfigStore } from "jixu";
 
@@ -67,6 +68,7 @@ try {
   const sqlite = new SqliteEventStore(join(root, "sqlite.db"));
   sqlite.close();
   assert.equal(createNodeTools({ root }).all.length, 4);
+  assert.equal(createJinaWebSearchTool().descriptor.name, "web_search");
   assert.equal(typeof defineStoreContract, "function");
   assert.equal(typeof JixuConfigStore, "function");
   assert.equal(
@@ -92,6 +94,7 @@ import { JsonlEventStore } from "@jixu/store-jsonl";
 import { SqliteEventStore } from "@jixu/store-sqlite";
 import { SequenceModelDriver } from "@jixu/testkit";
 import { defineStoreContract } from "@jixu/testkit/store-contract";
+import { createJinaWebSearchTool } from "@jixu/tools-jina";
 import { createNodeTools } from "@jixu/tools-node";
 import { JixuConfigStore } from "jixu";
 
@@ -109,6 +112,7 @@ void JsonlEventStore;
 void SqliteEventStore;
 void defineStoreContract;
 void createNodeTools;
+void createJinaWebSearchTool;
 void JixuConfigStore;
 void createLLMModelDriver;
 `;

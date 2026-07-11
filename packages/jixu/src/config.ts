@@ -19,7 +19,12 @@ import type {
   ToolPermissionPolicy,
   ToolPermissionRule,
 } from "@jixu/core";
+import {
+  JINA_TOOL_NAMES,
+  type JinaWebSearchToolName,
+} from "@jixu/tools-jina";
 import { NODE_TOOL_NAMES } from "@jixu/tools-node";
+import type { NodeToolName } from "@jixu/tools-node";
 
 export type JixuApi =
   | "anthropic-messages"
@@ -34,7 +39,7 @@ export interface JixuConnectionConfig {
 }
 
 export type JixuFileScope = "process" | "workspace";
-export type JixuToolName = (typeof NODE_TOOL_NAMES)[number];
+export type JixuToolName = NodeToolName | JinaWebSearchToolName;
 export type JixuToolPermissionProfile =
   | "balanced"
   | "review"
@@ -46,6 +51,10 @@ export interface JixuToolSettings {
   readonly permissions: {
     readonly profile: JixuToolPermissionProfile;
     readonly rules: readonly ToolPermissionRule[];
+  };
+  readonly webSearch: {
+    readonly apiKey?: string;
+    readonly provider: "jina";
   };
 }
 
@@ -59,18 +68,33 @@ export interface JixuStoredConfiguration {
 
 interface SettingsFile {
   readonly connection: {
-    readonly api: JixuApi;
-    readonly baseUrl: string;
-    readonly model: string;
+    readonly api?: JixuApi;
+    readonly apiKey?: string;
+    readonly baseUrl?: string;
+    readonly model?: string;
   };
   readonly tools: JixuToolSettings;
-  readonly version: 4;
+  readonly version: 5;
 }
 
-interface LegacySettingsFile {
-  readonly connection: SettingsFile["connection"];
-  readonly version: 3;
-}
+type LegacySettingsFile =
+  | {
+      readonly connection: {
+        readonly api: JixuApi;
+        readonly baseUrl: string;
+        readonly model: string;
+      };
+      readonly version: 3;
+    }
+  | {
+      readonly connection: {
+        readonly api: JixuApi;
+        readonly baseUrl: string;
+        readonly model: string;
+      };
+      readonly tools: Omit<JixuToolSettings, "webSearch">;
+      readonly version: 4;
+    };
 
 interface AuthFile {
   readonly connection: {
@@ -83,23 +107,32 @@ interface AuthFile {
 const defaultToolSettings = (
   fileScope: JixuFileScope,
   profile: JixuToolPermissionProfile,
+  enabled: readonly JixuToolName[],
 ): JixuToolSettings => Object.freeze({
-  enabled: Object.freeze([...NODE_TOOL_NAMES]),
+  enabled: Object.freeze([...enabled]),
   fileScope,
   permissions: Object.freeze({
     profile,
     rules: Object.freeze([]),
   }),
+  webSearch: Object.freeze({ provider: "jina" }),
 });
+
+export const FIRST_PARTY_JIXU_TOOL_NAMES = Object.freeze([
+  ...NODE_TOOL_NAMES,
+  ...JINA_TOOL_NAMES,
+] as const);
 
 export const DEFAULT_JIXU_TOOL_SETTINGS = defaultToolSettings(
   "workspace",
   "balanced",
+  FIRST_PARTY_JIXU_TOOL_NAMES,
 );
 
 const LEGACY_JIXU_TOOL_SETTINGS = defaultToolSettings(
   "process",
   "unrestricted",
+  NODE_TOOL_NAMES,
 );
 
 const PROFILE_RULES = {
@@ -186,7 +219,10 @@ export function normalizeJixuBaseUrl(value: string): string {
 }
 
 function isToolName(value: unknown): value is JixuToolName {
-  return typeof value === "string" && NODE_TOOL_NAMES.includes(value as JixuToolName);
+  return (
+    typeof value === "string" &&
+    FIRST_PARTY_JIXU_TOOL_NAMES.includes(value as JixuToolName)
+  );
 }
 
 function isFileScope(value: unknown): value is JixuFileScope {
@@ -199,7 +235,26 @@ function isPermissionProfile(
   return value === "balanced" || value === "review" || value === "unrestricted";
 }
 
-function parseToolSettings(value: unknown): JixuToolSettings {
+function parseWebSearchSettings(value: unknown): JixuToolSettings["webSearch"] {
+  if (!isRecord(value)) {
+    throw new TypeError("settings.json tools.webSearch must contain an object");
+  }
+  if (value.provider !== "jina") {
+    throw new TypeError("settings.json tools.webSearch.provider must be jina");
+  }
+  if (value.apiKey !== undefined && !nonEmptyString(value.apiKey)) {
+    throw new TypeError("settings.json tools.webSearch.apiKey is invalid");
+  }
+  return Object.freeze({
+    ...(value.apiKey === undefined ? {} : { apiKey: value.apiKey.trim() }),
+    provider: "jina" as const,
+  });
+}
+
+function parseToolSettings(
+  value: unknown,
+  options: { readonly legacy?: boolean } = {},
+): JixuToolSettings {
   if (!isRecord(value)) {
     throw new TypeError("settings.json tools must contain an object");
   }
@@ -251,37 +306,91 @@ function parseToolSettings(value: unknown): JixuToolSettings {
       profile: value.permissions.profile,
       rules: policy.rules,
     }),
+    webSearch:
+      options.legacy === true
+        ? Object.freeze({ provider: "jina" as const })
+        : parseWebSearchSettings(value.webSearch),
   });
+}
+
+function parseLegacyConnection(value: Record<string, unknown>): {
+  readonly api: JixuApi;
+  readonly baseUrl: string;
+  readonly model: string;
+} {
+  const { api, baseUrl, model } = value;
+  if (!isApi(api)) throw new TypeError("settings.json api is invalid");
+  if (!nonEmptyString(baseUrl) || !nonEmptyString(model)) {
+    throw new TypeError("settings.json connection is incomplete");
+  }
+  return {
+    api,
+    baseUrl: normalizeJixuBaseUrl(baseUrl),
+    model: model.trim(),
+  };
 }
 
 function parseSettings(value: unknown): LegacySettingsFile | SettingsFile {
   if (!isRecord(value)) {
     throw new TypeError("settings.json must contain an object");
   }
-  if ((value.version !== 3 && value.version !== 4) || !isRecord(value.connection)) {
-    throw new TypeError("settings.json must use Jixu settings schema version 3 or 4");
+  if (
+    (value.version !== 3 && value.version !== 4 && value.version !== 5) ||
+    !isRecord(value.connection)
+  ) {
+    throw new TypeError(
+      "settings.json must use Jixu settings schema version 3, 4, or 5",
+    );
   }
-  const { api, baseUrl, model } = value.connection;
-  if (!isApi(api)) {
-    throw new TypeError("settings.json api is invalid");
-  }
-  if (!nonEmptyString(baseUrl) || !nonEmptyString(model)) {
-    throw new TypeError("settings.json connection is incomplete");
-  }
-  const connection = {
-    api,
-    baseUrl: normalizeJixuBaseUrl(baseUrl),
-    model: model.trim(),
-  };
   if (value.version === 3) {
-    return { connection, version: 3 };
+    return { connection: parseLegacyConnection(value.connection), version: 3 };
   }
+  if (value.version === 4) {
+    const tools = parseToolSettings(value.tools, { legacy: true });
+    return {
+      connection: parseLegacyConnection(value.connection),
+      tools: {
+        enabled: tools.enabled,
+        fileScope: tools.fileScope,
+        permissions: tools.permissions,
+      },
+      version: 4,
+    };
+  }
+  const connection: SettingsFile["connection"] = {
+    ...(value.connection.api === undefined
+      ? {}
+      : isApi(value.connection.api)
+        ? { api: value.connection.api }
+        : (() => {
+            throw new TypeError("settings.json api is invalid");
+          })()),
+    ...(value.connection.apiKey === undefined
+      ? {}
+      : nonEmptyString(value.connection.apiKey)
+        ? { apiKey: value.connection.apiKey.trim() }
+        : (() => {
+            throw new TypeError("settings.json connection.apiKey is invalid");
+          })()),
+    ...(value.connection.baseUrl === undefined
+      ? {}
+      : nonEmptyString(value.connection.baseUrl)
+        ? { baseUrl: normalizeJixuBaseUrl(value.connection.baseUrl) }
+        : (() => {
+            throw new TypeError("settings.json connection.baseUrl is invalid");
+          })()),
+    ...(value.connection.model === undefined
+      ? {}
+      : nonEmptyString(value.connection.model)
+        ? { model: value.connection.model.trim() }
+        : (() => {
+            throw new TypeError("settings.json connection.model is invalid");
+          })()),
+  };
   return {
-    connection: {
-      ...connection,
-    },
+    connection,
     tools: parseToolSettings(value.tools),
-    version: 4,
+    version: 5,
   };
 }
 
@@ -346,38 +455,60 @@ async function atomicJsonWrite(
 
 function normalizeConfiguration(
   settings: SettingsFile | null,
-  auth: AuthFile | null,
 ): JixuStoredConfiguration {
   return {
     ...(settings === null
       ? {}
       : {
-          api: settings.connection.api,
-          baseUrl: settings.connection.baseUrl,
-          model: settings.connection.model,
+          ...(settings.connection.api === undefined
+            ? {}
+            : { api: settings.connection.api }),
+          ...(settings.connection.apiKey === undefined
+            ? {}
+            : { apiKey: settings.connection.apiKey }),
+          ...(settings.connection.baseUrl === undefined
+            ? {}
+            : { baseUrl: settings.connection.baseUrl }),
+          ...(settings.connection.model === undefined
+            ? {}
+            : { model: settings.connection.model }),
         }),
-    ...(auth === null ? {} : { apiKey: auth.connection.key }),
     tools: settings?.tools ?? DEFAULT_JIXU_TOOL_SETTINGS,
   };
 }
 
-function migrateSettings(settings: LegacySettingsFile): SettingsFile {
+function migrateSettings(
+  settings: LegacySettingsFile | null,
+  auth: AuthFile | null,
+): SettingsFile | null {
+  if (settings === null && auth === null) return null;
+  const tools = settings === null
+    ? DEFAULT_JIXU_TOOL_SETTINGS
+    : settings.version === 3
+      ? LEGACY_JIXU_TOOL_SETTINGS
+      : {
+          ...settings.tools,
+          webSearch: { provider: "jina" as const },
+        };
   return {
-    connection: settings.connection,
-    tools: LEGACY_JIXU_TOOL_SETTINGS,
-    version: 4,
+    connection: {
+      ...(settings === null ? {} : settings.connection),
+      ...(auth === null ? {} : { apiKey: auth.connection.key }),
+    },
+    tools,
+    version: 5,
   };
 }
 
 export class JixuConfigStore {
-  readonly authPath: string;
+  readonly #legacyAuthPath: string;
   readonly directory: string;
   readonly settingsPath: string;
   #writeTail: Promise<void> = Promise.resolve();
 
   constructor(directory = join(homedir(), ".jixu")) {
     this.directory = directory;
-    this.authPath = join(directory, "auth.json");
+    this.#legacyAuthPath = join(directory, "auth.json");
     this.settingsPath = join(directory, "settings.json");
   }
 
@@ -390,24 +521,35 @@ export class JixuConfigStore {
     await this.#secureDirectory();
     const [loadedSettings, auth] = await Promise.all([
       readJson(this.settingsPath, "settings.json", parseSettings),
-      readJson(this.authPath, "auth.json", parseAuth),
+      readJson(this.#legacyAuthPath, "auth.json", parseAuth),
     ]);
-    const settings =
-      loadedSettings?.version === 3
-        ? migrateSettings(loadedSettings)
-        : loadedSettings;
-    if (loadedSettings?.version === 3) {
+    let settings = loadedSettings?.version === 5
+      ? loadedSettings
+      : migrateSettings(loadedSettings, auth);
+    if (loadedSettings?.version === 5 && auth !== null) {
+      settings = {
+        ...loadedSettings,
+        connection: {
+          ...loadedSettings.connection,
+          apiKey: loadedSettings.connection.apiKey ?? auth.connection.key,
+        },
+      };
+    }
+    if (settings !== null && (loadedSettings?.version !== 5 || auth !== null)) {
       await atomicJsonWrite(
         this.directory,
         this.settingsPath,
         settings,
         0o600,
       );
+      await unlink(this.#legacyAuthPath).catch((error) => {
+        if (errorCode(error) !== "ENOENT") throw error;
+      });
     }
-    if (auth !== null && process.platform !== "win32") {
-      await chmod(this.authPath, 0o600);
+    if (settings !== null && process.platform !== "win32") {
+      await chmod(this.settingsPath, 0o600);
     }
-    return normalizeConfiguration(settings, auth);
+    return normalizeConfiguration(settings);
   }
 
   async saveConnection(config: JixuConnectionConfig): Promise<void> {
@@ -421,15 +563,14 @@ export class JixuConfigStore {
 
     const operation = this.#writeTail.then(async () => {
       await this.#secureDirectory();
-      await atomicJsonWrite(this.directory, this.authPath, {
-        connection: { key: apiKey, type: "api_key" },
-        version: 3,
-      } satisfies AuthFile, 0o600);
       await atomicJsonWrite(this.directory, this.settingsPath, {
-        connection: { api: config.api, baseUrl, model },
+        connection: { api: config.api, apiKey, baseUrl, model },
         tools,
-        version: 4,
+        version: 5,
       } satisfies SettingsFile, 0o600);
+      await unlink(this.#legacyAuthPath).catch((error) => {
+        if (errorCode(error) !== "ENOENT") throw error;
+      });
     });
     this.#writeTail = operation.then(
       () => undefined,

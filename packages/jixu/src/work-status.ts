@@ -103,6 +103,13 @@ function requestDetail(
       label: "COMMAND",
     };
   }
+  if (name === "web_search") {
+    return {
+      content: boundDetail(rawStringArgument(event, "query") ?? "(query unavailable)"),
+      kind: "text",
+      label: "QUERY",
+    };
+  }
   return {
     content: boundDetail(JSON.stringify(arguments_, null, 2)),
     kind: "text",
@@ -155,6 +162,14 @@ function toolStatus(
       label: "Running",
       phase: "tool",
       tone: "warning",
+    };
+  }
+  if (name === "web_search") {
+    return {
+      detail: stringArgument(event, "query") ?? name,
+      label: "Searching",
+      phase: "tool",
+      tone: "info",
     };
   }
   return { detail: name, label: "Using tool", phase: "tool", tone: "info" };
@@ -271,6 +286,36 @@ export function toolOperationForOutcome(
       ...(preview === undefined ? {} : { preview }),
       status: "succeeded",
     };
+  }
+
+  if (event.payload.name === "web_search") {
+    const results = Array.isArray(output.results) ? output.results : null;
+    if (results !== null) {
+      const sources = results.flatMap((candidate, index) => {
+        if (!isJsonObject(candidate)) return [];
+        const title = typeof candidate.title === "string"
+          ? candidate.title
+          : `Result ${index + 1}`;
+        const url = typeof candidate.url === "string" ? candidate.url : "";
+        const description = typeof candidate.description === "string"
+          ? candidate.description
+          : "";
+        const content = typeof candidate.content === "string" ? candidate.content : "";
+        return [
+          `${index + 1}. ${title}\n${url}${description.length === 0 ? "" : `\n${description}`}${content.length === 0 ? "" : `\n\n${content}`}`,
+        ];
+      });
+      const preview = outputPreview(sources.join("\n\n"), "start");
+      const bytes = new TextEncoder().encode(
+        sources.join("\n\n"),
+      ).byteLength;
+      return {
+        ...operation,
+        outcome: `${results.length} ${results.length === 1 ? "source" : "sources"} · ${formatBytes(bytes)}${output.truncated === true ? " · truncated" : ""}`,
+        ...(preview === undefined ? {} : { preview }),
+        status: "succeeded",
+      };
+    }
   }
 
   return { ...operation, outcome: "Completed", status: "succeeded" };

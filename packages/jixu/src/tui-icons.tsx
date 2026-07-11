@@ -84,7 +84,7 @@ export function JixuIcon({
 
 export function iconForTool(name: string): JixuIconName {
   const normalized = name.toLowerCase();
-  if (/read|view|inspect|list|cat/u.test(normalized)) return "read";
+  if (/read|view|inspect|list|cat|search|web|network/u.test(normalized)) return "read";
   if (/edit|write|patch|create|update/u.test(normalized)) return "edit";
   if (/search|find|grep|rg/u.test(normalized)) return "search";
   if (/web|browser|fetch|http|url/u.test(normalized)) return "web";

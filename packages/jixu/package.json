@@ -40,6 +40,7 @@
   "devDependencies": {
     "@jixu/llm": "workspace:*",
     "@jixu/store-jsonl": "workspace:*",
+    "@jixu/tools-jina": "workspace:*",
     "@jixu/tools-node": "workspace:*",
     "@opentui/core": "0.5.4",
     "@opentui/react": "0.5.4",
