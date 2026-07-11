@@ -13,8 +13,16 @@ import type { JixuConnectionConfig } from "./config.ts";
 import type { ThreadController } from "./thread-controller.ts";
 import { SlashCommandMenu, ThreadPicker } from "./slash-command-menu.tsx";
 import { jixuTheme } from "./theme.ts";
-import { AttentionRail, AttentionStrip } from "./tui-attention-rail.tsx";
+import {
+  ATTENTION_STRIP_HEIGHT,
+  AttentionRail,
+  AttentionStrip,
+} from "./tui-attention-rail.tsx";
 import { createAttentionModel } from "./tui-attention.ts";
+import {
+  JIXU_CREATION_MARK_DIMENSIONS,
+  type JixuCreationMarkVariant,
+} from "./tui-creation-mark.tsx";
 import { ExecutionDock } from "./tui-dock.tsx";
 import { ToolApprovalPrompt } from "./tui-tool-approval.tsx";
 import { Transcript } from "./tui-transcript.tsx";
@@ -62,7 +70,8 @@ const inactiveSnapshot: ThreadControllerSnapshot = Object.freeze({
 
 const getInactiveSnapshot = (): ThreadControllerSnapshot => inactiveSnapshot;
 const subscribeInactive = (): (() => void) => () => undefined;
-const COMPOSER_MIN_HEIGHT = 4;
+// Border, vertical padding, and one editor row make the rendered minimum five.
+const COMPOSER_MIN_HEIGHT = 5;
 const COMPOSER_MAX_HEIGHT = 8;
 const COMPOSER_EDITOR_MAX_HEIGHT = COMPOSER_MAX_HEIGHT - 2;
 const COMPOSER_KEY_BINDINGS: NonNullable<TextareaOptions["keyBindings"]> = [
@@ -200,8 +209,35 @@ export function AgentWorkspace({
   const workspaceHeight = Math.max(15, height - headerHeight);
   const chatHeight = workspaceHeight - footerHeight;
   const compact = !showAttentionRail || chatWidth < 84;
-  const showCreationMark = chatWidth >= 58 && chatHeight >= 24;
-  const emptyStateHeight = showCreationMark ? 15 : 5;
+  const emptyStateViewportHeight = Math.max(
+    0,
+    chatHeight -
+      COMPOSER_MIN_HEIGHT -
+      1 -
+      (showAttentionRail ? 0 : ATTENTION_STRIP_HEIGHT),
+  );
+  const creationMarkFits = (variant: JixuCreationMarkVariant): boolean => {
+    const dimensions = JIXU_CREATION_MARK_DIMENSIONS[variant];
+    return (
+      chatWidth >= dimensions.columns + 3 &&
+      emptyStateViewportHeight >= dimensions.rows + 6
+    );
+  };
+  const creationMarkVariant: JixuCreationMarkVariant | null = creationMarkFits(
+    "compact",
+  )
+    ? "compact"
+    : creationMarkFits("small")
+      ? "small"
+      : null;
+  const emptyStateHeight =
+    creationMarkVariant === null
+      ? 5
+      : JIXU_CREATION_MARK_DIMENSIONS[creationMarkVariant].rows + 6;
+  const emptyStateTop = Math.max(
+    0,
+    Math.floor((emptyStateViewportHeight - emptyStateHeight) / 2),
+  );
   const composer = useRef<TextareaRenderable>(null);
   const [draft, setDraft] = useState("");
   const [transcriptRevealRequest, setTranscriptRevealRequest] = useState(0);
@@ -451,7 +487,7 @@ export function AgentWorkspace({
             <strong>JIXU</strong>
           </text>
           {compact ? null : (
-            <text fg={jixuTheme.secondary}>  Agents that continue.</text>
+            <text fg={jixuTheme.secondary}>  Pick up where you left off.</text>
           )}
           <box style={{ flexGrow: 1 }} />
           {compact ? null : (
@@ -503,9 +539,9 @@ export function AgentWorkspace({
             >
               <Transcript
                 configured={configured}
-                emptyTop={Math.max(0, Math.floor((chatHeight - emptyStateHeight) / 2))}
+                emptyTop={emptyStateTop}
                 motion={motion}
-                showCreationMark={showCreationMark}
+                creationMarkVariant={creationMarkVariant}
                 snapshot={snapshot}
                 expandedToolEffectIds={currentToolDisclosure.expandedEffectIds}
                 onToggleToolDetail={toggleToolDetail}

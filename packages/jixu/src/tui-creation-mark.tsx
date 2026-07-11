@@ -1,114 +1,175 @@
-import { jixuTheme } from "./theme.ts";
+import { jixuNipponColors, jixuTheme } from "./theme.ts";
 
-type Ink = "." | "L" | "R" | "S";
+// Fixed density reductions of the maintainer-provided hudie.txt source. Both
+// preserve its roughly 2.5:1 character aspect ratio; 16 rows is a hard maximum
+// so a larger terminal adds breathing room instead of enlarging the mark.
 
-interface PackedRun {
-  readonly content: string;
-  readonly ink: Ink;
-}
-
-const MARK_WIDTH = 55;
-
-// Original logical-pixel drawing: two hands approach without touching. The
-// one warm pixel between them is the creation spark. Two logical rows pack into
-// each terminal row through ordinary block-element text.
-const CREATION_PIXELS = Object.freeze([
-  ".......................................................",
-  "..................................................RRRR.",
-  ".............................................RRRRR...R.",
-  "..........................................RRR........R.",
-  ".............LLLLLL......................R...........R.",
-  "............L......LL.................RRR............R.",
-  "...........L.........L............RRRR............RRRR.",
-  ".........LL...........LL.......RRR...........RRRRR.....",
-  "........L...........LL..L....RRRRR..........R..........",
-  ".......L...L.......L..LL...S.RR...R......R.R...........",
-  "....LLL..LL.L.L..LL................R..R.R.RR...........",
-  ".LLL....L...LL.LL.L.................RR.RR.RR...........",
-  "L.....LL....LL.LL.LL................RR.RR.R.R..........",
-  "L..LLL......LL.LL.LL...............RR..RR..RR..........",
-  "LLL.........LL.LL.LL...............RR..RR..R...........",
-  "L...........L..LL.L................R...RR..............",
-  "...............L.......................R...............",
-  ".......................................................",
+const COMPACT_BUTTERFLY_MARK = Object.freeze([
+  "   -++=.                         -+++:",
+  " +%*+++++*=-                :=*++++*#%#",
+  " :++=-:--=+++-            -++=--=+++**:",
+  "   :+==-:---=+=:        :==+--====++-",
+  "    -+=-::---:-+-.    .-=--======++-",
+  "    :+=--:-----:==:  :===+++=---=++.",
+  "     =+---::--=-=++::+***+=-----=+-",
+  "     :+=-:::::--=+*%%##**+=-==-=++:",
+  "       :-=+=-::::-*%%*+=---==+*+=.",
+  "     .=*+----=+=++*#%*==-=+====+*+-",
+  "     :**+==++++*****+****+*****+**=",
+  "      =*++++++**##*=:+##*********+:",
+  "      .+*******#**-. :*****#*##**-",
+  "       -*******#*:    :********#-",
+  "       .-+****#+:      .=##***+=:",
+  "         -====            ====-",
 ] satisfies readonly string[]);
 
-function cell(top: Ink, bottom: Ink): { readonly content: string; readonly ink: Ink } {
-  if (top === "." && bottom === ".") return { content: " ", ink: "." };
-  if (top !== "." && bottom !== "." && top !== bottom) {
-    throw new TypeError("Jixu creation mark layers must not share a terminal cell");
-  }
-  if (top === bottom) return { content: "█", ink: top };
-  if (top !== ".") return { content: "▀", ink: top };
-  return { content: "▄", ink: bottom };
+const SMALL_BUTTERFLY_MARK = Object.freeze([
+  " =++=-.           .=-+*+-",
+  " ++---+=-       -=+-=+*+:",
+  "  :+-:--==.   :-=====+-",
+  "   =------=: -+=+=--==",
+  "   -=-:::-=****+=---+-",
+  "    -==-:--*%*=--==+=.",
+  "   -*+=+++*****+***+*=",
+  "    +**+**#+:=*******:",
+  "    :****#=   =#****-",
+  "     .+++-     -+++",
+] satisfies readonly string[]);
+
+type ButterflyInk = "brand" | "gofun" | "mizuasagi" | "quiet";
+
+interface ButterflyRun {
+  readonly content: string;
+  readonly ink: ButterflyInk;
 }
 
-function packRows(): readonly (readonly PackedRun[])[] {
-  return Array.from({ length: CREATION_PIXELS.length / 2 }, (_, rowIndex) => {
-    const top = CREATION_PIXELS[rowIndex * 2] ?? "";
-    const bottom = CREATION_PIXELS[rowIndex * 2 + 1] ?? "";
-    const runs: PackedRun[] = [];
-    for (let column = 0; column < MARK_WIDTH; column += 1) {
-      const packed = cell(
-        (top[column] ?? ".") as Ink,
-        (bottom[column] ?? ".") as Ink,
-      );
-      const previous = runs.at(-1);
-      if (previous?.ink === packed.ink) {
-        runs[runs.length - 1] = {
-          content: `${previous.content}${packed.content}`,
-          ink: previous.ink,
-        };
-      } else {
-        runs.push(packed);
-      }
-    }
-    return Object.freeze(runs);
+export type JixuCreationMarkVariant = "compact" | "small";
+
+const BUTTERFLY_MARKS: Readonly<
+  Record<JixuCreationMarkVariant, readonly string[]>
+> = Object.freeze({
+  compact: COMPACT_BUTTERFLY_MARK,
+  small: SMALL_BUTTERFLY_MARK,
+});
+
+function markDimensions(rows: readonly string[], columns: number) {
+  if (rows.some((row) => row.length > columns)) {
+    throw new RangeError("Jixu butterfly row exceeds its fixed canvas width");
+  }
+
+  return Object.freeze({
+    columns,
+    rows: rows.length,
   });
 }
 
-const PACKED_ROWS = Object.freeze(packRows());
+export const JIXU_CREATION_MARK_DIMENSIONS = Object.freeze({
+  compact: markDimensions(COMPACT_BUTTERFLY_MARK, 40),
+  small: markDimensions(SMALL_BUTTERFLY_MARK, 25),
+});
 
-function inkColor(ink: Exclude<Ink, ".">): string {
-  if (ink === "L") return jixuTheme.brand;
-  if (ink === "R") return jixuTheme.info;
-  return jixuTheme.warning;
+function butterflyInk(
+  character: string,
+  column: number,
+  row: number,
+  dimensions: { readonly columns: number; readonly rows: number },
+): ButterflyInk {
+  if (character === " ") return "quiet";
+
+  const center = (dimensions.columns - 1) / 2;
+  const distanceFromCenter = Math.abs(column - center);
+  const bodyRadius = Math.max(1, Math.round(dimensions.columns * 0.055));
+  const bodyStart = Math.floor(dimensions.rows * 0.3);
+  const bodyEnd = Math.ceil(dimensions.rows * 0.72);
+
+  if (
+    row >= bodyStart &&
+    row <= bodyEnd &&
+    distanceFromCenter <= bodyRadius
+  ) {
+    return "brand";
+  }
+
+  if (
+    /[*#%@]/u.test(character) &&
+    distanceFromCenter <= dimensions.columns * 0.31
+  ) {
+    return "mizuasagi";
+  }
+
+  if (/[#%@]/u.test(character)) return "gofun";
+  return "quiet";
 }
 
-export const JIXU_CREATION_MARK_ROWS = PACKED_ROWS.length;
+function packButterflyRow(
+  row: string,
+  rowIndex: number,
+  dimensions: { readonly columns: number; readonly rows: number },
+): readonly ButterflyRun[] {
+  const runs: ButterflyRun[] = [];
+  const paddedRow = row.padEnd(dimensions.columns);
 
-export function JixuCreationMark() {
+  for (let column = 0; column < dimensions.columns; column += 1) {
+    const character = paddedRow[column] ?? " ";
+    const ink = butterflyInk(character, column, rowIndex, dimensions);
+    const previous = runs.at(-1);
+    if (previous?.ink === ink) {
+      runs[runs.length - 1] = {
+        content: `${previous.content}${character}`,
+        ink,
+      };
+    } else {
+      runs.push({ content: character, ink });
+    }
+  }
+
+  return Object.freeze(runs);
+}
+
+function butterflyColor(ink: ButterflyInk): string {
+  if (ink === "brand") return jixuTheme.brand;
+  if (ink === "gofun") return jixuNipponColors.gofun;
+  if (ink === "mizuasagi") return jixuNipponColors.mizuasagi;
+  return jixuTheme.secondary;
+}
+
+export function JixuCreationMark({
+  variant,
+}: {
+  readonly variant: JixuCreationMarkVariant;
+}) {
+  const rows = BUTTERFLY_MARKS[variant];
+  const dimensions = JIXU_CREATION_MARK_DIMENSIONS[variant];
+  const packedRows = rows.map((row, rowIndex) =>
+    packButterflyRow(row, rowIndex, dimensions),
+  );
   return (
     <box
       id="jixu-creation-mark"
       style={{
         alignItems: "center",
         flexDirection: "column",
-        height: JIXU_CREATION_MARK_ROWS,
+        height: dimensions.rows,
         marginBottom: 1,
-        width: MARK_WIDTH,
+        width: dimensions.columns,
       }}
     >
-      {PACKED_ROWS.map((runs, rowIndex) => (
+      {packedRows.map((runs, rowIndex) => (
         <text
           id={`jixu-creation-mark-row-${rowIndex}`}
-          key={`creation-row-${rowIndex}`}
+          key={`${variant}-creation-row-${rowIndex}`}
           selectable={false}
-          style={{ height: 1, width: MARK_WIDTH }}
+          style={{ height: 1, width: dimensions.columns }}
           wrapMode="none"
         >
-          {runs.map((run, runIndex) =>
-            run.ink === "." ? (
-              run.content
-            ) : (
-              <span
-                fg={inkColor(run.ink)}
-                key={`creation-run-${rowIndex}-${runIndex}`}
-              >
-                {run.content}
-              </span>
-            ),
-          )}
+          {runs.map((run, runIndex) => (
+            <span
+              fg={butterflyColor(run.ink)}
+              key={`${variant}-creation-run-${rowIndex}-${runIndex}`}
+            >
+              {run.content}
+            </span>
+          ))}
         </text>
       ))}
     </box>

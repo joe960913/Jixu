@@ -8,7 +8,12 @@ import {
 import { JsonlEventStore } from "@jixu/store-jsonl";
 import { createJinaWebSearchTool } from "@jixu/tools-jina";
 import { createNodeTools } from "@jixu/tools-node";
-import { createCliRenderer } from "@opentui/core";
+import {
+  createClipboard,
+  createCliRenderer,
+  createHostClipboard,
+  createRendererClipboardAdapter,
+} from "@opentui/core";
 import { createRoot } from "@opentui/react";
 
 import { createJixuReferenceAgentInstructions } from "./agent-instructions.ts";
@@ -25,6 +30,7 @@ import type {
 import { createThreadController } from "./thread-controller.ts";
 import { jixuTheme } from "./theme.ts";
 import { JixuApp } from "./tui.tsx";
+import { installJixuSelectionClipboard } from "./tui-clipboard.ts";
 import { registerJixuCodeParsers } from "./tui-parsers.ts";
 
 interface CliOptions {
@@ -37,7 +43,7 @@ interface CliOptions {
 
 const MODEL_DRIVER_ID = "configured-model";
 
-const HELP = `Jixu — Agents that continue.
+const HELP = `Jixu — Pick up where you left off.
 
 Usage:
   jixu [--api openai-chat-completions|anthropic-messages] [--base-url URL] [--model MODEL] [--root PATH]
@@ -241,6 +247,13 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
     exitOnCtrlC: false,
     exitSignals: [],
   });
+  const selectionClipboard = installJixuSelectionClipboard(
+    renderer,
+    createClipboard({
+      host: createHostClipboard(),
+      terminal: createRendererClipboardAdapter(renderer),
+    }),
+  );
   const root = createRoot(renderer);
   const stopOnInterrupt = () => requestQuit("interrupt");
   const stopOnTerminate = () => requestQuit("terminate");
@@ -268,8 +281,12 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
   } finally {
     process.off("SIGINT", stopOnInterrupt);
     process.off("SIGTERM", stopOnTerminate);
-    root.unmount();
-    renderer.destroy();
+    try {
+      await selectionClipboard.dispose();
+    } finally {
+      root.unmount();
+      renderer.destroy();
+    }
   }
 
   const exitOutput = createJixuExitOutput({

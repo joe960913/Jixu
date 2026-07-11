@@ -1,6 +1,6 @@
 # Jixu
 
-**Agents that continue.**
+**Pick up where you left off.**
 
 Jixu is a small, event-sourced TypeScript Agent Harness. Define one Agent, give
 it Tools, and continue its work in a durable Thread.

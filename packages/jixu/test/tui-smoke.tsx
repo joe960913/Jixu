@@ -33,7 +33,8 @@ import {
 } from "../src/config.ts";
 import { createThreadController } from "../src/thread-controller.ts";
 import type { ThreadController } from "../src/thread-controller.ts";
-import { jixuTheme } from "../src/theme.ts";
+import { jixuNipponColors, jixuTheme } from "../src/theme.ts";
+import { installJixuSelectionClipboard } from "../src/tui-clipboard.ts";
 import { CODE_BLOCK_MAX_CONTENT_HEIGHT } from "../src/tui-markdown.ts";
 import type { ThreadControllerSnapshot } from "../src/tui-model.ts";
 import { registerJixuCodeParsers } from "../src/tui-parsers.ts";
@@ -2167,5 +2168,274 @@ try {
 } finally {
   act(() => {
     compactSetup.renderer.destroy();
+  });
+}
+
+const responsiveButterflyMarkSetup = await testRender(
+  <JixuApp
+    connect={async () => {
+      throw new Error("Responsive butterfly-mark fixture must not connect");
+    }}
+    initial={{ api: "openai-chat-completions" }}
+    onQuit={() => undefined}
+    toolCatalogue={toolCatalogue}
+    workspace="/workspace"
+  />,
+  { height: 30, width: 100 },
+);
+
+try {
+  await act(async () => {
+    await responsiveButterflyMarkSetup.renderOnce();
+    await responsiveButterflyMarkSetup.flush();
+  });
+  const smallButterflyMarkFrame =
+    responsiveButterflyMarkSetup.captureCharFrame();
+  // Scoped UI regression: 100x30 renders the 25x10 source variant.
+  assert.notEqual(
+    responsiveButterflyMarkSetup.renderer.root.findDescendantById(
+      "jixu-creation-mark",
+    ),
+    undefined,
+  );
+  assert.match(
+    smallButterflyMarkFrame,
+    /=\+{2}=-\..*\.=-\+\*\+-/,
+  );
+  assert.match(smallButterflyMarkFrame, /-\*%\*=--==\+=\./);
+
+  await act(async () => {
+    responsiveButterflyMarkSetup.resize(100, 40);
+  });
+  await act(async () => {
+    await responsiveButterflyMarkSetup.renderOnce();
+    await responsiveButterflyMarkSetup.flush();
+  });
+  const compactButterflyMarkFrame =
+    responsiveButterflyMarkSetup.captureCharFrame();
+  // Scoped UI regression: 100x40 promotes to the 40x16 source variant.
+  assert.match(
+    compactButterflyMarkFrame,
+    /-\+{2}=\..*-\+{3}:/,
+  );
+  assert.match(compactButterflyMarkFrame, /=\+\*%%##\*{2}\+=/);
+
+  const butterflySpans = responsiveButterflyMarkSetup
+    .captureSpans()
+    .lines.flatMap((line) => line.spans);
+  assert.equal(
+    butterflySpans.some(
+      (span) =>
+        span.fg.equals(RGBA.fromHex(jixuTheme.brand)) &&
+        /[%#*]/u.test(span.text),
+    ),
+    true,
+  );
+  assert.equal(
+    butterflySpans.some((span) =>
+      span.fg.equals(RGBA.fromHex(jixuNipponColors.gofun)),
+    ),
+    true,
+  );
+  assert.equal(
+    butterflySpans.some((span) =>
+      span.fg.equals(RGBA.fromHex(jixuNipponColors.mizuasagi)),
+    ),
+    true,
+  );
+
+  await act(async () => {
+    responsiveButterflyMarkSetup.resize(160, 54);
+  });
+  await act(async () => {
+    await responsiveButterflyMarkSetup.renderOnce();
+    await responsiveButterflyMarkSetup.flush();
+  });
+  const cappedButterflyMarkFrame =
+    responsiveButterflyMarkSetup.captureCharFrame();
+  // Scoped UI regression: a roomy frame keeps the 16-row maximum.
+  assert.match(
+    cappedButterflyMarkFrame,
+    /-\+{2}=\..*-\+{3}:/,
+  );
+  assert.doesNotMatch(cappedButterflyMarkFrame, /:\*#@@@#\*:/);
+  assert.doesNotMatch(
+    `${smallButterflyMarkFrame}\n${compactButterflyMarkFrame}\n${cappedButterflyMarkFrame}`,
+    /[▀▄█]/u,
+  );
+  assert.match(cappedButterflyMarkFrame, /Type \/ to view commands\./);
+  assert.equal(
+    containsImageRenderable(responsiveButterflyMarkSetup.renderer.root),
+    false,
+  );
+} finally {
+  act(() => {
+    responsiveButterflyMarkSetup.renderer.destroy();
+  });
+}
+
+const selectionClipboardSetup = await testRender(
+  <box style={{ flexDirection: "column", height: 4, width: 40 }}>
+    <text id="clipboard-copy-one">Alpha copy</text>
+    <text id="clipboard-copy-two">Beta copy</text>
+    <textarea
+      focused
+      id="clipboard-editor"
+      initialValue="Editor selection"
+      style={{ height: 1, width: 24 }}
+    />
+  </box>,
+  { exitOnCtrlC: false, height: 6, kittyKeyboard: true, width: 44 },
+);
+const clipboardWrites: Array<{
+  readonly destination: "best-available";
+  readonly text: string;
+}> = [];
+let clipboardDisposals = 0;
+let failNextClipboardWrite = false;
+let nextClipboardWriteGate:
+  | { readonly started: () => void; readonly wait: Promise<void> }
+  | undefined;
+const selectionClipboard = installJixuSelectionClipboard(
+  selectionClipboardSetup.renderer,
+  {
+    dispose: async () => {
+      clipboardDisposals += 1;
+    },
+    writeText: async (text, options) => {
+      clipboardWrites.push({ destination: options.destination, text });
+      const gate = nextClipboardWriteGate;
+      nextClipboardWriteGate = undefined;
+      if (gate !== undefined) {
+        gate.started();
+        await gate.wait;
+      }
+      if (!failNextClipboardWrite) return;
+      failNextClipboardWrite = false;
+      throw new Error("Clipboard failure fixture");
+    },
+  },
+);
+
+try {
+  await act(async () => {
+    await selectionClipboardSetup.renderOnce();
+    await selectionClipboardSetup.flush();
+  });
+  const firstCopy = selectionClipboardSetup.renderer.root.findDescendantById(
+    "clipboard-copy-one",
+  );
+  const secondCopy = selectionClipboardSetup.renderer.root.findDescendantById(
+    "clipboard-copy-two",
+  );
+  const clipboardEditor = selectionClipboardSetup.renderer.root.findDescendantById(
+    "clipboard-editor",
+  ) as TextareaRenderable | undefined;
+  assert.ok(firstCopy instanceof TextRenderable);
+  assert.ok(secondCopy instanceof TextRenderable);
+  assert.notEqual(clipboardEditor, undefined);
+
+  await act(async () => {
+    await selectionClipboardSetup.mockMouse.drag(
+      firstCopy.x,
+      firstCopy.y,
+      firstCopy.x + 4,
+      firstCopy.y,
+    );
+  });
+  const firstSelectedText =
+    selectionClipboardSetup.renderer.getSelection()?.getSelectedText();
+  assert.notEqual(firstSelectedText, undefined);
+  await selectionClipboard.settled();
+  // Scoped UI regression: selection completion copies its exact text once.
+  assert.deepEqual(clipboardWrites, [
+    { destination: "best-available", text: firstSelectedText },
+  ]);
+
+  failNextClipboardWrite = true;
+  await act(async () => {
+    await selectionClipboardSetup.mockMouse.drag(
+      secondCopy.x,
+      secondCopy.y,
+      secondCopy.x + 3,
+      secondCopy.y,
+    );
+  });
+  const secondSelectedText =
+    selectionClipboardSetup.renderer.getSelection()?.getSelectedText();
+  assert.notEqual(secondSelectedText, undefined);
+  clipboardEditor?.setSelection(0, 6);
+  act(() => {
+    selectionClipboardSetup.mockInput.pressKey("c", { super: true });
+  });
+  await selectionClipboard.settled();
+  // Scoped UI regression: failure is contained and editor selection wins.
+  assert.deepEqual(clipboardWrites.slice(1), [
+    { destination: "best-available", text: secondSelectedText },
+    { destination: "best-available", text: "Editor" },
+  ]);
+
+  clipboardEditor?.clearSelection();
+  selectionClipboardSetup.renderer.clearSelection();
+  const writesBeforeEmptyCopy = clipboardWrites.length;
+  act(() => {
+    selectionClipboardSetup.mockInput.pressKey("c", { super: true });
+  });
+  await selectionClipboard.settled();
+  assert.equal(clipboardWrites.length, writesBeforeEmptyCopy);
+
+  let ctrlCObserved = 0;
+  selectionClipboardSetup.renderer.keyInput.on("keypress", (key) => {
+    if (key.name === "c" && key.ctrl === true) ctrlCObserved += 1;
+  });
+  act(() => {
+    selectionClipboardSetup.mockInput.pressCtrlC();
+  });
+  assert.equal(ctrlCObserved, 1);
+
+  clipboardEditor?.setCursor(0, "Editor selection".length);
+  await act(async () => {
+    await selectionClipboardSetup.mockInput.pasteBracketedText(" pasted");
+  });
+  await act(async () => {
+    await selectionClipboardSetup.renderOnce();
+    await selectionClipboardSetup.flush();
+  });
+  assert.equal(clipboardEditor?.plainText, "Editor selection pasted");
+
+  let releaseClipboardWrite!: () => void;
+  const clipboardWriteGate = new Promise<void>((resolve) => {
+    releaseClipboardWrite = resolve;
+  });
+  let markClipboardWriteStarted!: () => void;
+  const clipboardWriteStarted = new Promise<void>((resolve) => {
+    markClipboardWriteStarted = resolve;
+  });
+  nextClipboardWriteGate = {
+    started: markClipboardWriteStarted,
+    wait: clipboardWriteGate,
+  };
+  clipboardEditor?.setSelection(0, 6);
+  act(() => {
+    selectionClipboardSetup.mockInput.pressKey("c", { super: true });
+  });
+  await clipboardWriteStarted;
+  const writesBeforeDispose = clipboardWrites.length;
+  const clipboardDispose = selectionClipboard.dispose();
+  await Promise.resolve();
+  assert.equal(clipboardDisposals, 0);
+  releaseClipboardWrite();
+  await clipboardDispose;
+  await selectionClipboard.dispose();
+  assert.equal(clipboardDisposals, 1);
+  act(() => {
+    selectionClipboardSetup.mockInput.pressKey("c", { super: true });
+  });
+  await selectionClipboard.settled();
+  assert.equal(clipboardWrites.length, writesBeforeDispose);
+} finally {
+  await selectionClipboard.dispose();
+  act(() => {
+    selectionClipboardSetup.renderer.destroy();
   });
 }
