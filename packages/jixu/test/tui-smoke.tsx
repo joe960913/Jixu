@@ -12,6 +12,7 @@ import { createJinaWebSearchTool } from "@jixu/tools-jina";
 import { createNodeTools } from "@jixu/tools-node";
 import {
   BoxRenderable,
+  CliRenderEvents,
   CodeRenderable,
   getTreeSitterClient,
   ImageRenderable,
@@ -35,6 +36,7 @@ import { createThreadController } from "../src/thread-controller.ts";
 import type { ThreadController } from "../src/thread-controller.ts";
 import { jixuNipponColors, jixuTheme } from "../src/theme.ts";
 import { installJixuSelectionClipboard } from "../src/tui-clipboard.ts";
+import { BUTTERFLY_MOTION_CADENCE_MS } from "../src/tui-creation-mark.tsx";
 import { CODE_BLOCK_MAX_CONTENT_HEIGHT } from "../src/tui-markdown.ts";
 import type { ThreadControllerSnapshot } from "../src/tui-model.ts";
 import { registerJixuCodeParsers } from "../src/tui-parsers.ts";
@@ -2177,6 +2179,7 @@ const responsiveButterflyMarkSetup = await testRender(
       throw new Error("Responsive butterfly-mark fixture must not connect");
     }}
     initial={{ api: "openai-chat-completions" }}
+    motion={false}
     onQuit={() => undefined}
     toolCatalogue={toolCatalogue}
     workspace="/workspace"
@@ -2232,6 +2235,14 @@ try {
     true,
   );
   assert.equal(
+    butterflySpans.some(
+      (span) =>
+        span.fg.equals(RGBA.fromHex(jixuTheme.brand)) &&
+        span.text.includes("#%#"),
+    ),
+    true,
+  );
+  assert.equal(
     butterflySpans.some((span) =>
       span.fg.equals(RGBA.fromHex(jixuNipponColors.gofun)),
     ),
@@ -2271,6 +2282,77 @@ try {
 } finally {
   act(() => {
     responsiveButterflyMarkSetup.renderer.destroy();
+  });
+}
+
+const motionButterflyMarkSetup = await testRender(
+  <JixuApp
+    connect={async () => {
+      throw new Error("Motion butterfly-mark fixture must not connect");
+    }}
+    initial={{ api: "openai-chat-completions" }}
+    motion
+    onQuit={() => undefined}
+    toolCatalogue={toolCatalogue}
+    workspace="/workspace"
+  />,
+  { height: 40, width: 100 },
+);
+
+try {
+  await act(async () => {
+    await motionButterflyMarkSetup.renderOnce();
+    await motionButterflyMarkSetup.flush();
+  });
+  const firstMotionFrame = motionButterflyMarkSetup.captureCharFrame();
+  const firstMotionColors = motionButterflyMarkSetup
+    .captureSpans()
+    .lines.flatMap((line) => line.spans.map((span) => span.fg.toString()));
+  let publishedMotionFrames = 0;
+  const countMotionFrame = () => {
+    publishedMotionFrames += 1;
+  };
+  motionButterflyMarkSetup.renderer.on(
+    CliRenderEvents.FRAME,
+    countMotionFrame,
+  );
+
+  try {
+    await act(async () => {
+      await new Promise((resolve) =>
+        setTimeout(resolve, BUTTERFLY_MOTION_CADENCE_MS + 80),
+      );
+    });
+  } finally {
+    motionButterflyMarkSetup.renderer.off(
+      CliRenderEvents.FRAME,
+      countMotionFrame,
+    );
+  }
+  const secondMotionFrame = motionButterflyMarkSetup.captureCharFrame();
+  const secondMotionSpans = motionButterflyMarkSetup
+    .captureSpans()
+    .lines.flatMap((line) => line.spans);
+  const secondMotionColors = secondMotionSpans.map((span) =>
+    span.fg.toString()
+  );
+
+  // The timer must publish through the normal renderer scheduler. A manual
+  // renderOnce() here would hide a production regression behind test I/O.
+  assert.ok(publishedMotionFrames > 0);
+  assert.equal(secondMotionFrame, firstMotionFrame);
+  assert.notDeepEqual(secondMotionColors, firstMotionColors);
+  assert.equal(
+    secondMotionSpans.some(
+      (span) =>
+        span.fg.equals(RGBA.fromHex(jixuTheme.brand)) &&
+        span.text.includes("#%#"),
+    ),
+    true,
+  );
+} finally {
+  act(() => {
+    motionButterflyMarkSetup.renderer.destroy();
   });
 }
 

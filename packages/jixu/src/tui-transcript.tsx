@@ -515,10 +515,12 @@ function EphemeralAgentStatus({
 function EmptyState({
   configured,
   creationMarkVariant,
+  motion,
   top,
 }: {
   configured: boolean;
   creationMarkVariant: JixuCreationMarkVariant | null;
+  motion: boolean;
   top: number;
 }) {
   return (
@@ -530,7 +532,7 @@ function EmptyState({
       }}
     >
       {creationMarkVariant === null ? null : (
-        <JixuCreationMark variant={creationMarkVariant} />
+        <JixuCreationMark motion={motion} variant={creationMarkVariant} />
       )}
       <text fg={jixuTheme.brand}><strong>JIXU</strong></text>
       <text fg={jixuTheme.text}>Pick up where you left off.</text>
@@ -608,6 +610,7 @@ export function Transcript({
         <EmptyState
           configured={configured}
           creationMarkVariant={creationMarkVariant}
+          motion={motion}
           top={emptyTop}
         />
       ) : null}
