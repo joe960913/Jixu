@@ -1,8 +1,8 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.27
+**Version:** 0.4.28
 **Status:** normative, pre-release
-**Last updated:** 2026-08-20
+**Last updated:** 2026-08-21
 
 ## 1. Product definition
 
@@ -45,6 +45,8 @@ The public promise is:
    inspectable Continuity Handoffs rather than opaque summary replacement.
 10. Make execution efficiency inspectable through durable token, cost, model,
     and Tool accounting without introducing a billing service.
+11. Let an installed user enter `jixu` and start the same reference TUI and
+    Harness path without installing Bun or running the source workspace.
 
 ## 3. Non-goals
 
@@ -1104,9 +1106,54 @@ permissions and never records secrets in Thread data.
 | `@jixu/tools-jina` | Opt-in Jina-backed Web Search Tool. |
 | `@jixu/testkit` | Store and Driver contract suites. |
 | `jixu` | Public facade, CLI, configuration, and reference TUI. |
+| `@jixu/cli-darwin-arm64` | Native reference CLI executable for macOS arm64. |
+| `@jixu/cli-darwin-x64` | Native reference CLI executable for macOS x64. |
+| `@jixu/cli-linux-x64` | Native reference CLI executable for Linux x64 with glibc. |
 
 Core MUST remain free of provider SDKs, MCP SDKs, database drivers, web
 frameworks, and UI frameworks.
+
+### 16.1 Installed CLI distribution
+
+The npm `jixu` package is the canonical package-manager entry point. Its
+command launcher is transport glue only: it selects and executes the native
+package for the current platform and does not implement another TUI, Harness,
+or Thread lifecycle.
+
+- **JX-CLI-001.** The `jixu` package MUST expose a `jixu` executable through
+  its standard `bin` metadata. A global npm, pnpm, or Bun installation MUST
+  make `jixu` directly invokable through that package manager's documented
+  global binary path. Ephemeral npm, pnpm, Yarn, and Bun execution MUST work
+  through their maintained package-execution commands.
+- **JX-CLI-002.** The launcher MUST select an exact-version platform package
+  from `optionalDependencies` using operating system, CPU architecture, and,
+  on Linux, libc. It MUST perform no install-time script, runtime download, or
+  source compilation. An unsupported target, omitted optional dependency, or
+  missing executable MUST fail before TUI startup with one actionable error.
+- **JX-CLI-003.** The selected executable MUST start the reference TUI through
+  the ordinary public Agent, Harness, and Thread path. A clean first launch
+  without credentials MUST satisfy `JX-TUI-001`; packaging MUST NOT introduce
+  a credential gate, demo Agent, alternate state machine, or reduced runtime.
+- **JX-CLI-004.** Each supported target MUST be built as a Bun standalone
+  executable with the matching OpenTUI native package and embedded runtime
+  assets. The initial published target set is macOS arm64, macOS x64, and
+  Linux x64 with glibc. Linux arm64, Linux musl, and Windows remain unsupported
+  until their executable passes the same target-native acceptance path.
+- **JX-CLI-005.** `jixu` and every platform package in one release MUST have
+  the same exact version. Platform package metadata MUST fail closed for a
+  mismatched OS, CPU, or libc. A release manifest MUST record the target,
+  package, executable name, byte length, and SHA-256 digest of every native
+  artifact before publication.
+- **JX-CLI-006.** The npm launcher MAY require the package Node.js floor, but
+  a selected standalone executable MUST require neither Node.js nor Bun at
+  runtime. Future GitHub Release or Homebrew distribution MUST reuse the exact
+  native bytes and checksums from the same release manifest rather than build a
+  second executable lineage.
+- **JX-CLI-007.** macOS executables MUST be signed after compilation and
+  verified before packaging. A local acceptance build MAY use an ad-hoc
+  signature with the required JavaScript JIT entitlements; a public release
+  MUST use the maintainer-approved signing and notarization identity. Signing
+  changes the release bytes, so checksums MUST be computed afterward.
 
 ## 17. Acceptance criteria
 
@@ -1405,6 +1452,21 @@ frameworks, and UI frameworks.
   semantics without changing the immutable Agent instructions. A historical
   pending model request created by the former unbounded Plan-repair loop is
   settled with typed `plan_repair_exhausted` instead of being redispatched.
+- **JX-AC-050 — Installed CLI dispatch.** The exact packed `jixu` artifact and
+  one target-compatible platform artifact install in clean npm, pnpm, Yarn,
+  and Bun consumers with dependency lifecycle scripts disabled. Their package
+  execution path invokes the packed `jixu` launcher, selects the compatible
+  optional package, and returns the artifact's exact version and production
+  help text. Omitting the compatible optional package and selecting an
+  unsupported OS, CPU, or libc each produce a bounded actionable failure
+  without a network request or source build.
+- **JX-AC-051 — Standalone reference TUI.** On every advertised target, the
+  exact signed or native release candidate starts from a clean directory and
+  clean Jixu home without Node.js or Bun, initializes the real OpenTUI renderer,
+  shows the credential-free workspace required by `JX-TUI-001`, accepts the
+  ordinary quit path, restores terminal ownership, and passes executable format
+  and SHA-256 manifest verification. The executable packed into the matching
+  npm platform artifact MUST be byte-identical to the manifest entry.
 
 The minimum validation for a code change is targeted tests, typecheck, lint, and
 `git diff --check`. Release work also runs the complete acceptance suite and
@@ -1690,6 +1752,15 @@ and historical pending requests produced by the former unbounded loop settle
 before redispatch. Reducer version 12 invalidates disposable Checkpoints; no
 stored Thread migration or rewrite is required.
 
+Version 0.4.28 makes the installed `jixu` command a release-blocking public
+path. The facade package gains a lifecycle-script-free launcher and exact-version
+optional native packages for macOS arm64, macOS x64, and Linux x64 glibc. Each
+native package contains the same Bun-compiled reference TUI used by the source
+workspace, and a release manifest becomes the checksum authority reused by
+future GitHub Release and Homebrew distribution. This changes package metadata
+and installation behavior only; it adds no Thread, Event, State, configuration,
+or stored-data migration.
+
 ## 19. Implementation order
 
 1. Reconcile public and durable Runtime/Run remnants to Harness/Thread and keep
@@ -1704,6 +1775,8 @@ stored Thread migration or rewrite is required.
    reference TUI with the same Context and Thread path.
 6. Run targeted acceptance, Store and Driver contracts, typecheck, lint,
    package portability, and the ordinary public Harness path.
+7. Build, sign, pack, and target-test the installed `jixu` command and its
+   platform executable packages before any public registry publication.
 
 Later capabilities such as more model adapters, MCP Tools, OS sandbox backends, richer
 observation, and deployment coordinators MUST extend this same single-Agent

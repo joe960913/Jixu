@@ -1,0 +1,30 @@
+{
+  "name": "@jixu/cli-linux-x64",
+  "version": "0.0.0",
+  "description": "Jixu native TUI for Linux x64 with glibc.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joe960913/Jixu.git",
+    "directory": "packages/cli-linux-x64"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "files": [
+    "bin/jixu"
+  ],
+  "preferUnplugged": true,
+  "publishConfig": {
+    "access": "public",
+    "executableFiles": [
+      "bin/jixu"
+    ]
+  }
+}

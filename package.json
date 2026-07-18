@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build:packages": "tsc -b tsconfig.build.json && node scripts/copy-package-assets.ts",
+    "build:cli": "pnpm run build:packages && node scripts/build-cli-artifact.ts",
     "clean:packages": "tsc -b tsconfig.build.json --clean",
     "pack:packages": "node scripts/package-artifacts.ts --out .artifacts/packages",
     "dev": "pnpm run build:packages && bun run packages/jixu/src/cli.tsx",

@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { pack } from "@publint/pack";
+
+import { JIXU_CLI_TARGETS } from "../packages/jixu/src/cli-targets.ts";
 import { runCommand } from "./lib/command.ts";
 import {
   buildPackageArtifacts,
@@ -135,11 +138,58 @@ async function writeConsumerFiles(
       pathToFileURL(candidate.tarballPath).href,
     ]),
   );
+  const platformFixtureTarballs = join(
+    root,
+    ".platform-resolutions",
+    "tarballs",
+  );
+  await mkdir(platformFixtureTarballs, { recursive: true });
+  const platformResolutions = Object.fromEntries(
+    await Promise.all(
+      JIXU_CLI_TARGETS.map(async (target) => {
+        const tarball = tarballs[target.packageName];
+        if (tarball !== undefined) return [target.packageName, tarball] as const;
+
+        // Yarn and Bun resolve every optional dependency before applying the
+        // platform filter. These metadata-only fixtures stand in for registry
+        // manifests; they are never added to the release candidate set.
+        const fixtureRoot = join(
+          root,
+          ".platform-resolutions",
+          target.packageDirectory,
+        );
+        await mkdir(fixtureRoot, { recursive: true });
+        const releaseVersion = candidates[0]?.manifest.version;
+        assert.ok(releaseVersion, "release candidates are empty");
+        await writeFile(
+          join(fixtureRoot, "package.json"),
+          `${JSON.stringify(
+            {
+              name: target.packageName,
+              version: releaseVersion,
+              os: [target.platform],
+              cpu: [target.architecture],
+              ...(target.platform === "linux" ? { libc: [target.libc] } : {}),
+            },
+            null,
+            2,
+          )}\n`,
+          "utf8",
+        );
+        const fixtureTarball = await pack(fixtureRoot, {
+          destination: platformFixtureTarballs,
+          ignoreScripts: true,
+          packageManager: "npm",
+        });
+        return [target.packageName, pathToFileURL(fixtureTarball).href] as const;
+      }),
+    ),
+  );
   const localResolution =
     manager === "yarn"
-      ? { resolutions: tarballs }
+      ? { resolutions: { ...tarballs, ...platformResolutions } }
       : manager === "bun"
-        ? { overrides: tarballs }
+        ? { overrides: { ...tarballs, ...platformResolutions } }
         : {};
   await writeFile(
     join(root, "package.json"),
@@ -219,6 +269,49 @@ async function verifyInstalledPackages(
   }
 }
 
+async function verifyInstalledCli(
+  manager: PackageManager,
+  root: string,
+  candidates: readonly PackageArtifactCandidate[],
+  environment: Readonly<NodeJS.ProcessEnv>,
+): Promise<void> {
+  const jixu = candidates.find((candidate) => candidate.manifest.name === "jixu");
+  assert.ok(jixu, "release candidates miss jixu");
+
+  const executable = join(
+    root,
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "jixu.cmd" : "jixu",
+  );
+  const version = await runCommand(executable, ["--version"], {
+    cwd: root,
+    env: environment,
+  });
+  assert.equal(version.stdout, jixu.manifest.version);
+  const help = await runCommand(executable, ["--help"], {
+    cwd: root,
+    env: environment,
+  });
+  assert.match(help.stdout, /Jixu — Continue durable Agent work/u);
+  assert.doesNotMatch(help.stdout, /pnpm dev/u);
+
+  const executions: Readonly<
+    Record<PackageManager, readonly [command: string, args: readonly string[]]>
+  > = {
+    npm: ["npm", ["exec", "--", "jixu", "--version"]],
+    pnpm: ["pnpm", ["exec", "jixu", "--version"]],
+    yarn: ["corepack", ["yarn", "exec", "jixu", "--version"]],
+    bun: ["bunx", ["--no-install", "jixu", "--version"]],
+  };
+  const [command, args] = executions[manager];
+  const executed = await runCommand(command, args, {
+    cwd: root,
+    env: environment,
+  });
+  assert.equal(executed.stdout, jixu.manifest.version);
+}
+
 async function verifyManager(
   manager: PackageManager,
   consumerRoot: string,
@@ -251,6 +344,18 @@ async function verifyManager(
         "globalFolder: \"./.yarn/global\"",
         "npmPreapprovedPackages:",
         "  - \"openai@7.5.0\"",
+        "supportedArchitectures:",
+        "  os:",
+        "    - current",
+        "    - darwin",
+        "    - linux",
+        "  cpu:",
+        "    - current",
+        "    - arm64",
+        "    - x64",
+        "  libc:",
+        "    - current",
+        "    - glibc",
         "",
       ].join("\n"),
       "utf8",
@@ -268,6 +373,7 @@ async function verifyManager(
   const [command, args] = installs[manager];
   await runCommand(command, args, { cwd: fixtureRoot, env: environment });
   await verifyInstalledPackages(fixtureRoot, candidates);
+  await verifyInstalledCli(manager, fixtureRoot, candidates, environment);
   await runCommand(process.execPath, [typescriptCli, "--project", "tsconfig.json"], {
     cwd: fixtureRoot,
     env: environment,
@@ -277,7 +383,9 @@ async function verifyManager(
     env: environment,
   });
   assert.match(smoke.stdout, new RegExp(`JX-AC-017 ${manager}:`));
-  console.log(`  ✓ ${manager} clean install + TypeScript + Node ${nodeFloorVersion} smoke`);
+  console.log(
+    `  ✓ ${manager} clean install + jixu command + TypeScript + Node ${nodeFloorVersion} smoke`,
+  );
 }
 
 async function main(): Promise<void> {

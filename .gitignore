@@ -5,6 +5,7 @@ coverage/
 .turbo/
 .cache/
 .artifacts/
+/packages/cli-*/bin/jixu
 *.tsbuildinfo
 *.log
 .env

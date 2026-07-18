@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
 import { createHash, type BinaryToTextEncoding } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 
 import { pack, unpack } from "@publint/pack";
 
+import { JIXU_CLI_TARGETS } from "../packages/jixu/src/cli-targets.ts";
+import { buildHostCliArtifact } from "./build-cli-artifact.ts";
 import { runCommand } from "./lib/command.ts";
+import { verifyCliExecutable } from "./verify-cli-executable.ts";
 
 interface PackageRepository {
   readonly directory: string;
@@ -16,14 +20,20 @@ interface PackageRepository {
 }
 
 interface PackageManifest {
+  readonly bin?: Readonly<Record<string, string>>;
+  readonly cpu?: readonly string[];
   readonly dependencies?: Readonly<Record<string, string>>;
   readonly description?: string;
   readonly engines?: Readonly<Record<string, string>>;
-  readonly exports: Readonly<Record<string, unknown>>;
+  readonly exports?: Readonly<Record<string, unknown>>;
   readonly files?: readonly string[];
+  readonly libc?: readonly string[];
   readonly license?: string;
   readonly main?: string;
   readonly name: string;
+  readonly optionalDependencies?: Readonly<Record<string, string>>;
+  readonly os?: readonly string[];
+  readonly preferUnplugged?: boolean;
   readonly private?: boolean;
   readonly publishConfig?: Readonly<Record<string, unknown>>;
   readonly repository: PackageRepository;
@@ -49,7 +59,7 @@ export interface PackageArtifactCandidate {
 
 export const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 
-const packageDirectories = [
+const libraryPackageDirectories = [
   "core",
   "llm",
   "store-jsonl",
@@ -58,6 +68,17 @@ const packageDirectories = [
   "tools-jina",
   "tools-node",
   "jixu",
+];
+
+const cliPackageDirectories = [
+  "cli-darwin-arm64",
+  "cli-darwin-x64",
+  "cli-linux-x64",
+];
+
+const packageDirectories = [
+  ...libraryPackageDirectories,
+  ...cliPackageDirectories,
 ];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -75,11 +96,26 @@ function parseManifest(source: string, label: string): PackageManifest {
     "string",
     `${label} misses repository.directory`,
   );
-  assert.ok(isRecord(manifest.exports), `${label} misses exports`);
+  if (manifest.exports !== undefined) {
+    assert.ok(isRecord(manifest.exports), `${label} exports must be an object`);
+  }
   if (manifest.dependencies !== undefined) {
     assert.ok(isRecord(manifest.dependencies), `${label} dependencies must be an object`);
     for (const [name, specifier] of Object.entries(manifest.dependencies)) {
       assert.equal(typeof specifier, "string", `${label} dependency ${name} must be a string`);
+    }
+  }
+  if (manifest.optionalDependencies !== undefined) {
+    assert.ok(
+      isRecord(manifest.optionalDependencies),
+      `${label} optionalDependencies must be an object`,
+    );
+    for (const [name, specifier] of Object.entries(manifest.optionalDependencies)) {
+      assert.equal(
+        typeof specifier,
+        "string",
+        `${label} optional dependency ${name} must be a string`,
+      );
     }
   }
   return manifest as unknown as PackageManifest;
@@ -106,15 +142,42 @@ function digest(
   return createHash(algorithm).update(bytes).digest(encoding);
 }
 
+function packedFileMode(bytes: Uint8Array, target: string): number | undefined {
+  const archive = gunzipSync(bytes);
+  const decoder = new TextDecoder();
+  for (let offset = 0; offset + 512 <= archive.byteLength; ) {
+    const header = archive.subarray(offset, offset + 512);
+    const type = decoder.decode(header.subarray(156, 157));
+    if (type === "\0") return undefined;
+    const readOctal = (start: number, end: number) =>
+      Number.parseInt(
+        decoder.decode(header.subarray(start, end)).replaceAll("\0", "").trim(),
+        8,
+      );
+    const size = readOctal(124, 136);
+    const name = decoder
+      .decode(header.subarray(0, 100))
+      .split("\0", 1)[0];
+    if (type === "0" && name === target) return readOctal(100, 108);
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  return undefined;
+}
+
 function releaseFields(manifest: PackageManifest): Readonly<Record<string, unknown>> {
   return {
+    bin: manifest.bin,
+    cpu: manifest.cpu,
     description: manifest.description,
     engines: manifest.engines,
     exports: manifest.exports,
     files: manifest.files,
+    libc: manifest.libc,
     license: manifest.license,
     main: manifest.main,
     name: manifest.name,
+    os: manifest.os,
+    preferUnplugged: manifest.preferUnplugged,
     publishConfig: manifest.publishConfig,
     repository: manifest.repository,
     type: manifest.type,
@@ -126,7 +189,7 @@ function releaseFields(manifest: PackageManifest): Readonly<Record<string, unkno
 function exportTargets(
   manifest: PackageManifest,
 ): readonly (PackageExportTarget & { readonly runtime: string; readonly subpath: string })[] {
-  return Object.entries(manifest.exports).map(([subpath, target]) => {
+  return Object.entries(manifest.exports ?? {}).map(([subpath, target]) => {
     assert.ok(isRecord(target), `${manifest.name} ${subpath} export must be conditional`);
     const types = target.types;
     assert.ok(typeof types === "string", `${manifest.name} ${subpath} misses types`);
@@ -140,6 +203,7 @@ async function inspectTarball(
   tarballPath: string,
   sourceManifest: PackageManifest,
   sourceManifests: ReadonlyMap<string, PackageManifest>,
+  expectedNativeSha256?: string,
 ): Promise<PackageArtifactCandidate> {
   const bytes = await readFile(tarballPath);
   const unpacked = await unpack(bytes);
@@ -184,6 +248,26 @@ async function inspectTarball(
     expectedDependencies,
     `${manifest.name} packed runtime dependencies are not derived from package.json`,
   );
+  const expectedOptionalDependencies: Record<string, string> = {};
+  for (const [name, specifier] of Object.entries(
+    sourceManifest.optionalDependencies ?? {},
+  )) {
+    if (specifier.startsWith("workspace:")) {
+      const dependency = sourceManifests.get(name);
+      assert.ok(
+        dependency,
+        `${manifest.name} references unknown optional workspace dependency ${name}`,
+      );
+      expectedOptionalDependencies[name] = dependency.version;
+    } else {
+      expectedOptionalDependencies[name] = specifier;
+    }
+  }
+  assert.deepEqual(
+    manifest.optionalDependencies ?? {},
+    expectedOptionalDependencies,
+    `${manifest.name} packed optional dependencies are not derived from package.json`,
+  );
 
   for (const target of exportTargets(manifest)) {
     assert.match(target.runtime, /^\.\/dist\/.*\.js$/u);
@@ -199,6 +283,8 @@ async function inspectTarball(
   }
 
   if (manifest.name === "jixu") {
+    assert.equal(manifest.bin?.jixu, "./dist/cli-bin.js");
+    assert.ok(files.has("dist/cli-bin.js"), "jixu tarball misses its command launcher");
     for (const path of [
       "dist/tree-sitter-assets/bash/LICENSE",
       "dist/tree-sitter-assets/bash/highlights.scm",
@@ -209,6 +295,26 @@ async function inspectTarball(
     ]) {
       assert.ok(files.has(path), `${manifest.name} tarball misses ${path}`);
     }
+  }
+
+  if (manifest.name.startsWith("@jixu/cli-")) {
+    assert.deepEqual([...files.keys()].sort(), [
+      "LICENSE",
+      "bin/jixu",
+      "package.json",
+    ]);
+    const binary = files.get("bin/jixu");
+    assert.ok(binary, `${manifest.name} tarball misses bin/jixu`);
+    const binaryMode = packedFileMode(bytes, `${unpacked.rootDir}/bin/jixu`);
+    assert.ok(
+      binaryMode !== undefined && (binaryMode & 0o111) !== 0,
+      `${manifest.name} bin/jixu is not executable in the tarball`,
+    );
+    assert.equal(
+      digest("sha256", binary, "hex"),
+      expectedNativeSha256,
+      `${manifest.name} binary differs from the release manifest`,
+    );
   }
 
   const sha256 = digest("sha256", bytes, "hex");
@@ -226,11 +332,13 @@ async function lintTarball(candidate: PackageArtifactCandidate): Promise<void> {
   await runCommand("pnpm", ["exec", "publint", candidate.tarballPath], {
     cwd: repositoryRoot,
   });
-  await runCommand(
-    "pnpm",
-    ["exec", "attw", candidate.tarballPath, "--profile", "esm-only", "--quiet"],
-    { cwd: repositoryRoot },
-  );
+  if (candidate.manifest.exports !== undefined) {
+    await runCommand(
+      "pnpm",
+      ["exec", "attw", candidate.tarballPath, "--profile", "esm-only", "--quiet"],
+      { cwd: repositoryRoot },
+    );
+  }
 }
 
 export async function buildPackageArtifacts(
@@ -244,6 +352,24 @@ export async function buildPackageArtifacts(
   await runCommand("pnpm", ["run", "clean:packages"], { cwd: repositoryRoot });
   await runCommand("pnpm", ["run", "build:packages"], { cwd: repositoryRoot });
 
+  const cliArtifact = await buildHostCliArtifact(
+    join(resolvedDestination, "native"),
+  );
+  await verifyCliExecutable(cliArtifact.binaryPath);
+  const cliPackageRoot = join(
+    repositoryRoot,
+    "packages",
+    cliArtifact.target.packageDirectory,
+  );
+  const packagedBinary = join(
+    cliPackageRoot,
+    "bin",
+    cliArtifact.target.executable,
+  );
+  await mkdir(join(cliPackageRoot, "bin"), { recursive: true });
+  await copyFile(cliArtifact.binaryPath, packagedBinary);
+  await chmod(packagedBinary, 0o755);
+
   const sourceManifests = new Map<string, PackageManifest>();
   for (const directory of packageDirectories) {
     const manifestPath = join(repositoryRoot, "packages", directory, "package.json");
@@ -253,9 +379,44 @@ export async function buildPackageArtifacts(
     );
     sourceManifests.set(manifest.name, manifest);
   }
+  assert.equal(
+    new Set([...sourceManifests.values()].map((manifest) => manifest.version)).size,
+    1,
+    "all Jixu library and CLI packages must share one exact version",
+  );
+  const facade = sourceManifests.get("jixu");
+  assert.ok(facade, "source manifests miss jixu");
+  assert.deepEqual(
+    Object.keys(facade.optionalDependencies ?? {}).sort(),
+    JIXU_CLI_TARGETS.map((target) => target.packageName).sort(),
+    "jixu optionalDependencies drifted from the CLI target catalogue",
+  );
+  for (const target of JIXU_CLI_TARGETS) {
+    const manifest = sourceManifests.get(target.packageName);
+    assert.ok(manifest, `source manifests miss ${target.packageName}`);
+    assert.deepEqual(manifest.os, [target.platform]);
+    assert.deepEqual(manifest.cpu, [target.architecture]);
+    assert.deepEqual(
+      manifest.libc,
+      target.platform === "linux" ? [target.libc] : undefined,
+    );
+    assert.deepEqual(manifest.files, [`bin/${target.executable}`]);
+    assert.equal(manifest.preferUnplugged, true);
+    assert.deepEqual(manifest.publishConfig, {
+      access: "public",
+      executableFiles: [`bin/${target.executable}`],
+    });
+    assert.equal(
+      manifest.repository.directory,
+      `packages/${target.packageDirectory}`,
+    );
+  }
 
   const candidates: PackageArtifactCandidate[] = [];
-  for (const directory of packageDirectories) {
+  for (const directory of [
+    ...libraryPackageDirectories,
+    cliArtifact.target.packageDirectory,
+  ]) {
     const packageRoot = join(repositoryRoot, "packages", directory);
     const sourceManifest = [...sourceManifests.values()].find(
       (manifest) => manifest.repository.directory === `packages/${directory}`,
@@ -266,13 +427,21 @@ export async function buildPackageArtifacts(
       ignoreScripts: true,
       packageManager: "pnpm",
     });
-    const candidate = await inspectTarball(tarballPath, sourceManifest, sourceManifests);
+    const candidate = await inspectTarball(
+      tarballPath,
+      sourceManifest,
+      sourceManifests,
+      sourceManifest.name === cliArtifact.target.packageName
+        ? cliArtifact.metadata.sha256
+        : undefined,
+    );
     await lintTarball(candidate);
     candidates.push(candidate);
   }
 
   const artifactManifest = {
-    schemaVersion: 1,
+    cli: [cliArtifact.metadata],
+    schemaVersion: 2,
     packages: candidates.map((candidate) => ({
       files: candidate.files,
       integrity: candidate.integrity,
