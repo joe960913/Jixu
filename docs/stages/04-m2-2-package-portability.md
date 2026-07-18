@@ -116,7 +116,7 @@ Harness、Agent、Thread、Event、State 或 Effect 语义。
 
 - 根 `tsconfig.build.json` 通过 project references 按依赖顺序构建所有 package；
 - 每个 package 的 `tsconfig.build.json` 使用相同 `tsconfig.release.json` 基线；
-- `scripts/package-artifacts.mjs` 调用 `@publint/pack` 的 pnpm pack 路径；
+- `scripts/package-artifacts.ts` 调用 `@publint/pack` 的 pnpm pack 路径；
 - unpack 后检查 release metadata、dependency 转换、exports、files 和敏感内容边界；
 - 任意 `workspace:`、source export、缺失 `.js`/`.d.ts`、`src/`、`test/` 或 `.tsbuildinfo`
   进入 tarball 都会 fail closed；
@@ -124,12 +124,12 @@ Harness、Agent、Thread、Event、State 或 Effect 语义。
 
 ### 四 manager consumer
 
-`scripts/verify-package-portability.mjs` 为每个 manager 创建独立临时目录，写入：
+`scripts/verify-package-portability.ts` 为每个 manager 创建独立临时目录，写入：
 
 - 指向本轮 exact tarball 的 dependencies；
 - 只用于未发布内部包的本地 resolution；
 - 独立 cache、lockfile 和空 `.npmrc`，避免继承用户 token；
-- 相同的 `types.mts`、`tsconfig.json` 和 `smoke.mjs`。
+- 相同的 `types.mts`、`tsconfig.json` 和 `smoke.ts`。
 
 安装后脚本逐个读取 `node_modules/<package>/package.json`，确认 name、version 和无
 `workspace:`。TypeScript consumer 覆盖所有 public package 与 testkit subpath；runtime smoke
@@ -141,7 +141,7 @@ Harness/Thread path。
 M2.2 验收时，runtime smoke 使用
 `pnpm --package=node@22.18.0 dlx node` 解析 exact binary，并先断言 `process.version`，
 证明当时的最低版本承诺。SPEC 0.4.2 后，当前 floor 已提高到 Node 22.19.0；现行
-`scripts/verify-package-portability.mjs` 会解析并断言精确的 22.19.0 binary。本文保留
+`scripts/verify-package-portability.ts` 会解析并断言精确的 22.19.0 binary。本文保留
 22.18.0 作为历史验收事实，不把它表述为当前兼容性承诺。
 
 ### Failure path
@@ -167,8 +167,8 @@ M2.2 验收时，runtime smoke 使用
 最终验收命令：
 
 ```text
-node --check scripts/package-artifacts.mjs
-node --check scripts/verify-package-portability.mjs
+node --check scripts/package-artifacts.ts
+node --check scripts/verify-package-portability.ts
 pnpm run check:release
 pnpm peers check
 git diff --check
@@ -229,8 +229,8 @@ versioning 与 release automation 仍是独立边界，不能由本阶段结果�
 
 - `SPEC.md`：§16 Package boundaries、`JX-AC-017`；
 - `tsconfig.release.json`、`tsconfig.build.json`、各 package `tsconfig.build.json`：build graph；
-- `scripts/package-artifacts.mjs`：一次 build/pack 与 artifact gate；
-- `scripts/verify-package-portability.mjs`：四 manager、types、minimum-Node smoke；
+- `scripts/package-artifacts.ts`：一次 build/pack 与 artifact gate；
+- `scripts/verify-package-portability.ts`：四 manager、types、minimum-Node smoke；
 - `packages/*/package.json`：单一 release metadata 与 package boundary；
 - `packages/testkit/src/store-contract.ts`：跨 package instance 的稳定错误语义断言；
 - `README.md`：M2.2 使用方式与未发布边界。

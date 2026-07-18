@@ -138,7 +138,7 @@ large-group visibility。
 - `packages/jixu/src/tui-parsers.ts`：幂等注册本地 parser，并在 asset 不可用时保留 raw fallback；
 - `packages/jixu/src/tui-parsers.generated.ts`：OpenTUI generator 生成的 parser descriptor；
 - `packages/jixu/tree-sitter.parsers.json`：parser 版本、alias、WASM 与 query 的唯一来源；
-- `scripts/copy-package-assets.mjs`：把 source asset 机械复制进 package `dist`；
+- `scripts/copy-package-assets.ts`：把 source asset 机械复制进 package `dist`；
 - `packages/jixu/src/tui-syntax-theme.ts`：Jixu Markdown/code syntax palette；
 - `packages/jixu/test/tui-smoke.tsx`：真实 mouse、scroll、Thread switch 和 code render smoke；
 - `SPEC.md`：`0.4.17` disclosure contract 与 `0.4.21` semantic Markdown/parser contract。
@@ -292,6 +292,6 @@ ScrollBox 内部结构仍可能占满该上限，因此短 detail 看起来像�
 - `packages/jixu/src/tui-parsers.generated.ts`
 - `packages/jixu/src/tui-syntax-theme.ts`
 - `packages/jixu/tree-sitter.parsers.json`
-- `scripts/copy-package-assets.mjs`
+- `scripts/copy-package-assets.ts`
 - `packages/jixu/test/session.test.ts`
 - `packages/jixu/test/tui-smoke.tsx`

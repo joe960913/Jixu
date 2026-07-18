@@ -112,7 +112,7 @@ Messages 将 immutable instructions 与动态 active Plan 分成 system blocks�
 - `packages/llm/src/accounting.ts`：Chat 与 Messages capability-aware usage/cost mapping。
 - `packages/jixu/src/config.ts`：schema v3、secret/settings 分离与 fail-closed parsing。
 - `packages/jixu/src/cli.tsx`、`tui-setup.tsx`：两协议配置入口。
-- `scripts/verify-package-portability.mjs`：Node 22.19.0 下的真实 tarball consumer acceptance。
+- `scripts/verify-package-portability.ts`：Node 22.19.0 下的真实 tarball consumer acceptance。
 
 ### 关键算法或状态转换
 
@@ -224,5 +224,5 @@ capability profile（例如 custom headers、显式 max output 或 thinking cont
 - `packages/jixu/src/tui.tsx`
 - `packages/jixu/test/config.test.ts`
 - `packages/jixu/test/tui-smoke.tsx`
-- `scripts/verify-package-portability.mjs`
+- `scripts/verify-package-portability.ts`
 - root and package `package.json` engine declarations
