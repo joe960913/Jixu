@@ -6,6 +6,8 @@ it Tools, and continue its work in a durable Thread.
 > Jixu is pre-release. The repository is public, but the packages are not
 > published yet. The public API may change before 1.0.
 
+![Jixu terminal interface](./docs/assets/jixu-tui.png)
+
 ## Install
 
 Until the packages are published, run Jixu from source with Node.js 22.19 or
