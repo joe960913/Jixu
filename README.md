@@ -6,31 +6,6 @@ it Tools, and continue its work in a durable Thread.
 > Jixu is pre-release. The repository is public, but the packages are not
 > published yet. The public API may change before 1.0.
 
-## Core status
-
-Implemented:
-
-- **Durable Threads** — multi-turn Agent work survives process restarts, with
-  pause, continue, clear, fork, recovery, and side-effect-free replay.
-- **Reliable execution** — every model and Tool action is durably requested
-  before dispatch, with typed outcomes, bounded retries, approvals, and
-  indeterminate-failure handling.
-- **A usable Agent runtime** — adaptive Plans, token and cost accounting,
-  OpenAI-compatible Chat Completions, Anthropic Messages, local file and shell
-  Tools, Jina Web Search, and ordered Tool permissions.
-- **The reference TUI and CLI path** — credential-free startup, local BYOK
-  configuration, durable Thread inspection, and a standalone macOS arm64
-  release candidate verified through npm, pnpm, Yarn, and Bun consumers.
-
-Not yet implemented or shipped:
-
-- **The public package release** — npm publication, target-native macOS x64 and
-  Linux x64 builds, and production macOS signing and notarization remain.
-- **Long-context continuity** — adaptive compaction and immutable,
-  source-linked Continuity Handoffs are still planned.
-- **First-class Skills and MCP adapters** — both must enter the same Agent,
-  Tool, Effect, and durable Thread model before they are exposed publicly.
-
 ## Install
 
 Until the packages are published, run Jixu from source with Node.js 22.19 or
@@ -119,3 +94,25 @@ See [SPEC.md](./SPEC.md) for the full product contract and
 ## License
 
 MIT
+
+## Core status
+
+- [x] **Durable Threads** — multi-turn Agent work survives process restarts,
+  with pause, continue, clear, fork, recovery, and side-effect-free replay.
+- [x] **Reliable execution** — every model and Tool action is durably requested
+  before dispatch, with typed outcomes, bounded retries, approvals, and
+  indeterminate-failure handling.
+- [x] **A usable Agent runtime** — adaptive Plans, token and cost accounting,
+  OpenAI-compatible Chat Completions, Anthropic Messages, local file and shell
+  Tools, Jina Web Search, and ordered Tool permissions.
+- [x] **The reference TUI and CLI path** — credential-free startup, local BYOK
+  configuration, durable Thread inspection, and a standalone macOS arm64
+  release candidate verified through npm, pnpm, Yarn, and Bun consumers.
+- [ ] **The public package release** — publish to npm, complete target-native
+  macOS x64 and Linux x64 builds, and finish production macOS signing and
+  notarization.
+- [ ] **Long-context continuity** — add adaptive compaction and immutable,
+  source-linked continuity snapshots for the same Agent.
+- [ ] **First-class Skills and MCP Tools** — extend the same Agent through the
+  existing Tool, Effect, and durable Thread model, without Agent routing or
+  orchestration.
