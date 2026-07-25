@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -49,6 +50,19 @@ function ptyInvocation(binaryPath: string): {
       command: "script",
     };
   }
+  if (process.platform === "win32") {
+    const winpty =
+      process.env.JIXU_WINPTY ??
+      join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "usr", "bin", "winpty.exe");
+    assert.ok(
+      existsSync(winpty),
+      `JX-AC-051 requires Git for Windows winpty at ${winpty} or JIXU_WINPTY`,
+    );
+    return {
+      args: ["-Xallow-non-tty", binaryPath],
+      command: winpty,
+    };
+  }
   throw new Error(`Jixu executable PTY acceptance does not support ${process.platform}`);
 }
 
@@ -86,7 +100,7 @@ function runInPty(
     child.on("error", rejectPromise);
 
     const inputTimer =
-      process.platform === "linux"
+      process.platform === "linux" || process.platform === "win32"
         ? setTimeout(() => {
             child.stdin.write("/quit\r");
           }, 750)

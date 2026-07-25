@@ -9,7 +9,11 @@ import { gunzipSync } from "node:zlib";
 import { pack, unpack } from "@publint/pack";
 
 import { JIXU_CLI_TARGETS } from "../packages/jixu/src/cli-targets.ts";
-import { buildHostCliArtifact } from "./build-cli-artifact.ts";
+import {
+  buildHostCliArtifact,
+  readCliArtifactSet,
+  type JixuCliArtifact,
+} from "./build-cli-artifact.ts";
 import { runCommand } from "./lib/command.ts";
 import { verifyCliExecutable } from "./verify-cli-executable.ts";
 
@@ -57,6 +61,10 @@ export interface PackageArtifactCandidate {
   readonly tarballPath: string;
 }
 
+export interface BuildPackageArtifactsOptions {
+  readonly nativeArtifactsRoot?: string;
+}
+
 export const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 
 const libraryPackageDirectories = [
@@ -70,11 +78,9 @@ const libraryPackageDirectories = [
   "jixu",
 ];
 
-const cliPackageDirectories = [
-  "cli-darwin-arm64",
-  "cli-darwin-x64",
-  "cli-linux-x64",
-];
+const cliPackageDirectories = JIXU_CLI_TARGETS.map(
+  (target) => target.packageDirectory,
+);
 
 const packageDirectories = [
   ...libraryPackageDirectories,
@@ -298,18 +304,22 @@ async function inspectTarball(
   }
 
   if (manifest.name.startsWith("@jixu/cli-")) {
+    const binaryPath = manifest.files?.[0];
+    assert.ok(binaryPath, `${manifest.name} misses its executable file declaration`);
     assert.deepEqual([...files.keys()].sort(), [
       "LICENSE",
-      "bin/jixu",
+      binaryPath,
       "package.json",
     ]);
-    const binary = files.get("bin/jixu");
-    assert.ok(binary, `${manifest.name} tarball misses bin/jixu`);
-    const binaryMode = packedFileMode(bytes, `${unpacked.rootDir}/bin/jixu`);
-    assert.ok(
-      binaryMode !== undefined && (binaryMode & 0o111) !== 0,
-      `${manifest.name} bin/jixu is not executable in the tarball`,
-    );
+    const binary = files.get(binaryPath);
+    assert.ok(binary, `${manifest.name} tarball misses ${binaryPath}`);
+    if (manifest.os?.[0] !== "win32") {
+      const binaryMode = packedFileMode(bytes, `${unpacked.rootDir}/${binaryPath}`);
+      assert.ok(
+        binaryMode !== undefined && (binaryMode & 0o111) !== 0,
+        `${manifest.name} ${binaryPath} is not executable in the tarball`,
+      );
+    }
     assert.equal(
       digest("sha256", binary, "hex"),
       expectedNativeSha256,
@@ -343,6 +353,7 @@ async function lintTarball(candidate: PackageArtifactCandidate): Promise<void> {
 
 export async function buildPackageArtifacts(
   destination: string,
+  options: BuildPackageArtifactsOptions = {},
 ): Promise<readonly PackageArtifactCandidate[]> {
   const resolvedDestination = resolve(destination);
   assertSafeArtifactDestination(resolvedDestination);
@@ -352,23 +363,31 @@ export async function buildPackageArtifacts(
   await runCommand("pnpm", ["run", "clean:packages"], { cwd: repositoryRoot });
   await runCommand("pnpm", ["run", "build:packages"], { cwd: repositoryRoot });
 
-  const cliArtifact = await buildHostCliArtifact(
-    join(resolvedDestination, "native"),
-  );
-  await verifyCliExecutable(cliArtifact.binaryPath);
-  const cliPackageRoot = join(
-    repositoryRoot,
-    "packages",
-    cliArtifact.target.packageDirectory,
-  );
-  const packagedBinary = join(
-    cliPackageRoot,
-    "bin",
-    cliArtifact.target.executable,
-  );
-  await mkdir(join(cliPackageRoot, "bin"), { recursive: true });
-  await copyFile(cliArtifact.binaryPath, packagedBinary);
-  await chmod(packagedBinary, 0o755);
+  let cliArtifacts: readonly JixuCliArtifact[];
+  if (options.nativeArtifactsRoot === undefined) {
+    const cliArtifact = await buildHostCliArtifact(
+      join(resolvedDestination, "native"),
+    );
+    await verifyCliExecutable(cliArtifact.binaryPath);
+    cliArtifacts = [cliArtifact];
+  } else {
+    cliArtifacts = await readCliArtifactSet(resolve(options.nativeArtifactsRoot));
+  }
+  for (const cliArtifact of cliArtifacts) {
+    const cliPackageRoot = join(
+      repositoryRoot,
+      "packages",
+      cliArtifact.target.packageDirectory,
+    );
+    const packagedBinary = join(
+      cliPackageRoot,
+      "bin",
+      cliArtifact.target.executable,
+    );
+    await mkdir(join(cliPackageRoot, "bin"), { recursive: true });
+    await copyFile(cliArtifact.binaryPath, packagedBinary);
+    if (cliArtifact.target.platform !== "win32") await chmod(packagedBinary, 0o755);
+  }
 
   const sourceManifests = new Map<string, PackageManifest>();
   for (const directory of packageDirectories) {
@@ -415,7 +434,7 @@ export async function buildPackageArtifacts(
   const candidates: PackageArtifactCandidate[] = [];
   for (const directory of [
     ...libraryPackageDirectories,
-    cliArtifact.target.packageDirectory,
+    ...cliArtifacts.map((artifact) => artifact.target.packageDirectory),
   ]) {
     const packageRoot = join(repositoryRoot, "packages", directory);
     const sourceManifest = [...sourceManifests.values()].find(
@@ -431,16 +450,15 @@ export async function buildPackageArtifacts(
       tarballPath,
       sourceManifest,
       sourceManifests,
-      sourceManifest.name === cliArtifact.target.packageName
-        ? cliArtifact.metadata.sha256
-        : undefined,
+      cliArtifacts.find((artifact) => artifact.target.packageName === sourceManifest.name)
+        ?.metadata.sha256,
     );
     await lintTarball(candidate);
     candidates.push(candidate);
   }
 
   const artifactManifest = {
-    cli: [cliArtifact.metadata],
+    cli: cliArtifacts.map((artifact) => artifact.metadata),
     schemaVersion: 2,
     packages: candidates.map((candidate) => ({
       files: candidate.files,
@@ -461,18 +479,26 @@ export async function buildPackageArtifacts(
   return candidates;
 }
 
-function cliDestination(): string {
-  const outIndex = process.argv.indexOf("--out");
-  if (outIndex === -1) return join(repositoryRoot, ".artifacts", "packages");
-  const value = process.argv[outIndex + 1];
-  assert.ok(typeof value === "string", "--out requires a directory");
+function optionValue(name: string): string | undefined {
+  const index = process.argv.indexOf(name);
+  if (index === -1) return undefined;
+  const value = process.argv[index + 1];
+  assert.ok(typeof value === "string", `${name} requires a directory`);
   return resolve(repositoryRoot, value);
+}
+
+function cliDestination(): string {
+  return optionValue("--out") ?? join(repositoryRoot, ".artifacts", "packages");
 }
 
 const invokedPath = process.argv[1] === undefined ? undefined : resolve(process.argv[1]);
 if (invokedPath === fileURLToPath(import.meta.url)) {
   const destination = cliDestination();
-  const candidates = await buildPackageArtifacts(destination);
+  const nativeArtifactsRoot = optionValue("--native-root");
+  const candidates = await buildPackageArtifacts(
+    destination,
+    nativeArtifactsRoot === undefined ? {} : { nativeArtifactsRoot },
+  );
   for (const candidate of candidates) {
     console.log(
       `${candidate.manifest.name}@${candidate.manifest.version} ${candidate.sha256.slice(0, 12)}`,

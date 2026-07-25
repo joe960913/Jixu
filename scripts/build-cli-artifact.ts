@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   currentJixuCliRuntime,
   describeJixuCliRuntime,
+  JIXU_CLI_TARGETS,
   selectJixuCliTarget,
   type JixuCliTarget,
 } from "../packages/jixu/src/cli-targets.ts";
@@ -17,21 +18,31 @@ interface JixuPackageManifest {
   readonly version: string;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export interface JixuCliArtifact {
   readonly binaryPath: string;
   readonly manifestPath: string;
   readonly metadata: {
     readonly bunVersion: string;
     readonly bytes: number;
-    readonly executable: "jixu";
+    readonly executable: JixuCliTarget["executable"];
     readonly package: JixuCliTarget["packageName"];
-    readonly schemaVersion: 1;
+    readonly schemaVersion: 2;
     readonly sha256: string;
-    readonly signed: boolean;
+    readonly signature: "ad-hoc" | "developer-id" | "none";
     readonly target: JixuCliTarget["id"];
     readonly version: string;
   };
   readonly target: JixuCliTarget;
+}
+
+export interface MacSigningPlan {
+  readonly identity: string;
+  readonly signature: "ad-hoc" | "developer-id";
+  readonly timestamp: boolean;
 }
 
 export const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -83,15 +94,41 @@ function hostTarget(): JixuCliTarget {
   return target;
 }
 
-async function signMacExecutable(binaryPath: string): Promise<void> {
-  const identity = process.env.JIXU_CODESIGN_IDENTITY ?? "-";
-  if (process.env.JIXU_PUBLIC_RELEASE === "1") {
+export function resolveMacSigningPlan({
+  identity = "-",
+  publicRelease,
+  version,
+}: {
+  readonly identity?: string;
+  readonly publicRelease: boolean;
+  readonly version: string;
+}): MacSigningPlan {
+  const prerelease = /^\d+\.\d+\.\d+-/u.test(version);
+  if (publicRelease && !prerelease) {
     assert.notEqual(
       identity,
       "-",
-      "public macOS releases require JIXU_CODESIGN_IDENTITY",
+      "stable public macOS releases require JIXU_CODESIGN_IDENTITY",
     );
   }
+  return {
+    identity,
+    signature: identity === "-" ? "ad-hoc" : "developer-id",
+    timestamp: publicRelease && identity !== "-",
+  };
+}
+
+async function signMacExecutable(
+  binaryPath: string,
+  version: string,
+): Promise<"ad-hoc" | "developer-id"> {
+  const plan = resolveMacSigningPlan({
+    publicRelease: process.env.JIXU_PUBLIC_RELEASE === "1",
+    version,
+    ...(process.env.JIXU_CODESIGN_IDENTITY === undefined
+      ? {}
+      : { identity: process.env.JIXU_CODESIGN_IDENTITY }),
+  });
   await runCommand(
     "codesign",
     [
@@ -102,9 +139,9 @@ async function signMacExecutable(binaryPath: string): Promise<void> {
       "--options",
       "runtime",
       "--sign",
-      identity,
+      plan.identity,
       "--force",
-      ...(process.env.JIXU_PUBLIC_RELEASE === "1" ? ["--timestamp"] : []),
+      ...(plan.timestamp ? ["--timestamp"] : []),
       binaryPath,
     ],
     { cwd: repositoryRoot },
@@ -112,9 +149,10 @@ async function signMacExecutable(binaryPath: string): Promise<void> {
   await runCommand("codesign", ["-vvv", "--verify", binaryPath], {
     cwd: repositoryRoot,
   });
+  return plan.signature;
 }
 
-async function buildCliArtifact(
+export async function buildCliArtifact(
   target: JixuCliTarget,
   destination = join(repositoryRoot, ".artifacts", "cli"),
 ): Promise<JixuCliArtifact> {
@@ -149,9 +187,12 @@ async function buildCliArtifact(
     binaryPath,
   ];
   await runCommand("bun", args, { cwd: repositoryRoot });
-  await chmod(binaryPath, 0o755);
+  if (target.platform !== "win32") await chmod(binaryPath, 0o755);
 
-  if (target.platform === "darwin") await signMacExecutable(binaryPath);
+  const signature: JixuCliArtifact["metadata"]["signature"] =
+    target.platform === "darwin"
+      ? await signMacExecutable(binaryPath, version)
+      : "none";
 
   const versionResult = await runCommand(binaryPath, ["--version"], {
     cwd: repositoryRoot,
@@ -166,9 +207,9 @@ async function buildCliArtifact(
     bytes: binaryStat.size,
     executable: target.executable,
     package: target.packageName,
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     sha256: sha256(bytes),
-    signed: target.platform === "darwin",
+    signature,
     target: target.id,
     version,
   };
@@ -181,6 +222,53 @@ export async function buildHostCliArtifact(
   destination = join(repositoryRoot, ".artifacts", "cli"),
 ): Promise<JixuCliArtifact> {
   return buildCliArtifact(hostTarget(), destination);
+}
+
+export async function readCliArtifact(
+  target: JixuCliTarget,
+  sourceRoot: string,
+): Promise<JixuCliArtifact> {
+  const targetRoot = resolve(sourceRoot, target.id);
+  const binaryPath = join(targetRoot, target.executable);
+  const manifestPath = join(targetRoot, "artifact.json");
+  const parsed: unknown = JSON.parse(await readFile(manifestPath, "utf8"));
+  assert.ok(isRecord(parsed), `${manifestPath} must contain an object`);
+  assert.equal(parsed.schemaVersion, 2, `${manifestPath} has an unknown schema`);
+  assert.equal(parsed.target, target.id, `${manifestPath} target drifted`);
+  assert.equal(parsed.package, target.packageName, `${manifestPath} package drifted`);
+  assert.equal(parsed.executable, target.executable, `${manifestPath} executable drifted`);
+
+  const version = await packageVersion();
+  const bunVersion = await exactBunVersion();
+  assert.equal(parsed.version, version, `${manifestPath} version drifted`);
+  assert.equal(parsed.bunVersion, bunVersion, `${manifestPath} Bun version drifted`);
+  assert.ok(
+    parsed.signature === "ad-hoc" ||
+      parsed.signature === "developer-id" ||
+      parsed.signature === "none",
+    `${manifestPath} signature is invalid`,
+  );
+  if (target.platform === "darwin") {
+    assert.notEqual(parsed.signature, "none", `${manifestPath} macOS artifact is unsigned`);
+  } else {
+    assert.equal(parsed.signature, "none", `${manifestPath} non-macOS signature drifted`);
+  }
+
+  const bytes = await readFile(binaryPath);
+  const binaryStat = await stat(binaryPath);
+  assert.equal(parsed.bytes, binaryStat.size, `${manifestPath} byte length drifted`);
+  assert.equal(parsed.sha256, sha256(bytes), `${manifestPath} checksum drifted`);
+
+  const metadata = parsed as unknown as JixuCliArtifact["metadata"];
+  return { binaryPath, manifestPath, metadata, target };
+}
+
+export async function readCliArtifactSet(
+  sourceRoot: string,
+): Promise<readonly JixuCliArtifact[]> {
+  return Promise.all(
+    JIXU_CLI_TARGETS.map((target) => readCliArtifact(target, sourceRoot)),
+  );
 }
 
 const invokedPath = process.argv[1] === undefined ? undefined : resolve(process.argv[1]);

@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.28
+**Version:** 0.4.29
 **Status:** normative, pre-release
 **Last updated:** 2026-08-21
 
@@ -1109,6 +1109,7 @@ permissions and never records secrets in Thread data.
 | `@jixu/cli-darwin-arm64` | Native reference CLI executable for macOS arm64. |
 | `@jixu/cli-darwin-x64` | Native reference CLI executable for macOS x64. |
 | `@jixu/cli-linux-x64` | Native reference CLI executable for Linux x64 with glibc. |
+| `@jixu/cli-win32-x64` | Native reference CLI executable for Windows x64. |
 
 Core MUST remain free of provider SDKs, MCP SDKs, database drivers, web
 frameworks, and UI frameworks.
@@ -1136,9 +1137,10 @@ or Thread lifecycle.
   a credential gate, demo Agent, alternate state machine, or reduced runtime.
 - **JX-CLI-004.** Each supported target MUST be built as a Bun standalone
   executable with the matching OpenTUI native package and embedded runtime
-  assets. The initial published target set is macOS arm64, macOS x64, and
-  Linux x64 with glibc. Linux arm64, Linux musl, and Windows remain unsupported
-  until their executable passes the same target-native acceptance path.
+  assets. The initial pre-release target set is macOS arm64, macOS x64,
+  Linux x64 with glibc, and Windows x64. Linux arm64, Linux musl, and Windows
+  arm64 remain unsupported until their executable passes the same target-native
+  acceptance path.
 - **JX-CLI-005.** `jixu` and every platform package in one release MUST have
   the same exact version. Platform package metadata MUST fail closed for a
   mismatched OS, CPU, or libc. A release manifest MUST record the target,
@@ -1150,10 +1152,17 @@ or Thread lifecycle.
   native bytes and checksums from the same release manifest rather than build a
   second executable lineage.
 - **JX-CLI-007.** macOS executables MUST be signed after compilation and
-  verified before packaging. A local acceptance build MAY use an ad-hoc
-  signature with the required JavaScript JIT entitlements; a public release
-  MUST use the maintainer-approved signing and notarization identity. Signing
-  changes the release bytes, so checksums MUST be computed afterward.
+  verified before packaging. A SemVer pre-release published only through npm
+  MAY use an ad-hoc signature with the required JavaScript JIT entitlements;
+  it MUST use a non-`latest` pre-release dist-tag and MUST NOT claim Developer
+  ID or Gatekeeper trust. A stable release or a native archive distributed
+  directly through GitHub Releases or Homebrew MUST use the maintainer-approved
+  Developer ID signing and notarization identity. Signing changes the release
+  bytes, so checksums MUST be computed afterward.
+- **JX-CLI-008.** The Windows x64 platform package MUST contain `bin/jixu.exe`,
+  and the facade launcher MUST execute that exact file without a shell. A
+  Windows candidate MUST be compiled and exercised on Windows before it enters
+  the aggregated release manifest; cross-compilation alone is insufficient.
 
 ## 17. Acceptance criteria
 
@@ -1761,6 +1770,15 @@ future GitHub Release and Homebrew distribution. This changes package metadata
 and installation behavior only; it adds no Thread, Event, State, configuration,
 or stored-data migration.
 
+Version 0.4.29 adds Windows x64 to the initial installed-CLI target set and
+requires every advertised platform artifact to be built and exercised on its
+target runner before aggregation. The first SemVer pre-release may distribute
+ad-hoc-signed macOS executables through the npm `beta` channel without claiming
+Developer ID, notarization, or Gatekeeper trust; stable and directly distributed
+macOS artifacts retain those requirements. This changes release metadata and
+platform compatibility only and adds no Thread, Event, State, configuration, or
+stored-data migration.
+
 ## 19. Implementation order
 
 1. Reconcile public and durable Runtime/Run remnants to Harness/Thread and keep
@@ -1775,8 +1793,9 @@ or stored-data migration.
    reference TUI with the same Context and Thread path.
 6. Run targeted acceptance, Store and Driver contracts, typecheck, lint,
    package portability, and the ordinary public Harness path.
-7. Build, sign, pack, and target-test the installed `jixu` command and its
-   platform executable packages before any public registry publication.
+7. Build, channel-appropriate sign, pack, and target-test the installed `jixu`
+   command and its platform executable packages before any public registry
+   publication.
 
 Later capabilities such as more model adapters, MCP Tools, OS sandbox backends, richer
 observation, and deployment coordinators MUST extend this same single-Agent

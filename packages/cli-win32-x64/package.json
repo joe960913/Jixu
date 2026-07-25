@@ -1,27 +1,27 @@
 {
-  "name": "@jixu/cli-darwin-x64",
+  "name": "@jixu/cli-win32-x64",
   "version": "0.1.0-beta.0",
-  "description": "Jixu native TUI for macOS x64.",
+  "description": "Jixu native TUI for Windows x64.",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/joe960913/Jixu.git",
-    "directory": "packages/cli-darwin-x64"
+    "directory": "packages/cli-win32-x64"
   },
   "os": [
-    "darwin"
+    "win32"
   ],
   "cpu": [
     "x64"
   ],
   "files": [
-    "bin/jixu"
+    "bin/jixu.exe"
   ],
   "preferUnplugged": true,
   "publishConfig": {
     "access": "public",
     "executableFiles": [
-      "bin/jixu"
+      "bin/jixu.exe"
     ]
   }
 }
