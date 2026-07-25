@@ -347,7 +347,10 @@ test("JX-AC-041 Tool-only model decisions retain causal batches and bounded live
               content: "",
               toolCalls: [
                 {
-                  arguments: { command: "printf chained-output; sleep 0.08" },
+                  arguments: {
+                    command:
+                      "node -e \"process.stdout.write('chained-output'); setTimeout(() => {}, 80)\"",
+                  },
                   id: "bash-1",
                   name: "bash",
                 },

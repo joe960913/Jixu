@@ -185,7 +185,8 @@ test("JX-AC-039 JX-AC-041 JX-SEC-005 bash output and live Signals share one boun
     });
     assert.match(tools.bash.descriptor.description, /Unsandboxed/);
     const input = tools.bash.parseInput({
-      command: "printf '123456'; printf 'err' >&2; exit 3",
+      command:
+        "node -e \"process.stdout.write('123456'); process.stderr.write('err'); process.exit(3)\"",
     });
     const signals: Signal[] = [];
     const output = tools.bash.parseOutput(

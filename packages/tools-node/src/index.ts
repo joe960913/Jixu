@@ -325,8 +325,15 @@ const bashOutput = outputSchema<BashOutput>(
   },
 );
 
+function comparablePath(path: string): string {
+  if (process.platform !== "win32") return path;
+  return path
+    .replace(/^\\\\\?\\UNC\\/iu, "\\\\")
+    .replace(/^\\\\\?\\/u, "");
+}
+
 function within(root: string, candidate: string): boolean {
-  const path = relative(root, candidate);
+  const path = relative(comparablePath(root), comparablePath(candidate));
   return path === "" || (!path.startsWith(`..${sep}`) && path !== ".." && !isAbsolute(path));
 }
 

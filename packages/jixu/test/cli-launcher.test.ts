@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import type { spawnSync } from "node:child_process";
+import { join } from "node:path";
 import test from "node:test";
 
 import { launchJixuCli, resolveJixuCliBinary } from "../src/cli-launcher.ts";
@@ -51,7 +52,7 @@ test("JX-AC-050 resolves and dispatches the compatible optional package", () => 
       target,
       () => "/installed/node_modules/@jixu/cli-darwin-arm64/package.json",
     ),
-    "/installed/node_modules/@jixu/cli-darwin-arm64/bin/jixu",
+    join("/installed/node_modules/@jixu/cli-darwin-arm64", "bin", "jixu"),
   );
 
   let invocation:
@@ -95,7 +96,7 @@ test("JX-AC-050 resolves and dispatches the compatible optional package", () => 
   assert.deepEqual(invocation?.args, ["--version"]);
   assert.equal(
     invocation?.command,
-    "/installed/node_modules/@jixu/cli-darwin-arm64/bin/jixu",
+    join("/installed/node_modules/@jixu/cli-darwin-arm64", "bin", "jixu"),
   );
   assert.equal(invocation?.options.shell, false);
   assert.equal(invocation?.options.stdio, "inherit");
@@ -107,7 +108,7 @@ test("JX-AC-050 resolves and dispatches the compatible optional package", () => 
       windowsTarget,
       () => "/installed/node_modules/@jixu/cli-win32-x64/package.json",
     ),
-    "/installed/node_modules/@jixu/cli-win32-x64/bin/jixu.exe",
+    join("/installed/node_modules/@jixu/cli-win32-x64", "bin", "jixu.exe"),
   );
   assert.equal(
     launchJixuCli({
@@ -121,7 +122,7 @@ test("JX-AC-050 resolves and dispatches the compatible optional package", () => 
   );
   assert.equal(
     invocation?.command,
-    "/installed/node_modules/@jixu/cli-win32-x64/bin/jixu.exe",
+    join("/installed/node_modules/@jixu/cli-win32-x64", "bin", "jixu.exe"),
   );
   assert.equal(invocation?.options.shell, false);
 });

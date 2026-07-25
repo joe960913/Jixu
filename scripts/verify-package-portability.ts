@@ -352,6 +352,7 @@ async function verifyManager(
   const environment = {
     COREPACK_HOME: corepackHome,
     NO_COLOR: "1",
+    ...(manager === "yarn" ? { YARN_ENABLE_IMMUTABLE_INSTALLS: "false" } : {}),
     npm_config_audit: "false",
     npm_config_cache: join(fixtureRoot, ".npm-cache"),
     npm_config_fund: "false",
