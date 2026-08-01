@@ -26,13 +26,13 @@ import {
   MAX_TOOL_OUTPUT_DELTA_LENGTH,
   TOOL_OUTPUT_SIGNAL_TYPE,
   ToolExecutionError,
-} from "@jixu/core";
+} from "jixu-core";
 import type {
   ExecutableTool,
   JsonObject,
   JsonValue,
   Tool,
-} from "@jixu/core";
+} from "jixu-core";
 
 type ReadInput = { readonly path: string };
 type ReadOutput = {

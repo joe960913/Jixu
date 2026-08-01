@@ -10,12 +10,12 @@ import {
   RevisionConflictError,
   ThreadAlreadyExistsError,
   ThreadNotFoundError,
-} from "@jixu/core";
+} from "jixu-core";
 import type {
   AnyThreadEvent,
   Checkpoint,
   EventStore,
-} from "@jixu/core";
+} from "jixu-core";
 
 function record(value: unknown, label: string): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {

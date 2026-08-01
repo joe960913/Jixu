@@ -1,4 +1,4 @@
-import type { ExecutableTool } from "@jixu/core";
+import type { ExecutableTool } from "jixu-core";
 
 export const JIXU_REFERENCE_AGENT_INSTRUCTIONS_VERSION = 6;
 

@@ -24,7 +24,7 @@ Tool Event 虽然完整保存在 Thread 中，默认 transcript 却只渲染当�
 
 ### 本阶段完成
 
-- 为 `@jixu/tools-node` 增加显式 `workspace | process` filesystem scope；
+- 为 `jixu-tools-node` 增加显式 `workspace | process` filesystem scope；
 - 保持库级默认 `workspace` 不变，参考 TUI 显式选择与 unsandboxed shell
   一致的 `process` scope；
 - 增加 `ToolExecutionError`，区分确定性 Tool 拒绝与未知执行异常；

@@ -38,18 +38,18 @@
     "update:tree-sitter": "bun run scripts/update-tree-sitter-assets.ts"
   },
   "dependencies": {
-    "@jixu/core": "workspace:*"
+    "jixu-core": "workspace:*"
   },
   "optionalDependencies": {
-    "@jixu/cli-darwin-arm64": "workspace:*",
-    "@jixu/cli-darwin-x64": "workspace:*",
-    "@jixu/cli-linux-x64": "workspace:*"
+    "jixu-cli-darwin-arm64": "workspace:*",
+    "jixu-cli-darwin-x64": "workspace:*",
+    "jixu-cli-linux-x64": "workspace:*"
   },
   "devDependencies": {
-    "@jixu/llm": "workspace:*",
-    "@jixu/store-jsonl": "workspace:*",
-    "@jixu/tools-jina": "workspace:*",
-    "@jixu/tools-node": "workspace:*",
+    "jixu-llm": "workspace:*",
+    "jixu-store-jsonl": "workspace:*",
+    "jixu-tools-jina": "workspace:*",
+    "jixu-tools-node": "workspace:*",
     "@opentui/core": "0.5.4",
     "@opentui/react": "0.5.4",
     "react": "19.2.8",

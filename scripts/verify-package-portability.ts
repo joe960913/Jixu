@@ -32,7 +32,7 @@ function consumerCandidates(
   assert.ok(target, "package portability requires a supported host target");
   return candidates.filter(
     (candidate) =>
-      !candidate.manifest.name.startsWith("@jixu/cli-") ||
+      !candidate.manifest.name.startsWith("jixu-cli-") ||
       candidate.manifest.name === target.packageName,
   );
 }
@@ -63,14 +63,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createHarness, defineAgent } from "@jixu/core";
-import { createLLMModelDriver } from "@jixu/llm";
-import { JsonlEventStore } from "@jixu/store-jsonl";
-import { SqliteEventStore } from "@jixu/store-sqlite";
-import { SequenceModelDriver } from "@jixu/testkit";
-import { defineStoreContract } from "@jixu/testkit/store-contract";
-import { createJinaWebSearchTool } from "@jixu/tools-jina";
-import { createNodeTools } from "@jixu/tools-node";
+import { createHarness, defineAgent } from "jixu-core";
+import { createLLMModelDriver } from "jixu-llm";
+import { JsonlEventStore } from "jixu-store-jsonl";
+import { SqliteEventStore } from "jixu-store-sqlite";
+import { SequenceModelDriver } from "jixu-testkit";
+import { defineStoreContract } from "jixu-testkit/store-contract";
+import { createJinaWebSearchTool } from "jixu-tools-jina";
+import { createNodeTools } from "jixu-tools-node";
 import { JixuConfigStore } from "jixu";
 
 assert.equal(process.version, "v${nodeFloorVersion}");
@@ -113,14 +113,14 @@ try {
 
 function typeConsumer(): string {
   return `
-import { createHarness, defineAgent, type ModelDriver } from "@jixu/core";
-import { createLLMModelDriver } from "@jixu/llm";
-import { JsonlEventStore } from "@jixu/store-jsonl";
-import { SqliteEventStore } from "@jixu/store-sqlite";
-import { SequenceModelDriver } from "@jixu/testkit";
-import { defineStoreContract } from "@jixu/testkit/store-contract";
-import { createJinaWebSearchTool } from "@jixu/tools-jina";
-import { createNodeTools } from "@jixu/tools-node";
+import { createHarness, defineAgent, type ModelDriver } from "jixu-core";
+import { createLLMModelDriver } from "jixu-llm";
+import { JsonlEventStore } from "jixu-store-jsonl";
+import { SqliteEventStore } from "jixu-store-sqlite";
+import { SequenceModelDriver } from "jixu-testkit";
+import { defineStoreContract } from "jixu-testkit/store-contract";
+import { createJinaWebSearchTool } from "jixu-tools-jina";
+import { createNodeTools } from "jixu-tools-node";
 import { JixuConfigStore } from "jixu";
 
 const fixture: ModelDriver = new SequenceModelDriver([]);

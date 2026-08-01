@@ -3,23 +3,13 @@
 Jixu is a durable single-Agent Harness for TypeScript. Define one Agent, give
 it Tools, and continue its work in a durable Thread.
 
-> Jixu is pre-release. The repository is public, but the packages are not
-> published yet. The public API may change before 1.0.
+> Jixu is pre-release. The public API may change before 1.0.
 
 ![Jixu terminal interface](./docs/assets/jixu-tui.png)
 
 ## Install
 
-Until the packages are published, run Jixu from source with Node.js 22.19 or
-later, pnpm, and Bun 1.4.0:
-
-```bash
-pnpm install
-pnpm dev
-```
-
-The first package release will support global installation with npm, pnpm, or
-Bun:
+Install the TUI globally with npm, pnpm, or Bun:
 
 ```bash
 npm install -g jixu
@@ -33,7 +23,7 @@ Then `jixu` will start the TUI from any terminal:
 jixu
 ```
 
-Ephemeral execution will also be supported:
+Ephemeral execution is also supported:
 
 ```bash
 npx jixu
@@ -45,19 +35,18 @@ npx jixu
 The initial native TUI targets are macOS arm64, macOS x64, and Linux x64
 with glibc. Bun is not required at runtime.
 
-After publication, install the Agent Framework packages separately when
-building an application:
+Install the Agent Framework packages separately when building an application:
 
 ```bash
-npm install @jixu/core @jixu/llm @jixu/store-sqlite
+npm install jixu-core jixu-llm jixu-store-sqlite
 ```
 
 ## Quick start
 
 ```ts
-import { createHarness, defineAgent } from "@jixu/core";
-import { createLLMModelDriver } from "@jixu/llm";
-import { SqliteEventStore } from "@jixu/store-sqlite";
+import { createHarness, defineAgent } from "jixu-core";
+import { createLLMModelDriver } from "jixu-llm";
+import { SqliteEventStore } from "jixu-store-sqlite";
 
 const agent = defineAgent({
   instructions: "Be precise and verify your work.",

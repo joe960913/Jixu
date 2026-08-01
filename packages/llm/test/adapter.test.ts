@@ -6,13 +6,13 @@ import {
   defineAgent,
   PLAN_CONTROL,
   PROGRESS_CONTROL,
-} from "@jixu/core";
+} from "jixu-core";
 import type {
   ModelDriverContext,
   ModelGenerateEffect,
   PlanSnapshot,
   Signal,
-} from "@jixu/core";
+} from "jixu-core";
 
 import * as llm from "../src/index.ts";
 import {

@@ -2,7 +2,7 @@ import { MouseButton, type MouseEvent as OpenTUIMouseEvent } from "@opentui/core
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useState } from "react";
 
-import type { ExecutableTool, ToolPermissionEffect } from "@jixu/core";
+import type { ExecutableTool, ToolPermissionEffect } from "jixu-core";
 
 import {
   effectiveJixuToolPermission,

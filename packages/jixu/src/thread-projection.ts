@@ -1,4 +1,4 @@
-import type { AnyThreadEvent, PlanSnapshot } from "@jixu/core";
+import type { AnyThreadEvent, PlanSnapshot } from "jixu-core";
 
 import {
   toolOperationForOutcome,

@@ -21,7 +21,7 @@ catalogue 也只有本地 Tool。对纯 BYOK 的本地应用，这会制造没�
 - Settings schema 升级为 v5，model Key、Jina Key、连接、Tool selection 与 permission policy
   统一保存在 `~/.jixu/settings.json`。
 - schema v3/v4 与 legacy `auth.json` 原地合并，成功写入后删除 `auth.json`，不生成备份。
-- 增加独立的 `@jixu/tools-jina` 包与 first-party `web_search` Tool。
+- 增加独立的 `jixu-tools-jina` 包与 first-party `web_search` Tool。
 - Jina Search 返回 title、URL、description 和 bounded page content；Agent instructions 要求将网页
   正文视为不可信证据而不是指令，并在答案中引用支持结论的 URL。
 - Tool Center 显示 `web_search`、Jina configured/missing 状态、network risk 与 policy。

@@ -6,11 +6,11 @@ import {
   jsonDigest,
   REDUCER_VERSION,
   replayEvents,
-} from "@jixu/core";
+} from "jixu-core";
 import type {
   AnyThreadEvent,
   EventStore,
-} from "@jixu/core";
+} from "jixu-core";
 
 export interface StoreContractFixture {
   readonly cleanup?: () => Promise<void> | void;

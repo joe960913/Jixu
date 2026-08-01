@@ -280,7 +280,7 @@ InMemory Store 实现：
 
 ### pnpm workspace
 
-workspace 当前包含 root、`@jixu/core` 和 `@jixu/testkit`。core 没有 runtime
+workspace 当前包含 root、`jixu-core` 和 `jixu-testkit`。core 没有 runtime
 dependency。TypeScript 和 Node types 仅为 devDependency。
 
 ### Zero-dependency architecture lint

@@ -1,13 +1,13 @@
 import { resolve } from "node:path";
 
-import { createHarness, defineAgent } from "@jixu/core";
+import { createHarness, defineAgent } from "jixu-core";
 import {
   createLLMAdapter,
   createLLMModelDriver,
-} from "@jixu/llm";
-import { JsonlEventStore } from "@jixu/store-jsonl";
-import { createJinaWebSearchTool } from "@jixu/tools-jina";
-import { createNodeTools } from "@jixu/tools-node";
+} from "jixu-llm";
+import { JsonlEventStore } from "jixu-store-jsonl";
+import { createJinaWebSearchTool } from "jixu-tools-jina";
+import { createNodeTools } from "jixu-tools-node";
 import {
   createClipboard,
   createCliRenderer,

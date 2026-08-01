@@ -3,7 +3,7 @@ import {
   MODEL_PROGRESS_SIGNAL_TYPE,
   parseToolOutputDelta,
   TOOL_OUTPUT_SIGNAL_TYPE,
-} from "@jixu/core";
+} from "jixu-core";
 import type {
   AnyThreadEvent,
   Harness,
@@ -13,7 +13,7 @@ import type {
   ToolApproval,
   ToolApprovalDecision,
   ToolOutputDelta,
-} from "@jixu/core";
+} from "jixu-core";
 
 import { formatSlashCommandHelp } from "./commands.ts";
 import { projectThread } from "./thread-projection.ts";

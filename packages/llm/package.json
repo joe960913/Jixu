@@ -1,5 +1,5 @@
 {
-  "name": "@jixu/llm",
+  "name": "jixu-llm",
   "version": "0.1.0-beta.0",
   "description": "Provider-neutral LLM adapters for Jixu.",
   "type": "module",
@@ -28,7 +28,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@jixu/core": "workspace:*",
+    "jixu-core": "workspace:*",
     "openai": "7.5.0"
   }
 }

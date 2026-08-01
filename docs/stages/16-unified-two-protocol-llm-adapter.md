@@ -12,7 +12,7 @@
 
 ### 要解决的问题
 
-此前 `@jixu/llm` 同时暴露 OpenAI Responses、Chat Completions、OpenAI 与 OpenRouter
+此前 `jixu-llm` 同时暴露 OpenAI Responses、Chat Completions、OpenAI 与 OpenRouter
 专用 factory。配置以 `apiFormat` 选择 Responses 或 Chat，但 Jixu 真正需要的是一个可解释、可测试、
 不会暗中 fallback 的统一 Model Driver 边界。维护者确认将范围收紧为两种支持 client-side Tool calling
 的协议：OpenAI-compatible Chat Completions 与 Anthropic Messages，并明确删除 Responses，不保留兼容层。

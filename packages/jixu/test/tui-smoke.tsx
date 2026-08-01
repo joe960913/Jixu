@@ -6,10 +6,10 @@ import {
   defineSchema,
   defineTool,
   TOOL_OUTPUT_SIGNAL_TYPE,
-} from "@jixu/core";
-import type { ModelDriver } from "@jixu/core";
-import { createJinaWebSearchTool } from "@jixu/tools-jina";
-import { createNodeTools } from "@jixu/tools-node";
+} from "jixu-core";
+import type { ModelDriver } from "jixu-core";
+import { createJinaWebSearchTool } from "jixu-tools-jina";
+import { createNodeTools } from "jixu-tools-node";
 import {
   BoxRenderable,
   CliRenderEvents,

@@ -8,8 +8,8 @@ import {
   parseToolOutputDelta,
   TOOL_OUTPUT_SIGNAL_TYPE,
   ToolExecutionError,
-} from "@jixu/core";
-import type { Signal, ToolExecutionContext } from "@jixu/core";
+} from "jixu-core";
+import type { Signal, ToolExecutionContext } from "jixu-core";
 
 import { createNodeTools } from "../src/index.ts";
 

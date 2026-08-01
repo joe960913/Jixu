@@ -8,7 +8,7 @@ import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode, RefObject } from "react";
 
-import type { ExecutableTool } from "@jixu/core";
+import type { ExecutableTool } from "jixu-core";
 
 import {
   DEFAULT_JIXU_TOOL_SETTINGS,

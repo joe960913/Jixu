@@ -6,12 +6,12 @@ import {
   defineAgent,
   InMemoryEventStore,
   ToolExecutionError,
-} from "@jixu/core";
+} from "jixu-core";
 import type {
   ModelDriver,
   ModelOutcome,
   ToolExecutionContext,
-} from "@jixu/core";
+} from "jixu-core";
 
 import { createJinaWebSearchTool } from "../src/index.ts";
 

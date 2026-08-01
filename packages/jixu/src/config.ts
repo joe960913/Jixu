@@ -13,18 +13,18 @@ import { join } from "node:path";
 import {
   defineToolPermissionPolicy,
   resolveToolPermission,
-} from "@jixu/core";
+} from "jixu-core";
 import type {
   ToolPermissionEffect,
   ToolPermissionPolicy,
   ToolPermissionRule,
-} from "@jixu/core";
+} from "jixu-core";
 import {
   JINA_TOOL_NAMES,
   type JinaWebSearchToolName,
-} from "@jixu/tools-jina";
-import { NODE_TOOL_NAMES } from "@jixu/tools-node";
-import type { NodeToolName } from "@jixu/tools-node";
+} from "jixu-tools-jina";
+import { NODE_TOOL_NAMES } from "jixu-tools-node";
+import type { NodeToolName } from "jixu-tools-node";
 
 export type JixuApi =
   | "anthropic-messages"

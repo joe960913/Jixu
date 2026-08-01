@@ -1,5 +1,5 @@
 {
-  "name": "@jixu/tools-node",
+  "name": "jixu-tools-node",
   "version": "0.1.0-beta.0",
   "description": "Opt-in Node file and local shell Tools for Jixu.",
   "type": "module",
@@ -28,6 +28,6 @@
     "access": "public"
   },
   "dependencies": {
-    "@jixu/core": "workspace:*"
+    "jixu-core": "workspace:*"
   }
 }

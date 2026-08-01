@@ -12,11 +12,11 @@ import {
 test("JX-AC-050 selects only the published OS, CPU, and libc targets", () => {
   assert.equal(
     selectJixuCliTarget({ architecture: "arm64", platform: "darwin" })?.packageName,
-    "@jixu/cli-darwin-arm64",
+    "jixu-cli-darwin-arm64",
   );
   assert.equal(
     selectJixuCliTarget({ architecture: "x64", platform: "darwin" })?.packageName,
-    "@jixu/cli-darwin-x64",
+    "jixu-cli-darwin-x64",
   );
   assert.equal(
     selectJixuCliTarget({
@@ -24,7 +24,7 @@ test("JX-AC-050 selects only the published OS, CPU, and libc targets", () => {
       libc: "glibc",
       platform: "linux",
     })?.packageName,
-    "@jixu/cli-linux-x64",
+    "jixu-cli-linux-x64",
   );
   assert.equal(
     selectJixuCliTarget({
@@ -42,9 +42,9 @@ test("JX-AC-050 resolves and dispatches the compatible optional package", () => 
   assert.equal(
     resolveJixuCliBinary(
       target,
-      () => "/installed/node_modules/@jixu/cli-darwin-arm64/package.json",
+      () => "/installed/node_modules/jixu-cli-darwin-arm64/package.json",
     ),
-    join("/installed/node_modules/@jixu/cli-darwin-arm64", "bin", "jixu"),
+    join("/installed/node_modules/jixu-cli-darwin-arm64", "bin", "jixu"),
   );
 
   let invocation:
@@ -79,7 +79,7 @@ test("JX-AC-050 resolves and dispatches the compatible optional package", () => 
     launchJixuCli({
       args: ["--version"],
       resolvePackage: () =>
-        "/installed/node_modules/@jixu/cli-darwin-arm64/package.json",
+        "/installed/node_modules/jixu-cli-darwin-arm64/package.json",
       runtime: { architecture: "arm64", platform: "darwin" },
       spawn,
     }),
@@ -88,7 +88,7 @@ test("JX-AC-050 resolves and dispatches the compatible optional package", () => 
   assert.deepEqual(invocation?.args, ["--version"]);
   assert.equal(
     invocation?.command,
-    join("/installed/node_modules/@jixu/cli-darwin-arm64", "bin", "jixu"),
+    join("/installed/node_modules/jixu-cli-darwin-arm64", "bin", "jixu"),
   );
   assert.equal(invocation?.options.shell, false);
   assert.equal(invocation?.options.stdio, "inherit");

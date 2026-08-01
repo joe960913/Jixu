@@ -1,5 +1,5 @@
 {
-  "name": "@jixu/core",
+  "name": "jixu-core",
   "version": "0.1.0-beta.0",
   "description": "Durable single-Agent Harness and Thread kernel for Jixu.",
   "type": "module",

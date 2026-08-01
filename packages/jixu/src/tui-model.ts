@@ -3,7 +3,7 @@ import type {
   ThreadMetrics,
   ThreadStatus,
   ToolApproval,
-} from "@jixu/core";
+} from "jixu-core";
 
 export type JixuTone =
   | "brand"

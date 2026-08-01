@@ -2,8 +2,8 @@ import {
   defineSchema,
   defineTool,
   ToolExecutionError,
-} from "@jixu/core";
-import type { JsonObject, JsonValue, Tool } from "@jixu/core";
+} from "jixu-core";
+import type { JsonObject, JsonValue, Tool } from "jixu-core";
 
 export const JINA_WEB_SEARCH_TOOL_NAME = "web_search" as const;
 export const JINA_TOOL_NAMES = Object.freeze([JINA_WEB_SEARCH_TOOL_NAME] as const);
