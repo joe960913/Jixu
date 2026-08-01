@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.30
+**Version:** 0.4.31
 **Status:** normative, pre-release
 **Last updated:** 2026-08-21
 
@@ -1105,7 +1105,7 @@ permissions and never records secrets in Thread data.
 | `jixu-tools-node` | Opt-in Node file and shell Tools. |
 | `jixu-tools-jina` | Opt-in Jina-backed Web Search Tool. |
 | `jixu-testkit` | Store and Driver contract suites. |
-| `jixu` | Public facade, CLI, configuration, and reference TUI. |
+| `jixu-ai` | Public facade, CLI, configuration, and reference TUI. |
 | `jixu-cli-darwin-arm64` | Native reference CLI executable for macOS arm64. |
 | `jixu-cli-darwin-x64` | Native reference CLI executable for macOS x64. |
 | `jixu-cli-linux-x64` | Native reference CLI executable for Linux x64 with glibc. |
@@ -1115,12 +1115,12 @@ frameworks, and UI frameworks.
 
 ### 16.1 Installed CLI distribution
 
-The npm `jixu` package is the canonical package-manager entry point. Its
-command launcher is transport glue only: it selects and executes the native
-package for the current platform and does not implement another TUI, Harness,
-or Thread lifecycle.
+The npm `jixu-ai` package is the canonical package-manager entry point. It
+installs the `jixu` command. Its command launcher is transport glue only: it
+selects and executes the native package for the current platform and does not
+implement another TUI, Harness, or Thread lifecycle.
 
-- **JX-CLI-001.** The `jixu` package MUST expose a `jixu` executable through
+- **JX-CLI-001.** The `jixu-ai` package MUST expose a `jixu` executable through
   its standard `bin` metadata. A global npm, pnpm, or Bun installation MUST
   make `jixu` directly invokable through that package manager's documented
   global binary path. Ephemeral npm, pnpm, Yarn, and Bun execution MUST work
@@ -1138,7 +1138,7 @@ or Thread lifecycle.
   executable with the matching OpenTUI native package and embedded runtime
   assets. The initial pre-release target set is macOS arm64, macOS x64, and
   Linux x64 with glibc. Other targets are not part of this release line.
-- **JX-CLI-005.** `jixu` and every platform package in one release MUST have
+- **JX-CLI-005.** `jixu-ai` and every platform package in one release MUST have
   the same exact version. Platform package metadata MUST fail closed for a
   mismatched OS, CPU, or libc. A release manifest MUST record the target,
   package, executable name, byte length, and SHA-256 digest of every native
@@ -1453,10 +1453,10 @@ or Thread lifecycle.
   semantics without changing the immutable Agent instructions. A historical
   pending model request created by the former unbounded Plan-repair loop is
   settled with typed `plan_repair_exhausted` instead of being redispatched.
-- **JX-AC-050 — Installed CLI dispatch.** The exact packed `jixu` artifact and
+- **JX-AC-050 — Installed CLI dispatch.** The exact packed `jixu-ai` artifact and
   one target-compatible platform artifact install in clean npm, pnpm, Yarn,
   and Bun consumers with dependency lifecycle scripts disabled. Their package
-  execution path invokes the packed `jixu` launcher, selects the compatible
+  execution path invokes the packed `jixu-ai` launcher, selects the compatible
   optional package, and returns the artifact's exact version and production
   help text. Omitting the compatible optional package and selecting an
   unsupported OS, CPU, or libc each produce a bounded actionable failure
@@ -1777,6 +1777,16 @@ not controlled by this project. The facade package and terminal command remain
 package-name compatibility or migration path to preserve. The change affects
 package identifiers, dependency metadata, and import specifiers only; it adds no
 Thread, Event, State, configuration, or stored-data migration.
+
+Version 0.4.31 corrects the facade identity after the npm registry rejected the
+unscoped `jixu` name under its package-similarity protection. The canonical npm
+entry package is now `jixu-ai`, while its installed executable and product name
+remain `jixu` and Jixu. The already published `jixu-*` framework and native
+packages retain their names and exact pre-release version. The rejected facade
+was never published, so there is no facade package migration or compatibility
+alias. This correction changes package metadata, consumer imports, and install
+documentation only; it adds no Thread, Event, State, configuration, or
+stored-data migration.
 
 ## 19. Implementation order
 

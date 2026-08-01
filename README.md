@@ -12,9 +12,9 @@ it Tools, and continue its work in a durable Thread.
 Install the TUI globally with npm, pnpm, or Bun:
 
 ```bash
-npm install -g jixu
-# pnpm add -g jixu
-# bun add -g jixu
+npm install -g jixu-ai@beta
+# pnpm add -g jixu-ai@beta
+# bun add -g jixu-ai@beta
 ```
 
 Then `jixu` will start the TUI from any terminal:
@@ -26,10 +26,10 @@ jixu
 Ephemeral execution is also supported:
 
 ```bash
-npx jixu
-# pnpm dlx jixu
-# yarn dlx jixu
-# bunx jixu
+npx jixu-ai@beta
+# pnpm dlx jixu-ai@beta
+# yarn dlx jixu-ai@beta
+# bunx jixu-ai@beta
 ```
 
 The initial native TUI targets are macOS arm64, macOS x64, and Linux x64
@@ -93,8 +93,9 @@ See [SPEC.md](./SPEC.md) for the full product contract and
   OpenAI-compatible Chat Completions, Anthropic Messages, local file and shell
   Tools, Jina Web Search, and ordered Tool permissions.
 - [x] **The reference TUI and CLI path** — credential-free startup, local BYOK
-  configuration, durable Thread inspection, and a standalone macOS arm64
-  release candidate verified through npm, pnpm, Yarn, and Bun consumers.
+  configuration, durable Thread inspection, and standalone macOS arm64,
+  macOS x64, and Linux x64 release candidates verified through npm, pnpm,
+  Yarn, and Bun consumers.
 - [ ] **Long-context continuity** — add adaptive compaction and immutable,
   source-linked continuity snapshots for the same Agent.
 - [ ] **First-class Skills and MCP Tools** — extend the same Agent through the
