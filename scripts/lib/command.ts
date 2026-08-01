@@ -27,19 +27,11 @@ export function runCommand(
   options: CommandOptions = {},
 ): Promise<CommandResult> {
   return new Promise<CommandResult>((resolvePromise, rejectPromise) => {
-    const windowsShim =
-      process.platform === "win32" && !/\.(?:com|exe)$/iu.test(command);
-    const child = spawn(
-      windowsShim ? (process.env.ComSpec ?? "cmd.exe") : command,
-      windowsShim
-        ? ["/d", "/s", "/c", "call", command, ...args]
-        : [...args],
-      {
-        cwd: options.cwd,
-        env: { ...process.env, ...options.env },
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
+    const child = spawn(command, [...args], {
+      cwd: options.cwd,
+      env: { ...process.env, ...options.env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
 

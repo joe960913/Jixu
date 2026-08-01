@@ -300,23 +300,16 @@ async function verifyInstalledCli(
   const jixu = candidates.find((candidate) => candidate.manifest.name === "jixu");
   assert.ok(jixu, "release candidates miss jixu");
 
-  const executable = join(
-    root,
-    "node_modules",
-    ".bin",
-    process.platform === "win32" ? "jixu.cmd" : "jixu",
-  );
-  const runInstalledCli = (args: readonly string[]) =>
-    process.platform === "win32"
-      ? runCommand(
-          process.env.ComSpec ?? "cmd.exe",
-          ["/d", "/s", "/c", "call", executable, ...args],
-          { cwd: root, env: environment },
-        )
-      : runCommand(executable, args, { cwd: root, env: environment });
-  const version = await runInstalledCli(["--version"]);
+  const executable = join(root, "node_modules", ".bin", "jixu");
+  const version = await runCommand(executable, ["--version"], {
+    cwd: root,
+    env: environment,
+  });
   assert.equal(version.stdout, jixu.manifest.version);
-  const help = await runInstalledCli(["--help"]);
+  const help = await runCommand(executable, ["--help"], {
+    cwd: root,
+    env: environment,
+  });
   assert.match(help.stdout, /Jixu — Continue durable Agent work/u);
   assert.doesNotMatch(help.stdout, /pnpm dev/u);
 
@@ -374,7 +367,6 @@ async function verifyManager(
         "    - current",
         "    - darwin",
         "    - linux",
-        "    - win32",
         "  cpu:",
         "    - current",
         "    - arm64",

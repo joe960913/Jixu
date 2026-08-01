@@ -447,7 +447,7 @@ async function atomicJsonWrite(
   }
   try {
     await rename(temporary, path);
-    if (process.platform !== "win32") await chmod(path, mode);
+    await chmod(path, mode);
   } finally {
     await unlink(temporary).catch(() => undefined);
   }
@@ -514,7 +514,7 @@ export class JixuConfigStore {
 
   async #secureDirectory(): Promise<void> {
     await mkdir(this.directory, { mode: 0o700, recursive: true });
-    if (process.platform !== "win32") await chmod(this.directory, 0o700);
+    await chmod(this.directory, 0o700);
   }
 
   async load(): Promise<JixuStoredConfiguration> {
@@ -546,7 +546,7 @@ export class JixuConfigStore {
         if (errorCode(error) !== "ENOENT") throw error;
       });
     }
-    if (settings !== null && process.platform !== "win32") {
+    if (settings !== null) {
       await chmod(this.settingsPath, 0o600);
     }
     return normalizeConfiguration(settings);

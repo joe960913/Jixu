@@ -313,13 +313,11 @@ async function inspectTarball(
     ]);
     const binary = files.get(binaryPath);
     assert.ok(binary, `${manifest.name} tarball misses ${binaryPath}`);
-    if (manifest.os?.[0] !== "win32") {
-      const binaryMode = packedFileMode(bytes, `${unpacked.rootDir}/${binaryPath}`);
-      assert.ok(
-        binaryMode !== undefined && (binaryMode & 0o111) !== 0,
-        `${manifest.name} ${binaryPath} is not executable in the tarball`,
-      );
-    }
+    const binaryMode = packedFileMode(bytes, `${unpacked.rootDir}/${binaryPath}`);
+    assert.ok(
+      binaryMode !== undefined && (binaryMode & 0o111) !== 0,
+      `${manifest.name} ${binaryPath} is not executable in the tarball`,
+    );
     assert.equal(
       digest("sha256", binary, "hex"),
       expectedNativeSha256,
@@ -386,7 +384,7 @@ export async function buildPackageArtifacts(
     );
     await mkdir(join(cliPackageRoot, "bin"), { recursive: true });
     await copyFile(cliArtifact.binaryPath, packagedBinary);
-    if (cliArtifact.target.platform !== "win32") await chmod(packagedBinary, 0o755);
+    await chmod(packagedBinary, 0o755);
   }
 
   const sourceManifests = new Map<string, PackageManifest>();

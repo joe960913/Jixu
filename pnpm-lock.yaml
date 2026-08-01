@@ -33,8 +33,6 @@ importers:
 
   packages/cli-linux-x64: {}
 
-  packages/cli-win32-x64: {}
-
   packages/core: {}
 
   packages/jixu:
@@ -80,10 +78,6 @@ importers:
       '@jixu/cli-linux-x64':
         specifier: workspace:*
         version: link:../cli-linux-x64
-      '@jixu/cli-win32-x64':
-        specifier: workspace:*
-        version: link:../cli-win32-x64
-
   packages/llm:
     dependencies:
       '@jixu/core':

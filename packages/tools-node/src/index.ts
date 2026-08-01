@@ -8,7 +8,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import {
   dirname,
@@ -325,15 +325,8 @@ const bashOutput = outputSchema<BashOutput>(
   },
 );
 
-function comparablePath(path: string): string {
-  if (process.platform !== "win32") return path;
-  return path
-    .replace(/^\\\\\?\\UNC\\/iu, "\\\\")
-    .replace(/^\\\\\?\\/u, "");
-}
-
 function within(root: string, candidate: string): boolean {
-  const path = relative(comparablePath(root), comparablePath(candidate));
+  const path = relative(root, candidate);
   return path === "" || (!path.startsWith(`..${sep}`) && path !== ".." && !isAbsolute(path));
 }
 
@@ -344,11 +337,10 @@ function displayPath(root: string, absolute: string): string {
 
 class WorkspacePaths {
   readonly root: string;
-  #canonicalRoot?: Promise<string>;
   readonly #scope: "process" | "workspace";
 
   constructor(root: string, scope: "process" | "workspace") {
-    this.root = resolve(root);
+    this.root = realpathSync(resolve(root));
     this.#scope = scope;
     if (!statSync(this.root).isDirectory()) {
       throw new TypeError(`Node Tools root is not a directory: ${this.root}`);
@@ -377,7 +369,7 @@ class WorkspacePaths {
         `Path is not accessible: ${path}`,
       );
     }
-    await this.#assertCanonicalWithin(resolved, path);
+    this.#assertWithin(resolved, path);
     return { absolute: candidate, path: displayPath(this.root, candidate) };
   }
 
@@ -385,7 +377,7 @@ class WorkspacePaths {
     const candidate = this.#lexical(path);
     try {
       const resolved = await realpath(candidate);
-      await this.#assertCanonicalWithin(resolved, path);
+      this.#assertWithin(resolved, path);
       return { absolute: candidate, path: displayPath(this.root, candidate) };
     } catch (error) {
       if (recordErrorCode(error) !== "ENOENT") throw error;
@@ -404,7 +396,7 @@ class WorkspacePaths {
     const parent = dirname(candidate);
     await this.#assertExistingAncestor(parent, path);
     await mkdir(parent, { recursive: true });
-    await this.#assertCanonicalWithin(await realpath(parent), path);
+    this.#assertWithin(await realpath(parent), path);
     return { absolute: candidate, path: displayPath(this.root, candidate) };
   }
 
@@ -416,22 +408,11 @@ class WorkspacePaths {
       );
     }
     const candidate = resolve(this.root, path);
-    this.#assertLexicallyWithin(candidate, path);
+    this.#assertWithin(candidate, path);
     return candidate;
   }
 
-  async #assertCanonicalWithin(candidate: string, input: string): Promise<void> {
-    if (this.#scope === "process") return;
-    this.#canonicalRoot ??= realpath(this.root);
-    if (!within(await this.#canonicalRoot, candidate)) {
-      throw new ToolExecutionError(
-        "tool_path_outside_scope",
-        `Path escapes the workspace scope: ${input}`,
-      );
-    }
-  }
-
-  #assertLexicallyWithin(candidate: string, input: string): void {
+  #assertWithin(candidate: string, input: string): void {
     if (this.#scope === "process") return;
     if (!within(this.root, candidate)) {
       throw new ToolExecutionError(
@@ -445,7 +426,7 @@ class WorkspacePaths {
     let candidate = start;
     while (true) {
       try {
-        await this.#assertCanonicalWithin(await realpath(candidate), input);
+        this.#assertWithin(await realpath(candidate), input);
         return;
       } catch (error) {
         if (recordErrorCode(error) !== "ENOENT") throw error;
