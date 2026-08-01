@@ -290,6 +290,7 @@ async function inspectTarball(
 
   if (manifest.name === "jixu-ai") {
     assert.equal(manifest.bin?.jixu, "./dist/cli-bin.js");
+    assert.ok(files.has("README.md"), "jixu-ai tarball misses README.md");
     assert.ok(files.has("dist/cli-bin.js"), "jixu-ai tarball misses its command launcher");
     for (const path of [
       "dist/tree-sitter-assets/bash/LICENSE",

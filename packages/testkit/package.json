@@ -1,6 +1,6 @@
 {
   "name": "jixu-testkit",
-  "version": "0.1.0-beta.0",
+  "version": "0.1.0-beta.1",
   "description": "Deterministic fixtures and Store contracts for Jixu.",
   "type": "module",
   "license": "MIT",
