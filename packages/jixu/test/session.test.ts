@@ -21,10 +21,18 @@ import { createNodeTools } from "jixu-tools-node";
 import { createThreadController } from "../src/thread-controller.ts";
 import type { ThreadControllerSnapshot } from "../src/tui-model.ts";
 
-test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 JX-AC-040 JX-AC-041 TUI keeps public text, Tool progress, and durable receipts continuous", async () => {
+test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 JX-AC-040 JX-AC-041 TUI keeps public text, Tool progress, and durable receipts continuous", { timeout: 10_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "jixu-controller-"));
   try {
     await writeFile(join(root, "note.txt"), "durable hello", "utf8");
+    let resolveReadFrame = (): void => undefined;
+    let resolveReadingFrame = (): void => undefined;
+    const readFrame = new Promise<void>((resolve) => {
+      resolveReadFrame = resolve;
+    });
+    const readingFrame = new Promise<void>((resolve) => {
+      resolveReadingFrame = resolve;
+    });
     let calls = 0;
     const effects: ModelGenerateEffect[] = [];
     const driver: ModelDriver = {
@@ -53,14 +61,14 @@ test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 JX-AC-040 JX-AC-041 TUI keeps publ
             threadId: effect.threadId,
             type: "model.output_text.delta",
           });
-          await new Promise((resolve) => setTimeout(resolve, 35));
+          await readFrame;
           context.signals.emit({
             data: { delta: "ing" },
             kind: "signal",
             threadId: effect.threadId,
             type: "model.output_text.delta",
           });
-          await new Promise((resolve) => setTimeout(resolve, 40));
+          await readingFrame;
           return {
             status: "succeeded",
             value: {
@@ -143,6 +151,8 @@ test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 JX-AC-040 JX-AC-041 TUI keeps publ
     const unsubscribe = controller.subscribe(() => {
       const snapshot = controller.getSnapshot();
       observedLiveText.push(snapshot.streamingText);
+      if (snapshot.streamingText === "Read") resolveReadFrame();
+      if (snapshot.streamingText === "Reading") resolveReadingFrame();
       observedPresentation.push({
         activity: snapshot.activity,
         streamingText: snapshot.streamingText,
