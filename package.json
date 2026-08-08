@@ -12,6 +12,7 @@
     "build:cli": "pnpm run build:packages && node scripts/build-cli-artifact.ts",
     "clean:packages": "tsc -b tsconfig.build.json --clean",
     "pack:packages": "node scripts/package-artifacts.ts --out .artifacts/packages",
+    "pack:facade": "node scripts/package-artifacts.ts --out .artifacts/facade --facade-only",
     "dev": "pnpm run build:packages && bun run packages/jixu/src/cli.tsx",
     "typecheck": "pnpm run build:packages && tsc --noEmit",
     "test": "pnpm run build:packages && node --test",
@@ -19,7 +20,8 @@
     "test:packages": "node scripts/verify-package-portability.ts",
     "lint": "node scripts/lint.ts",
     "check": "pnpm run build:packages && tsc --noEmit && pnpm run lint && node --test && pnpm --filter jixu-ai test:tui",
-    "check:release": "pnpm run check && pnpm run test:packages"
+    "check:release": "pnpm run check && pnpm run test:packages",
+    "check:facade-release": "pnpm run check && node scripts/verify-facade-release.ts"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.5",

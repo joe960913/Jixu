@@ -62,6 +62,7 @@ export interface PackageArtifactCandidate {
 }
 
 export interface BuildPackageArtifactsOptions {
+  readonly facadeOnly?: boolean;
   readonly nativeArtifactsRoot?: string;
 }
 
@@ -291,6 +292,7 @@ async function inspectTarball(
   if (manifest.name === "jixu-ai") {
     assert.equal(manifest.bin?.jixu, "./dist/cli-bin.js");
     assert.ok(files.has("README.md"), "jixu-ai tarball misses README.md");
+    assert.equal(files.has("dist/jixu"), false, "jixu-ai tarball embeds a native executable");
     assert.ok(files.has("dist/cli-bin.js"), "jixu-ai tarball misses its command launcher");
     for (const path of [
       "dist/tree-sitter-assets/bash/LICENSE",
@@ -363,7 +365,9 @@ export async function buildPackageArtifacts(
   await runCommand("pnpm", ["run", "build:packages"], { cwd: repositoryRoot });
 
   let cliArtifacts: readonly JixuCliArtifact[];
-  if (options.nativeArtifactsRoot === undefined) {
+  if (options.facadeOnly === true) {
+    cliArtifacts = [];
+  } else if (options.nativeArtifactsRoot === undefined) {
     const cliArtifact = await buildHostCliArtifact(
       join(resolvedDestination, "native"),
     );
@@ -398,9 +402,13 @@ export async function buildPackageArtifacts(
     sourceManifests.set(manifest.name, manifest);
   }
   assert.equal(
-    new Set([...sourceManifests.values()].map((manifest) => manifest.version)).size,
+    new Set(
+      [...sourceManifests.values()]
+        .filter((manifest) => manifest.name !== "jixu-ai")
+        .map((manifest) => manifest.version),
+    ).size,
     1,
-    "all Jixu library and CLI packages must share one exact version",
+    "reusable Jixu Framework and CLI packages must share one exact version",
   );
   const facade = sourceManifests.get("jixu-ai");
   assert.ok(facade, "source manifests miss jixu-ai");
@@ -428,13 +436,27 @@ export async function buildPackageArtifacts(
       manifest.repository.directory,
       `packages/${target.packageDirectory}`,
     );
+    const artifact = cliArtifacts.find(
+      (candidate) => candidate.target.packageName === target.packageName,
+    );
+    if (artifact !== undefined) {
+      assert.equal(
+        artifact.metadata.version,
+        manifest.version,
+        `${target.packageName} artifact version drifted from its package manifest`,
+      );
+    }
   }
 
   const candidates: PackageArtifactCandidate[] = [];
-  for (const directory of [
-    ...libraryPackageDirectories,
-    ...cliArtifacts.map((artifact) => artifact.target.packageDirectory),
-  ]) {
+  const candidateDirectories =
+    options.facadeOnly === true
+      ? ["jixu"]
+      : [
+          ...libraryPackageDirectories,
+          ...cliArtifacts.map((artifact) => artifact.target.packageDirectory),
+        ];
+  for (const directory of candidateDirectories) {
     const packageRoot = join(repositoryRoot, "packages", directory);
     const sourceManifest = [...sourceManifests.values()].find(
       (manifest) => manifest.repository.directory === `packages/${directory}`,
@@ -494,9 +516,18 @@ const invokedPath = process.argv[1] === undefined ? undefined : resolve(process.
 if (invokedPath === fileURLToPath(import.meta.url)) {
   const destination = cliDestination();
   const nativeArtifactsRoot = optionValue("--native-root");
+  const facadeOnly = process.argv.includes("--facade-only");
+  assert.equal(
+    facadeOnly && nativeArtifactsRoot !== undefined,
+    false,
+    "--facade-only cannot be combined with --native-root",
+  );
   const candidates = await buildPackageArtifacts(
     destination,
-    nativeArtifactsRoot === undefined ? {} : { nativeArtifactsRoot },
+    {
+      ...(nativeArtifactsRoot === undefined ? {} : { nativeArtifactsRoot }),
+      ...(facadeOnly ? { facadeOnly: true } : {}),
+    },
   );
   for (const candidate of candidates) {
     console.log(
