@@ -1181,8 +1181,45 @@ try {
     ? undefined
     : setup.renderer.root.findDescendantById(
         `tool-detail-${editOperation.effectId}`,
-      ) as Renderable | undefined;
+      ) as ScrollBoxRenderable | undefined;
   assert.equal(editDetail?.height, 8);
+  const toolTranscriptScrollbox = setup.renderer.root.findDescendantById(
+    "transcript-scrollbox",
+  ) as ScrollBoxRenderable | undefined;
+  assert.notEqual(toolTranscriptScrollbox, undefined);
+  const maxToolTranscriptScrollTop = toolTranscriptScrollbox === undefined
+    ? 0
+    : Math.max(
+        0,
+        toolTranscriptScrollbox.scrollHeight -
+          toolTranscriptScrollbox.viewport.height,
+      );
+  const toolTranscriptStart = Math.max(0, maxToolTranscriptScrollTop - 2);
+  await act(async () => {
+    editDetail?.scrollTo(0);
+    toolTranscriptScrollbox?.scrollTo(toolTranscriptStart);
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const editDetailStart = editDetail?.scrollTop ?? 0;
+  await act(async () => {
+    if (editDetail !== undefined) {
+      await setup.mockMouse.scroll(
+        editDetail.x + 1,
+        editDetail.y + 2,
+        "down",
+      );
+    }
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  // JX-AC-041: an overflowing Tool detail owns wheel input while it can move.
+  assert.ok((editDetail?.scrollTop ?? 0) > editDetailStart);
+  assert.equal(toolTranscriptScrollbox?.scrollTop, toolTranscriptStart);
   await act(async () => {
     if (editDetail !== undefined) {
       for (let index = 0; index < 6; index += 1) {
@@ -1199,6 +1236,49 @@ try {
     await setup.flush();
   });
   assert.match(setup.captureCharFrame(), /\+ new line 1/);
+
+  const maxEditDetailScrollTop = editDetail === undefined
+    ? 0
+    : Math.max(0, editDetail.scrollHeight - editDetail.viewport.height);
+  await act(async () => {
+    editDetail?.scrollTo(maxEditDetailScrollTop);
+    toolTranscriptScrollbox?.scrollTo(toolTranscriptStart);
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  await act(async () => {
+    if (editDetail !== undefined) {
+      await setup.mockMouse.scroll(
+        editDetail.x + 1,
+        editDetail.y + 2,
+        "down",
+      );
+    }
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.ok(
+    (toolTranscriptScrollbox?.scrollTop ?? 0) > toolTranscriptStart,
+  );
+  await act(async () => {
+    if (toolTranscriptScrollbox !== undefined) {
+      toolTranscriptScrollbox.scrollTo(
+        Math.max(
+          0,
+          toolTranscriptScrollbox.scrollHeight -
+            toolTranscriptScrollbox.viewport.height,
+        ),
+      );
+    }
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
 
   if (directThreadId !== null && directThreadId !== undefined) {
     await act(async () => {
