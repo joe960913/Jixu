@@ -1,4 +1,4 @@
-# 阶段 35：npm README 与 beta.1 修复发布
+# 阶段 35：npm README 与 facade-only 修复发布
 
 | 项目 | 内容 |
 | --- | --- |
@@ -18,7 +18,7 @@
 
 - 为 `jixu-ai` 增加简洁、独立且适合 npm 展示的英文 README。
 - 将 README 纳入 facade package files，并把缺失检查加入正式 pack pipeline。
-- 仅将 facade 升级到 `0.1.0-beta.1`，精确复用已经发布和验证的 `0.1.0-beta.0` Framework 与 native packages。
+- 仅升级 facade，精确复用已经发布和验证的 `0.1.0-beta.0` Framework 与 native packages；最终 README projection 修复版本为 `0.1.0-beta.2`。
 - 将公开 facade import 实际需要的 `jixu-tools-jina` 与 `jixu-tools-node` 从开发依赖提升为 runtime dependencies。
 
 ### 本阶段明确不做
@@ -74,7 +74,7 @@ README 是公开包的核心入口，必须像 executable、types 和 licenses �
 
 ## 9. 下一阶段入口
 
-完成 facade-only `beta.1` 发布后，从 npm public metadata 确认 README、版本、dist-tags 和 tarball integrity。
+完成 facade-only `beta.2` 发布后，从 npm public metadata 确认 README、版本、dist-tags 和 tarball integrity。
 
 ## 10. 文件索引
 
