@@ -1,6 +1,6 @@
 {
   "name": "jixu-cli-linux-x64",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0",
   "description": "Jixu native TUI for Linux x64 with glibc.",
   "license": "MIT",
   "repository": {

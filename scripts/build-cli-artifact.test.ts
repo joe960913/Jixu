@@ -1,13 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resolveMacSigningPlan } from "./build-cli-artifact.ts";
+import {
+  resolveJixuReleaseChannel,
+  resolveMacSigningPlan,
+} from "./build-cli-artifact.ts";
 
-test("JX-AC-051 npm pre-releases allow ad-hoc macOS signing without weakening stable releases", () => {
+test("JX-AC-051 npm signing is independent from SemVer and unsupported channels fail closed", () => {
+  assert.equal(resolveJixuReleaseChannel(undefined), "local");
+  assert.equal(resolveJixuReleaseChannel("npm"), "npm");
+  assert.throws(
+    () => resolveJixuReleaseChannel("direct"),
+    /unsupported JIXU_RELEASE_CHANNEL "direct"/u,
+  );
   assert.deepEqual(
     resolveMacSigningPlan({
-      publicRelease: true,
-      version: "0.1.0-beta.1",
+      releaseChannel: "npm",
     }),
     {
       identity: "-",
@@ -15,24 +23,26 @@ test("JX-AC-051 npm pre-releases allow ad-hoc macOS signing without weakening st
       timestamp: false,
     },
   );
-  assert.throws(
-    () =>
-      resolveMacSigningPlan({
-        publicRelease: true,
-        version: "1.0.0",
-      }),
-    /stable public macOS releases require JIXU_CODESIGN_IDENTITY/u,
-  );
   assert.deepEqual(
     resolveMacSigningPlan({
       identity: "Developer ID Application: Jixu",
-      publicRelease: true,
-      version: "1.0.0",
+      releaseChannel: "npm",
     }),
     {
       identity: "Developer ID Application: Jixu",
       signature: "developer-id",
       timestamp: true,
+    },
+  );
+  assert.deepEqual(
+    resolveMacSigningPlan({
+      identity: "Developer ID Application: Jixu",
+      releaseChannel: "local",
+    }),
+    {
+      identity: "Developer ID Application: Jixu",
+      signature: "developer-id",
+      timestamp: false,
     },
   );
 });

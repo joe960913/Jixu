@@ -3,16 +3,16 @@
 Jixu is a durable single-Agent Harness for TypeScript. Install the TUI, run
 `jixu`, and continue work in a durable Thread.
 
-> Jixu is pre-release. The public API may change before 1.0.
+> Jixu is pre-1.0. The public API may change before 1.0.
 
 ![Jixu terminal interface](https://raw.githubusercontent.com/joe960913/Jixu/main/assets/jixu-tui.png)
 
 ## Install
 
 ```bash
-npm install -g jixu-ai@beta
-# pnpm add -g jixu-ai@beta
-# bun add -g jixu-ai@beta
+npm install -g jixu-ai
+# pnpm add -g jixu-ai
+# bun add -g jixu-ai
 ```
 
 Then start Jixu from any terminal:
@@ -24,10 +24,10 @@ jixu
 Ephemeral execution is also supported:
 
 ```bash
-npx jixu-ai@beta
-# pnpm dlx jixu-ai@beta
-# yarn dlx jixu-ai@beta
-# bunx jixu-ai@beta
+npx jixu-ai
+# pnpm dlx jixu-ai
+# yarn dlx jixu-ai
+# bunx jixu-ai
 ```
 
 Supported native targets are macOS arm64, macOS x64, and Linux x64 with glibc.

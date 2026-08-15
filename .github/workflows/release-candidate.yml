@@ -10,7 +10,7 @@ jobs:
   build-native:
     name: ${{ matrix.target }}
     env:
-      JIXU_PUBLIC_RELEASE: "1"
+      JIXU_RELEASE_CHANNEL: npm
     strategy:
       fail-fast: false
       matrix:

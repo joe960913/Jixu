@@ -45,6 +45,8 @@ export interface MacSigningPlan {
   readonly timestamp: boolean;
 }
 
+export type JixuReleaseChannel = "local" | "npm";
+
 export const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 
 function sha256(bytes: Uint8Array): string {
@@ -94,37 +96,36 @@ function hostTarget(): JixuCliTarget {
   return target;
 }
 
+export function resolveJixuReleaseChannel(
+  value: string | undefined,
+): JixuReleaseChannel {
+  const releaseChannel = value ?? "local";
+  assert.ok(
+    releaseChannel === "local" || releaseChannel === "npm",
+    `unsupported JIXU_RELEASE_CHANNEL ${JSON.stringify(releaseChannel)}`,
+  );
+  return releaseChannel;
+}
+
 export function resolveMacSigningPlan({
   identity = "-",
-  publicRelease,
-  version,
+  releaseChannel,
 }: {
   readonly identity?: string;
-  readonly publicRelease: boolean;
-  readonly version: string;
+  readonly releaseChannel: JixuReleaseChannel;
 }): MacSigningPlan {
-  const prerelease = /^\d+\.\d+\.\d+-/u.test(version);
-  if (publicRelease && !prerelease) {
-    assert.notEqual(
-      identity,
-      "-",
-      "stable public macOS releases require JIXU_CODESIGN_IDENTITY",
-    );
-  }
   return {
     identity,
     signature: identity === "-" ? "ad-hoc" : "developer-id",
-    timestamp: publicRelease && identity !== "-",
+    timestamp: releaseChannel === "npm" && identity !== "-",
   };
 }
 
 async function signMacExecutable(
   binaryPath: string,
-  version: string,
 ): Promise<"ad-hoc" | "developer-id"> {
   const plan = resolveMacSigningPlan({
-    publicRelease: process.env.JIXU_PUBLIC_RELEASE === "1",
-    version,
+    releaseChannel: resolveJixuReleaseChannel(process.env.JIXU_RELEASE_CHANNEL),
     ...(process.env.JIXU_CODESIGN_IDENTITY === undefined
       ? {}
       : { identity: process.env.JIXU_CODESIGN_IDENTITY }),
@@ -191,7 +192,7 @@ export async function buildCliArtifact(
 
   const signature: JixuCliArtifact["metadata"]["signature"] =
     target.platform === "darwin"
-      ? await signMacExecutable(binaryPath, version)
+      ? await signMacExecutable(binaryPath)
       : "none";
 
   const versionResult = await runCommand(binaryPath, ["--version"], {

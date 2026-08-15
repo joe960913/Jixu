@@ -1,7 +1,7 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.33
-**Status:** normative, pre-release
+**Version:** 0.4.34
+**Status:** normative, pre-1.0
 **Last updated:** 2026-08-21
 
 ## 1. Product definition
@@ -1136,8 +1136,8 @@ implement another TUI, Harness, or Thread lifecycle.
   a credential gate, demo Agent, alternate state machine, or reduced runtime.
 - **JX-CLI-004.** Each supported target MUST be built as a Bun standalone
   executable with the matching OpenTUI native package and embedded runtime
-  assets. The initial pre-release target set is macOS arm64, macOS x64, and
-  Linux x64 with glibc. Other targets are not part of this release line.
+  assets. The initial npm target set is macOS arm64, macOS x64, and Linux x64
+  with glibc. Other targets are not part of this release line.
 - **JX-CLI-005.** Platform packages produced from one native artifact set MUST
   have the same exact version. `jixu-ai` MAY advance independently for a
   facade-only documentation or packaging correction when its launcher target
@@ -1154,13 +1154,15 @@ implement another TUI, Harness, or Thread lifecycle.
   native bytes and checksums from the same release manifest rather than build a
   second executable lineage.
 - **JX-CLI-007.** macOS executables MUST be signed after compilation and
-  verified before packaging. A SemVer pre-release published only through npm
-  MAY use an ad-hoc signature with the required JavaScript JIT entitlements;
-  it MUST use a non-`latest` pre-release dist-tag and MUST NOT claim Developer
-  ID or Gatekeeper trust. A stable release or a native archive distributed
-  directly through GitHub Releases or Homebrew MUST use the maintainer-approved
-  Developer ID signing and notarization identity. Signing changes the release
-  bytes, so checksums MUST be computed afterward.
+  verified before packaging. An npm-only release MAY use an ad-hoc signature
+  with the required JavaScript JIT entitlements independently of its SemVer,
+  and MUST NOT claim Developer ID, notarization, or Gatekeeper trust. The npm
+  artifact pipeline MUST select its release channel explicitly and fail closed
+  for unsupported channels. A native archive distributed directly through
+  GitHub Releases or Homebrew MUST use the maintainer-approved Developer ID
+  signing and notarization identity through a separate direct-distribution
+  path. Signing changes the release bytes, so checksums MUST be computed
+  afterward.
 ## 17. Acceptance criteria
 
 - **JX-AC-001 — Single-turn success.** One input durably requests a model,
@@ -1475,7 +1477,10 @@ implement another TUI, Harness, or Thread lifecycle.
   shows the credential-free workspace required by `JX-TUI-001`, accepts the
   ordinary quit path, restores terminal ownership, and passes executable format
   and SHA-256 manifest verification. The executable packed into the matching
-  npm platform artifact MUST be byte-identical to the manifest entry.
+  npm platform artifact MUST be byte-identical to the manifest entry. The
+  signing-plan contract MUST treat SemVer and distribution trust as independent:
+  local and npm channels are explicit, npm MAY select ad-hoc signing, and an
+  unsupported or direct-distribution channel fails closed in the npm pipeline.
 
 The minimum validation for a code change is targeted tests, typecheck, lint, and
 `git diff --check`. Release work also runs the complete acceptance suite and
@@ -1810,6 +1815,17 @@ channel before aligning `beta`, because npm did not refresh its top-level
 README projection when `beta.1` was first published only under `beta` and the
 tag was moved afterward. The tarball content and exact `0.1.0-beta.0`
 dependency set are otherwise unchanged.
+
+Version 0.4.34 removes the prerelease suffix from the npm release line and
+decouples SemVer from macOS distribution trust. All Framework, facade, and
+native npm packages advance together to `0.1.0`, so the installed launcher,
+selected executable, package metadata, and `--version` output remain exact.
+The npm-only artifact channel may continue to use ad-hoc signing without
+claiming Developer ID, notarization, or Gatekeeper trust; future direct native
+distribution retains those stronger requirements through a separate fail-closed
+path. Install documentation no longer uses the `beta` dist-tag. This changes
+release metadata, native embedded version bytes, and signing policy only; it
+adds no Thread, Event, State, configuration, or stored-data migration.
 
 ## 19. Implementation order
 
