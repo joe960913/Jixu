@@ -45,6 +45,8 @@ export interface MacSigningPlan {
   readonly timestamp: boolean;
 }
 
+// GitHub Releases reuse the exact npm artifact set; they are intentionally not
+// a native build channel because rebuilding or re-signing would create new bytes.
 export type JixuReleaseChannel = "local" | "npm";
 
 export const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));

@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.34
+**Version:** 0.4.35
 **Status:** normative, pre-1.0
 **Last updated:** 2026-08-21
 
@@ -1150,19 +1150,24 @@ implement another TUI, Harness, or Thread lifecycle.
   of every native artifact before publication.
 - **JX-CLI-006.** The npm launcher MAY require the package Node.js floor, but
   a selected standalone executable MUST require neither Node.js nor Bun at
-  runtime. Future GitHub Release or Homebrew distribution MUST reuse the exact
-  native bytes and checksums from the same release manifest rather than build a
-  second executable lineage.
+  runtime. A GitHub Release that distributes native artifacts MUST reuse the
+  exact native bytes and checksums from the matching npm release manifest; it
+  MUST NOT rebuild or re-sign them into a second executable lineage. A future
+  Homebrew distribution MUST consume a maintainer-approved, target-tested
+  artifact manifest and MUST NOT compile the executable during installation.
 - **JX-CLI-007.** macOS executables MUST be signed after compilation and
-  verified before packaging. An npm-only release MAY use an ad-hoc signature
-  with the required JavaScript JIT entitlements independently of its SemVer,
-  and MUST NOT claim Developer ID, notarization, or Gatekeeper trust. The npm
-  artifact pipeline MUST select its release channel explicitly and fail closed
-  for unsupported channels. A native archive distributed directly through
-  GitHub Releases or Homebrew MUST use the maintainer-approved Developer ID
-  signing and notarization identity through a separate direct-distribution
-  path. Signing changes the release bytes, so checksums MUST be computed
-  afterward.
+  verified before packaging. An npm package release and a GitHub Release that
+  reuses its exact native manifest MAY use an ad-hoc signature with the required
+  JavaScript JIT entitlements independently of SemVer. Both surfaces MUST
+  disclose that those artifacts do not provide Developer ID, notarization, or
+  Gatekeeper trust guarantees. The native build pipeline MUST select its build
+  channel explicitly and fail closed for unsupported channels. GitHub Release
+  is a publication surface for an existing npm artifact set, not a second build
+  channel, and MUST NOT trigger a fresh direct-distribution build. A native
+  archive distributed through Homebrew MUST use the maintainer-approved
+  Developer ID signing and notarization identity through a separate
+  direct-distribution path. Signing changes the release bytes, so checksums
+  MUST be computed afterward.
 ## 17. Acceptance criteria
 
 - **JX-AC-001 — Single-turn success.** One input durably requests a model,
@@ -1479,8 +1484,10 @@ implement another TUI, Harness, or Thread lifecycle.
   and SHA-256 manifest verification. The executable packed into the matching
   npm platform artifact MUST be byte-identical to the manifest entry. The
   signing-plan contract MUST treat SemVer and distribution trust as independent:
-  local and npm channels are explicit, npm MAY select ad-hoc signing, and an
-  unsupported or direct-distribution channel fails closed in the npm pipeline.
+  local and npm build channels are explicit, npm MAY select ad-hoc signing, and
+  a GitHub Release MUST publish the exact npm candidate rather than enter a
+  distinct build channel. Unsupported channels, including a fresh
+  `github-release` or generic direct-distribution build, fail closed.
 
 The minimum validation for a code change is targeted tests, typecheck, lint, and
 `git diff --check`. Release work also runs the complete acceptance suite and
@@ -1826,6 +1833,16 @@ distribution retains those stronger requirements through a separate fail-closed
 path. Install documentation no longer uses the `beta` dist-tag. This changes
 release metadata, native embedded version bytes, and signing policy only; it
 adds no Thread, Event, State, configuration, or stored-data migration.
+
+Version 0.4.35 permits GitHub Releases to distribute the exact target-tested
+native bytes from the matching npm release manifest even when macOS artifacts
+use ad-hoc signing. GitHub Release notes must disclose the absence of Developer
+ID, notarization, and Gatekeeper trust guarantees. GitHub Release remains a
+publication surface rather than a second native build channel, so its artifacts
+cannot be rebuilt or re-signed under the same version. Homebrew retains its
+separate Developer ID and notarization requirement. This changes distribution
+and trust policy only; it changes no package version, executable bytes, Thread,
+Event, State, configuration, or stored data.
 
 ## 19. Implementation order
 

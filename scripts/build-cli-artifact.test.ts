@@ -6,9 +6,13 @@ import {
   resolveMacSigningPlan,
 } from "./build-cli-artifact.ts";
 
-test("JX-AC-051 npm signing is independent from SemVer and unsupported channels fail closed", () => {
+test("JX-AC-051 GitHub Release reuses npm artifacts and rebuild channels fail closed", () => {
   assert.equal(resolveJixuReleaseChannel(undefined), "local");
   assert.equal(resolveJixuReleaseChannel("npm"), "npm");
+  assert.throws(
+    () => resolveJixuReleaseChannel("github-release"),
+    /unsupported JIXU_RELEASE_CHANNEL "github-release"/u,
+  );
   assert.throws(
     () => resolveJixuReleaseChannel("direct"),
     /unsupported JIXU_RELEASE_CHANNEL "direct"/u,
