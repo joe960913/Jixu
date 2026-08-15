@@ -14,6 +14,7 @@ import { createThreadEvent } from "./events.ts";
 import type { AnyThreadEvent } from "./events.ts";
 import { assertJsonValue, isJsonObject, jsonEquals } from "./json.ts";
 import type { JsonObject } from "./json.ts";
+import { prepareThreadInput } from "./input.ts";
 import { ObservationBroker } from "./observation.ts";
 import type {
   Clock,
@@ -77,6 +78,7 @@ export class Harness {
     this.#store = config.store ?? new InMemoryEventStore();
     this.#dispatcher = new EffectDispatcher({
       agent: config.agent,
+      artifacts: this.#store,
       modelDrivers: config.modelDrivers,
       observations: this.#observations,
       signals: config.signals ?? new NoopSignalSink(),
@@ -170,8 +172,9 @@ export class Harness {
   }
 
   async #fork(parentThreadId: string, options: ForkOptions): Promise<Thread> {
-    if (typeof options.input !== "string" || options.input.trim().length === 0) {
-      throw new InvalidTransitionError("Fork input must be a non-empty string");
+    const preparedInput = await prepareThreadInput(options.input);
+    for (const artifact of preparedInput.artifacts) {
+      await this.#store.putArtifact(artifact.reference, artifact.bytes);
     }
     const parentEvents = await this.#store.read(parentThreadId);
     const forkIndex = parentEvents.findIndex((event) => event.id === options.at);
@@ -210,7 +213,7 @@ export class Harness {
       createThreadEvent({
         causationId: forked.id,
         id: this.#ids.next("event"),
-        payload: { content: options.input },
+        payload: preparedInput.payload,
         threadId: childThreadId,
         sequence: state.revision + 1,
         timestamp: this.#clock.now(),

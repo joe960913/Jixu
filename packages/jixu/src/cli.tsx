@@ -260,13 +260,11 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
     exitOnCtrlC: false,
     exitSignals: [],
   });
-  const selectionClipboard = installJixuSelectionClipboard(
-    renderer,
-    createClipboard({
-      host: createHostClipboard(),
-      terminal: createRendererClipboardAdapter(renderer),
-    }),
-  );
+  const clipboard = createClipboard({
+    host: createHostClipboard(),
+    terminal: createRendererClipboardAdapter(renderer),
+  });
+  const selectionClipboard = installJixuSelectionClipboard(renderer, clipboard);
   const root = createRoot(renderer);
   const stopOnInterrupt = () => requestQuit("interrupt");
   const stopOnTerminate = () => requestQuit("terminate");
@@ -275,6 +273,7 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
   try {
     root.render(
       <JixuApp
+        clipboard={clipboard}
         connect={connect}
         initial={{
           api: selectedApi,

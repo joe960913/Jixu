@@ -3,6 +3,7 @@ import { cloneJson, isJsonObject } from "./json.ts";
 import type { JsonObject, JsonValue } from "./json.ts";
 import { createInitialThreadMetrics } from "./metrics.ts";
 import type { ThreadMetrics } from "./metrics.ts";
+import type { StoredInputPart } from "./input.ts";
 import { parsePlanUpdateProposal } from "./plan.ts";
 import type {
   PendingPlanUpdate,
@@ -47,6 +48,7 @@ export interface ToolCall {
 
 export interface UserMessage {
   readonly content: string;
+  readonly parts?: readonly StoredInputPart[];
   readonly role: "user";
 }
 
@@ -154,6 +156,7 @@ export interface ToolApproval {
 export interface QueuedInput {
   readonly content: string;
   readonly eventId: string;
+  readonly parts?: readonly StoredInputPart[];
 }
 
 export interface PendingPlanRejection {

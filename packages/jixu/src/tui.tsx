@@ -1,4 +1,5 @@
 import { useKeyboard } from "@opentui/react";
+import type { ClipboardService } from "@opentui/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ExecutableTool } from "jixu-core";
@@ -26,6 +27,7 @@ export interface JixuAppControls {
 }
 
 export interface JixuAppProps {
+  readonly clipboard?: Pick<ClipboardService, "read">;
   readonly connect: (
     config: JixuConnectionConfig,
     controls: JixuAppControls,
@@ -55,6 +57,7 @@ function completeInitial(
 }
 
 export function JixuApp({
+  clipboard,
   connect,
   initial,
   motion = true,
@@ -140,6 +143,7 @@ export function JixuApp({
   return (
     <AgentWorkspace
       active={active}
+      clipboard={clipboard}
       connectionError={connectionError}
       motion={motion}
       onConfigure={() => {

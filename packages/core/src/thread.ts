@@ -1,10 +1,11 @@
 import type { ThreadState, ToolApprovalDecision } from "./domain.ts";
 import type { AnyThreadEvent } from "./events.ts";
 import type { ThreadStreamItem } from "./ports.ts";
+import type { ThreadInput } from "./input.ts";
 
 export interface ForkOptions {
   readonly at: string;
-  readonly input: string;
+  readonly input: ThreadInput;
 }
 
 export interface ThreadStreamOptions {
@@ -24,7 +25,7 @@ export interface Thread {
   fork(options: ForkOptions): Promise<Thread>;
   pause(): Promise<ThreadState>;
   replay(): Promise<ThreadState>;
-  send(input: string): Promise<ThreadState>;
+  send(input: ThreadInput): Promise<ThreadState>;
   state(): Promise<ThreadState>;
   stream(options?: ThreadStreamOptions): AsyncIterable<ThreadStreamItem>;
   wait(): Promise<ThreadState>;

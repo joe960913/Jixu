@@ -60,10 +60,11 @@
     "jixu-cli-linux-x64": "workspace:*"
   },
   "devDependencies": {
-    "jixu-llm": "workspace:*",
-    "jixu-store-jsonl": "workspace:*",
     "@opentui/core": "0.5.4",
     "@opentui/react": "0.5.4",
+    "fast-png": "8.0.0",
+    "jixu-llm": "workspace:*",
+    "jixu-store-jsonl": "workspace:*",
     "react": "19.2.8",
     "react-devtools-core": "7.0.1",
     "ws": "8.21.3"

@@ -16,6 +16,12 @@ import {
   jsonEquals,
 } from "./json.ts";
 import type { JsonObject, JsonValue } from "./json.ts";
+import {
+  MAX_INPUT_IMAGE_BYTES,
+  MAX_INPUT_IMAGE_PLACEHOLDER_LENGTH,
+  MAX_INPUT_IMAGES,
+  MAX_INPUT_TOTAL_IMAGE_BYTES,
+} from "./input.ts";
 import { parseModelAccounting, parseThreadMetrics } from "./metrics.ts";
 import {
   materializePlanUpdates,
@@ -116,7 +122,10 @@ function assertModelMessage(
   const item = object(value, label);
   const role = string(item.role, `${label}.role`);
   if (role === "user") {
-    string(item.content, `${label}.content`);
+    const content = string(item.content, `${label}.content`);
+    if (item.parts !== undefined) {
+      assertStoredInputParts(item.parts, content, `${label}.parts`);
+    }
     return;
   }
   if (role === "assistant") {
@@ -135,6 +144,88 @@ function assertModelMessage(
     return;
   }
   throw new SchemaValidationError(`${label}.role is unsupported`);
+}
+
+function assertStoredInputParts(
+  value: JsonValue | undefined,
+  content: string,
+  label: string,
+): void {
+  const parts = array(value, label);
+  const display: string[] = [];
+  const placeholders = new Set<string>();
+  let imageCount = 0;
+  let totalImageBytes = 0;
+  parts.forEach((value, index) => {
+    const partLabel = `${label}[${index}]`;
+    const part = object(value, partLabel);
+    if (part.type === "text") {
+      display.push(string(part.text, `${partLabel}.text`));
+      return;
+    }
+    if (part.type !== "image") {
+      throw new SchemaValidationError(`${partLabel}.type is unsupported`);
+    }
+    imageCount += 1;
+    if (imageCount > MAX_INPUT_IMAGES) {
+      throw new SchemaValidationError(
+        `${label} exceeds the image-count limit`,
+      );
+    }
+    const placeholder = string(
+      part.placeholder,
+      `${partLabel}.placeholder`,
+    );
+    if (
+      placeholder.length < 1 ||
+      placeholder.length > MAX_INPUT_IMAGE_PLACEHOLDER_LENGTH ||
+      !/^[\p{L}\p{N}][\p{L}\p{N} _-]*$/u.test(placeholder) ||
+      placeholders.has(placeholder)
+    ) {
+      throw new SchemaValidationError(
+        `${partLabel}.placeholder is invalid or duplicated`,
+      );
+    }
+    placeholders.add(placeholder);
+    const artifact = object(part.artifact, `${partLabel}.artifact`);
+    const digest = string(artifact.digest, `${partLabel}.artifact.digest`);
+    if (!/^sha256:[a-f0-9]{64}$/u.test(digest)) {
+      throw new SchemaValidationError(
+        `${partLabel}.artifact.digest is not SHA-256`,
+      );
+    }
+    const byteLength = integer(
+      artifact.byteLength,
+      `${partLabel}.artifact.byteLength`,
+    );
+    if (byteLength < 1 || byteLength > MAX_INPUT_IMAGE_BYTES) {
+      throw new SchemaValidationError(
+        `${partLabel}.artifact.byteLength is outside the image limit`,
+      );
+    }
+    totalImageBytes += byteLength;
+    if (totalImageBytes > MAX_INPUT_TOTAL_IMAGE_BYTES) {
+      throw new SchemaValidationError(
+        `${label} exceeds the total image-byte limit`,
+      );
+    }
+    if (
+      artifact.mediaType !== "image/png" &&
+      artifact.mediaType !== "image/jpeg" &&
+      artifact.mediaType !== "image/gif" &&
+      artifact.mediaType !== "image/webp"
+    ) {
+      throw new SchemaValidationError(
+        `${partLabel}.artifact.mediaType is unsupported`,
+      );
+    }
+    display.push(`[${placeholder}]`);
+  });
+  if (display.join("") !== content) {
+    throw new SchemaValidationError(
+      `${label} does not reproduce the accepted input content`,
+    );
+  }
 }
 
 function assertDriverError(
@@ -544,8 +635,18 @@ function assertThreadState(
 
   array(state.inputQueue, `${label}.inputQueue`).forEach((value, index) => {
     const queued = object(value, `${label}.inputQueue[${index}]`);
-    string(queued.content, `${label}.inputQueue[${index}].content`);
+    const content = string(
+      queued.content,
+      `${label}.inputQueue[${index}].content`,
+    );
     string(queued.eventId, `${label}.inputQueue[${index}].eventId`);
+    if (queued.parts !== undefined) {
+      assertStoredInputParts(
+        queued.parts,
+        content,
+        `${label}.inputQueue[${index}].parts`,
+      );
+    }
   });
 
   array(state.messages, `${label}.messages`).forEach((message, index) =>
@@ -890,7 +991,12 @@ const eventTypes = new Set<ThreadEventType>([
   "tool.requested",
 ]);
 
-function assertEventPayload(type: ThreadEventType, payload: JsonObject, threadId: string): void {
+function assertEventPayload(
+  type: ThreadEventType,
+  payload: JsonObject,
+  threadId: string,
+  schemaVersion: number,
+): void {
   switch (type) {
     case "approval.decided":
       string(payload.effectId, "payload.effectId");
@@ -932,11 +1038,39 @@ function assertEventPayload(type: ThreadEventType, payload: JsonObject, threadId
         throw new SchemaValidationError("payload.reasonCode is unsupported");
       }
       return;
-    case "input.received":
-      string(payload.content, "payload.content");
+    case "input.received": {
+      const content = string(payload.content, "payload.content");
+      if (schemaVersion === 5 && payload.parts !== undefined) {
+        throw new SchemaValidationError(
+          "Event schema version 5 input.received cannot contain structured parts",
+        );
+      }
+      if (payload.parts !== undefined) {
+        assertStoredInputParts(payload.parts, content, "payload.parts");
+      }
       return;
+    }
     case "model.requested":
     case "tool.requested": {
+      if (schemaVersion === 5 && type === "model.requested") {
+        const effectInput = object(
+          object(payload.effect, "payload.effect").input,
+          "payload.effect.input",
+        );
+        array(effectInput.messages, "payload.effect.input.messages").forEach(
+          (message, index) => {
+            const item = object(
+              message,
+              `payload.effect.input.messages[${index}]`,
+            );
+            if (item.role === "user" && item.parts !== undefined) {
+              throw new SchemaValidationError(
+                "Event schema version 5 model.requested cannot contain structured parts",
+              );
+            }
+          },
+        );
+      }
       const effect = parseEffect(payload.effect, "payload.effect", threadId);
       if (
         (type === "model.requested" && effect.type !== "model.generate") ||
@@ -1017,7 +1151,7 @@ export function decodeThreadEvent(value: unknown): AnyThreadEvent {
   optionalString(event.causationId, "Event.causationId");
   optionalString(event.correlationId, "Event.correlationId");
   const payload = object(event.payload, "Event.payload");
-  assertEventPayload(type, payload, threadId);
+  assertEventPayload(type, payload, threadId, schemaVersion);
   return cloneJson(event) as unknown as AnyThreadEvent;
 }
 

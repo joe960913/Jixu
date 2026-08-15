@@ -56,6 +56,13 @@ export class InvalidTransitionError extends JixuError {
   }
 }
 
+export class ArtifactError extends JixuError {
+  constructor(code: string, message: string) {
+    super(code, message);
+    this.name = "ArtifactError";
+  }
+}
+
 export class UnsupportedEventError extends JixuError {
   constructor(message: string) {
     super("unsupported_event", message);

@@ -12,11 +12,12 @@ import type {
 import type { JsonValue } from "./json.ts";
 import type { ModelAccounting } from "./metrics.ts";
 import type { PlanSnapshot, PlanUpdateProposal } from "./plan.ts";
+import type { AcceptedInput } from "./input.ts";
 
-export const CURRENT_EVENT_SCHEMA_VERSION = 5;
+export const CURRENT_EVENT_SCHEMA_VERSION = 6;
 
 export function isSupportedEventSchemaVersion(value: number): boolean {
-  return value === CURRENT_EVENT_SCHEMA_VERSION;
+  return value === 5 || value === CURRENT_EVENT_SCHEMA_VERSION;
 }
 
 export interface ThreadEvent<TType extends string, TPayload> {
@@ -44,7 +45,7 @@ export interface ThreadEventPayloads {
     readonly toolCallId: string;
   };
   readonly "context.cleared": Record<string, never>;
-  readonly "input.received": { readonly content: string };
+  readonly "input.received": AcceptedInput;
   readonly "model.completed": {
     readonly accounting: ModelAccounting;
     readonly effectId: string;

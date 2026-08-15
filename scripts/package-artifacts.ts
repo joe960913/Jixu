@@ -313,9 +313,20 @@ async function inspectTarball(
     assert.ok(binaryPath, `${manifest.name} misses its executable file declaration`);
     assert.deepEqual([...files.keys()].sort(), [
       "LICENSE",
+      "THIRD_PARTY_NOTICES.md",
       binaryPath,
       "package.json",
     ]);
+    const thirdPartyNotices = files.get("THIRD_PARTY_NOTICES.md");
+    assert.ok(thirdPartyNotices, `${manifest.name} misses third-party notices`);
+    assert.equal(
+      new TextDecoder().decode(thirdPartyNotices),
+      await readFile(
+        join(repositoryRoot, "packages", "jixu", "THIRD_PARTY_NOTICES.md"),
+        "utf8",
+      ),
+      `${manifest.name} third-party notices drifted from the canonical source`,
+    );
     const binary = files.get(binaryPath);
     assert.ok(binary, `${manifest.name} tarball misses ${binaryPath}`);
     const binaryMode = packedFileMode(bytes, `${unpacked.rootDir}/${binaryPath}`);
@@ -392,6 +403,10 @@ export async function buildPackageArtifacts(
     await mkdir(join(cliPackageRoot, "bin"), { recursive: true });
     await copyFile(cliArtifact.binaryPath, packagedBinary);
     await chmod(packagedBinary, 0o755);
+    await copyFile(
+      join(repositoryRoot, "packages", "jixu", "THIRD_PARTY_NOTICES.md"),
+      join(cliPackageRoot, "THIRD_PARTY_NOTICES.md"),
+    );
   }
 
   const sourceManifests = new Map<string, PackageManifest>();
@@ -428,7 +443,10 @@ export async function buildPackageArtifacts(
       manifest.libc,
       target.platform === "linux" ? [target.libc] : undefined,
     );
-    assert.deepEqual(manifest.files, [`bin/${target.executable}`]);
+    assert.deepEqual(manifest.files, [
+      `bin/${target.executable}`,
+      "THIRD_PARTY_NOTICES.md",
+    ]);
     assert.equal(manifest.preferUnplugged, true);
     assert.deepEqual(manifest.publishConfig, {
       access: "public",

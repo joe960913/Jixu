@@ -15,7 +15,12 @@ import {
   parseModelAccounting,
 } from "./metrics.ts";
 import type { ModelAccounting } from "./metrics.ts";
-import type { ModelDriver, Signal, SignalSink } from "./ports.ts";
+import type {
+  ArtifactReader,
+  ModelDriver,
+  Signal,
+  SignalSink,
+} from "./ports.ts";
 import type { ThreadEventPayloads } from "./events.ts";
 import type { ObservationBroker } from "./observation.ts";
 import {
@@ -46,6 +51,7 @@ export type OutcomeProposal = {
 
 export interface EffectDispatcherConfig {
   readonly agent: AgentDefinition;
+  readonly artifacts: ArtifactReader;
   readonly modelDrivers: Readonly<Record<string, ModelDriver>>;
   readonly observations: ObservationBroker;
   readonly signals: SignalSink;
@@ -86,6 +92,7 @@ function parseDriverError(value: unknown, label: string): DriverError {
 
 export class EffectDispatcher {
   readonly #agent: AgentDefinition;
+  readonly #artifacts: ArtifactReader;
   readonly #modelDrivers: Readonly<Record<string, ModelDriver>>;
   readonly #observations: ObservationBroker;
   readonly #signals: SignalSink;
@@ -93,6 +100,7 @@ export class EffectDispatcher {
 
   constructor(config: EffectDispatcherConfig) {
     this.#agent = config.agent;
+    this.#artifacts = config.artifacts;
     this.#modelDrivers = config.modelDrivers;
     this.#observations = config.observations;
     this.#signals = config.signals;
@@ -160,6 +168,7 @@ export class EffectDispatcher {
     let outcome: ModelOutcome;
     try {
       outcome = await driver.generate(cloneJson(effect), {
+        artifacts: this.#artifacts,
         cancellation: new AbortController().signal,
         signals: this.#signalsFor(effect.threadId),
       });

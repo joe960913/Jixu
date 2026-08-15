@@ -10,6 +10,7 @@ import type {
   Thread,
   ThreadState,
   ThreadStreamItem,
+  ThreadInput,
   ToolApproval,
   ToolApprovalDecision,
   ToolOutputDelta,
@@ -198,10 +199,10 @@ export class ThreadController {
     }
   }
 
-  async submit(rawInput: string): Promise<void> {
-    const input = rawInput.trim();
-    if (input.length === 0) return;
-    if (input.startsWith("/")) {
+  async submit(rawInput: ThreadInput): Promise<void> {
+    const input = typeof rawInput === "string" ? rawInput.trim() : rawInput;
+    if (typeof input === "string" && input.length === 0) return;
+    if (typeof input === "string" && input.startsWith("/")) {
       await this.#command(input);
       return;
     }

@@ -1,5 +1,6 @@
 import {
   InvalidTransitionError,
+  ArtifactError,
   RevisionConflictError,
   ThreadAlreadyExistsError,
   ThreadNotFoundError,
@@ -9,6 +10,8 @@ import type { Checkpoint } from "./domain.ts";
 import type { AnyThreadEvent } from "./events.ts";
 import { assertJsonValue, cloneJson } from "./json.ts";
 import type { EventStore } from "./ports.ts";
+import { assertArtifactBytes } from "./input.ts";
+import type { ArtifactReference } from "./input.ts";
 import { replayEvents } from "./reducer.ts";
 
 interface InMemoryThreadRecord {
@@ -16,9 +19,35 @@ interface InMemoryThreadRecord {
 }
 
 export class InMemoryEventStore implements EventStore {
+  readonly #artifacts = new Map<string, Uint8Array>();
   readonly #checkpoints = new Map<string, Checkpoint>();
   readonly #eventIds = new Set<string>();
   readonly #threads = new Map<string, InMemoryThreadRecord>();
+
+  async putArtifact(
+    reference: ArtifactReference,
+    bytes: Uint8Array,
+  ): Promise<void> {
+    await assertArtifactBytes(reference, bytes);
+    const existing = this.#artifacts.get(reference.digest);
+    if (existing !== undefined) {
+      await assertArtifactBytes(reference, existing);
+      return;
+    }
+    this.#artifacts.set(reference.digest, Uint8Array.from(bytes));
+  }
+
+  async readArtifact(reference: ArtifactReference): Promise<Uint8Array> {
+    const bytes = this.#artifacts.get(reference.digest);
+    if (bytes === undefined) {
+      throw new ArtifactError(
+        "artifact_missing",
+        `Image Artifact ${reference.digest} does not exist`,
+      );
+    }
+    await assertArtifactBytes(reference, bytes);
+    return Uint8Array.from(bytes);
+  }
 
   async createThread(threadId: string): Promise<void> {
     if (this.#threads.has(threadId)) {

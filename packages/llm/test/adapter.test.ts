@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  artifactDigest,
   createHarness,
   defineAgent,
+  InMemoryEventStore,
   PLAN_CONTROL,
   PROGRESS_CONTROL,
 } from "jixu-core";
@@ -144,8 +146,10 @@ function effect(
 function context(
   signals: Signal[] = [],
   cancellation = new AbortController().signal,
+  artifacts: ModelDriverContext["artifacts"] = new InMemoryEventStore(),
 ): ModelDriverContext {
   return {
+    artifacts,
     cancellation,
     signals: { emit: (signal) => signals.push(structuredClone(signal)) },
   };
@@ -434,6 +438,124 @@ test("JX-PROV-002 JX-PROV-003 JX-AC-016 OpenAI Chat Completions normalizes contr
     threadId: "thread-1",
     type: "model.progress",
   });
+});
+
+test("JX-PROV-007 JX-AC-052 both protocols materialize ordered image content and fail before dispatch when an Artifact is missing", async () => {
+  const artifacts = new InMemoryEventStore();
+  const png = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 9]);
+  const reference = {
+    byteLength: png.byteLength,
+    digest: await artifactDigest(png),
+    mediaType: "image/png" as const,
+  };
+  await artifacts.putArtifact(reference, png);
+  const baseEffect = effect("fixture", "multimodal", null);
+  const multimodalEffect: ModelGenerateEffect = {
+    ...baseEffect,
+    input: {
+      ...baseEffect.input,
+      messages: [{
+        content: "before [pasted image 1] after",
+        parts: [
+          { text: "before ", type: "text" },
+          { artifact: reference, placeholder: "pasted image 1", type: "image" },
+          { text: " after", type: "text" },
+        ],
+        role: "user",
+      }],
+    },
+  };
+  const chatClient = new FakeOpenAIChatClient(chatChunks());
+  const anthropicClient = new FakeAnthropicClient(anthropicEvents());
+  const chat = createLLMModelDriver({
+    api: "openai-chat-completions",
+    baseURL: "https://chat.example/v1",
+    openAIChatCompletionsClient: chatClient,
+    provider: "chat-provider",
+  });
+  const anthropic = createLLMModelDriver({
+    anthropicMessagesClient: anthropicClient,
+    api: "anthropic-messages",
+    baseURL: "https://api.anthropic.test",
+    provider: "anthropic",
+  });
+
+  assert.equal(
+    (await chat.generate(multimodalEffect, context([], undefined, artifacts))).status,
+    "succeeded",
+  );
+  assert.equal(
+    (await anthropic.generate(
+      multimodalEffect,
+      context([], undefined, artifacts),
+    )).status,
+    "succeeded",
+  );
+  const encoded = Buffer.from(png).toString("base64");
+  assert.deepEqual(chatClient.body?.messages[1], {
+    content: [
+      { text: "before ", type: "text" },
+      {
+        image_url: { url: `data:image/png;base64,${encoded}` },
+        type: "image_url",
+      },
+      { text: " after", type: "text" },
+    ],
+    role: "user",
+  });
+  assert.deepEqual(anthropicClient.body?.messages[0], {
+    content: [
+      { text: "before ", type: "text" },
+      {
+        source: {
+          data: encoded,
+          media_type: "image/png",
+          type: "base64",
+        },
+        type: "image",
+      },
+      { text: " after", type: "text" },
+    ],
+    role: "user",
+  });
+
+  const missingReference = {
+    ...reference,
+    digest: `sha256:${"0".repeat(64)}`,
+  };
+  const missingEffect: ModelGenerateEffect = {
+    ...multimodalEffect,
+    input: {
+      ...multimodalEffect.input,
+      messages: [{
+        content: "[pasted image 1]",
+        parts: [{
+          artifact: missingReference,
+          placeholder: "pasted image 1",
+          type: "image",
+        }],
+        role: "user",
+      }],
+    },
+  };
+  const unusedChatClient = new FakeOpenAIChatClient(chatChunks());
+  const unusedAnthropicClient = new FakeAnthropicClient(anthropicEvents());
+  const missingChat = await createLLMModelDriver({
+    api: "openai-chat-completions",
+    baseURL: "https://chat.example/v1",
+    openAIChatCompletionsClient: unusedChatClient,
+    provider: "chat-provider",
+  }).generate(missingEffect, context([], undefined, artifacts));
+  const missingAnthropic = await createLLMModelDriver({
+    anthropicMessagesClient: unusedAnthropicClient,
+    api: "anthropic-messages",
+    baseURL: "https://api.anthropic.test",
+    provider: "anthropic",
+  }).generate(missingEffect, context([], undefined, artifacts));
+  assert.equal(missingChat.status, "failed");
+  assert.equal(missingAnthropic.status, "failed");
+  assert.equal(unusedChatClient.body, undefined);
+  assert.equal(unusedAnthropicClient.body, undefined);
 });
 
 test("JX-PLAN-008 JX-AC-031 active Plan exposes minimal abandon and derives its snapshot", async () => {

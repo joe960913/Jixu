@@ -842,7 +842,7 @@ test("JX-AC-031 invalid Plan metadata preserves the model response and Tool path
   );
 });
 
-test("JX-AC-020 input accepted while running is durable and starts in Event order", async () => {
+test("JX-AC-020 JX-AC-052 queued multimodal input is durable and starts in Event order", async () => {
   let release!: (outcome: ModelOutcome) => void;
   let started!: () => void;
   const firstStarted = new Promise<void>((resolve) => {
@@ -873,14 +873,51 @@ test("JX-AC-020 input accepted while running is durable and starts in Event orde
 
   const first = thread.send("first");
   await firstStarted;
-  const second = thread.send("second");
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(
-    (await thread.events())
-      .filter((event) => event.type === "input.received")
-      .map((event) => event.payload.content),
-    ["first", "second"],
+  const second = thread.send({
+    content: [
+      { text: "帮我看看这个 ", type: "text" },
+      {
+        data: Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 1]),
+        mediaType: "image/png",
+        placeholder: "pasted image 1",
+        type: "image",
+      },
+      { text: " 是啥， 这个 ", type: "text" },
+      {
+        data: Uint8Array.from([255, 216, 255, 2]),
+        mediaType: "image/jpeg",
+        placeholder: "pasted image 2",
+        type: "image",
+      },
+      { text: " 又是啥", type: "text" },
+    ],
+  });
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const acceptedCount = (await thread.events()).filter(
+      (event) => event.type === "input.received",
+    ).length;
+    if (acceptedCount === 2) break;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  const accepted = (await thread.events()).filter(
+    (event) => event.type === "input.received",
   );
+  assert.deepEqual(accepted.map((event) => event.payload.content), [
+    "first",
+    "帮我看看这个 [pasted image 1] 是啥， 这个 [pasted image 2] 又是啥",
+  ]);
+  assert.equal(accepted[1]?.schemaVersion, 6);
+  assert.doesNotMatch(JSON.stringify(accepted[1]), /iVBOR|\/9j/u);
+  const structuredParts = accepted[1]?.payload.parts;
+  assert.equal(structuredParts?.filter((part) => part.type === "image").length, 2);
+  for (const part of structuredParts ?? []) {
+    if (part.type === "image") {
+      assert.equal(
+        (await store.readArtifact(part.artifact)).byteLength,
+        part.artifact.byteLength,
+      );
+    }
+  }
 
   release(succeed({ content: "first reply", toolCalls: [] }));
   await Promise.all([first, second]);
@@ -888,8 +925,14 @@ test("JX-AC-020 input accepted while running is durable and starts in Event orde
   assert.deepEqual(effects[1]?.input.messages.slice(-3), [
     { content: "first", role: "user" },
     { content: "first reply", role: "assistant", toolCalls: [] },
-    { content: "second", role: "user" },
+    {
+      content:
+        "帮我看看这个 [pasted image 1] 是啥， 这个 [pasted image 2] 又是啥",
+      parts: structuredParts,
+      role: "user",
+    },
   ]);
+  assert.deepEqual(await thread.replay(), await thread.state());
 });
 
 test("JX-AC-003 clear retains Thread history but resets later model context", async () => {

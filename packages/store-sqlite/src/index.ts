@@ -5,6 +5,9 @@ import { DatabaseSync } from "node:sqlite";
 import {
   decodeCheckpoint,
   decodeThreadEvent,
+  ArtifactError,
+  assertArtifactBytes,
+  assertArtifactReference,
   InvalidTransitionError,
   replayEvents,
   RevisionConflictError,
@@ -13,6 +16,7 @@ import {
 } from "jixu-core";
 import type {
   AnyThreadEvent,
+  ArtifactReference,
   Checkpoint,
   EventStore,
 } from "jixu-core";
@@ -65,6 +69,10 @@ export class SqliteEventStore implements EventStore {
         checkpoint_json TEXT NOT NULL,
         FOREIGN KEY (thread_id) REFERENCES threads(thread_id)
       ) STRICT;
+      CREATE TABLE IF NOT EXISTS artifacts (
+        artifact_digest TEXT PRIMARY KEY,
+        artifact_bytes BLOB NOT NULL
+      ) STRICT;
     `);
   }
 
@@ -98,6 +106,44 @@ export class SqliteEventStore implements EventStore {
       this.#database.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  async putArtifact(
+    reference: ArtifactReference,
+    bytes: Uint8Array,
+  ): Promise<void> {
+    await assertArtifactBytes(reference, bytes);
+    this.#database
+      .prepare(
+        "INSERT OR IGNORE INTO artifacts(artifact_digest, artifact_bytes) VALUES (?, ?)",
+      )
+      .run(reference.digest, bytes);
+    await this.readArtifact(reference);
+  }
+
+  async readArtifact(reference: ArtifactReference): Promise<Uint8Array> {
+    assertArtifactReference(reference);
+    const value = this.#database
+      .prepare(
+        "SELECT artifact_bytes FROM artifacts WHERE artifact_digest = ?",
+      )
+      .get(reference.digest);
+    if (value === undefined) {
+      throw new ArtifactError(
+        "artifact_missing",
+        `Image Artifact ${reference.digest} does not exist`,
+      );
+    }
+    const bytes = record(value, "Artifact row").artifact_bytes;
+    if (!(bytes instanceof Uint8Array)) {
+      throw new ArtifactError(
+        "artifact_corrupt",
+        `Image Artifact ${reference.digest} is not binary data`,
+      );
+    }
+    const owned = Uint8Array.from(bytes);
+    await assertArtifactBytes(reference, owned);
+    return owned;
   }
 
   async createThread(threadId: string): Promise<void> {

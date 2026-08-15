@@ -22,6 +22,8 @@ import type {
   ThreadEventType,
 } from "./events.ts";
 import { cloneJson, jsonDigest } from "./json.ts";
+import { prepareThreadInput } from "./input.ts";
+import type { ThreadInput } from "./input.ts";
 import { EMPTY_MODEL_ACCOUNTING } from "./metrics.ts";
 import type { ObservationBroker } from "./observation.ts";
 import type {
@@ -154,11 +156,12 @@ export class ThreadExecution implements Thread {
     return this.#store.read(this.id).then((events) => replayEvents(this.id, events));
   }
 
-  async send(input: string): Promise<ThreadState> {
-    if (typeof input !== "string" || input.trim().length === 0) {
-      throw new InvalidTransitionError("Thread input must be a non-empty string");
+  async send(input: ThreadInput): Promise<ThreadState> {
+    const prepared = await prepareThreadInput(input);
+    for (const artifact of prepared.artifacts) {
+      await this.#store.putArtifact(artifact.reference, artifact.bytes);
     }
-    await this.#commit("input.received", { content: input });
+    await this.#commit("input.received", prepared.payload);
     this.#schedule();
     return this.wait();
   }
