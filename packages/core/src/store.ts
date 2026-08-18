@@ -4,6 +4,8 @@ import {
   RunAlreadyExistsError,
   RunNotFoundError,
 } from "./errors.ts";
+import { decodeCheckpoint, decodeRunEvent } from "./codec.ts";
+import type { Checkpoint } from "./domain.ts";
 import type { AnyRunEvent } from "./events.ts";
 import { assertJsonValue, cloneJson } from "./json.ts";
 import type { EventStore } from "./ports.ts";
@@ -14,6 +16,7 @@ interface InMemoryRunRecord {
 }
 
 export class InMemoryEventStore implements EventStore {
+  readonly #checkpoints = new Map<string, Checkpoint>();
   readonly #eventIds = new Set<string>();
   readonly #runs = new Map<string, InMemoryRunRecord>();
 
@@ -22,6 +25,41 @@ export class InMemoryEventStore implements EventStore {
       throw new RunAlreadyExistsError(runId);
     }
     this.#runs.set(runId, { events: [] });
+  }
+
+  async createFork(
+    runId: string,
+    events: readonly AnyRunEvent[],
+  ): Promise<void> {
+    if (this.#runs.has(runId)) {
+      throw new RunAlreadyExistsError(runId);
+    }
+    if (events.length === 0) {
+      throw new InvalidTransitionError(`Fork ${runId} must contain Events`);
+    }
+
+    const localIds = new Set<string>();
+    const validated = events.map((event, index) => {
+      const decoded = decodeRunEvent(event);
+      if (decoded.runId !== runId || decoded.sequence !== index + 1) {
+        throw new InvalidTransitionError(
+          `Fork Event ${decoded.id} is not contiguous for Run ${runId}`,
+        );
+      }
+      if (this.#eventIds.has(decoded.id) || localIds.has(decoded.id)) {
+        throw new InvalidTransitionError(`Event ID ${decoded.id} is already stored`);
+      }
+      localIds.add(decoded.id);
+      return decoded;
+    });
+    replayEvents(runId, validated);
+
+    this.#runs.set(runId, {
+      events: validated.map((event) => cloneJson(event)),
+    });
+    for (const id of localIds) {
+      this.#eventIds.add(id);
+    }
   }
 
   async append(
@@ -51,7 +89,7 @@ export class InMemoryEventStore implements EventStore {
     }
 
     assertJsonValue(event, `Event ${event.id}`);
-    const stored = cloneJson(event);
+    const stored = decodeRunEvent(event);
     record.events.push(stored);
     this.#eventIds.add(stored.id);
   }
@@ -81,5 +119,21 @@ export class InMemoryEventStore implements EventStore {
       }
     }
     return nonTerminal;
+  }
+
+  async readCheckpoint(runId: string): Promise<Checkpoint | null> {
+    if (!this.#runs.has(runId)) {
+      throw new RunNotFoundError(runId);
+    }
+    const checkpoint = this.#checkpoints.get(runId);
+    return checkpoint === undefined ? null : cloneJson(checkpoint);
+  }
+
+  async writeCheckpoint(checkpoint: Checkpoint): Promise<void> {
+    if (!this.#runs.has(checkpoint.runId)) {
+      throw new RunNotFoundError(checkpoint.runId);
+    }
+    const decoded = decodeCheckpoint(checkpoint);
+    this.#checkpoints.set(decoded.runId, decoded);
   }
 }

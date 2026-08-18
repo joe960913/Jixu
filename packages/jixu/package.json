@@ -1,0 +1,29 @@
+{
+  "name": "jixu",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "bun": ">=1.3.0",
+    "node": ">=22.18.0"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "bun run src/cli.tsx",
+    "test:tui": "bun run test/tui-smoke.tsx",
+    "build:executable": "bun build --compile src/cli.tsx --outfile dist/jixu"
+  },
+  "dependencies": {
+    "@jixu/core": "workspace:*",
+    "@jixu/llm": "workspace:*",
+    "@jixu/store-jsonl": "workspace:*",
+    "@jixu/tools-node": "workspace:*",
+    "@opentui/core": "0.5.4",
+    "@opentui/react": "0.5.4",
+    "react": "19.2.8",
+    "react-devtools-core": "7.0.1",
+    "ws": "8.21.3"
+  }
+}
