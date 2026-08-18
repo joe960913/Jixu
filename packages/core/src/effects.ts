@@ -9,6 +9,7 @@ import type {
 import type { JsonObject } from "./json.ts";
 import type { ModelAccounting } from "./metrics.ts";
 import type { PlanControlDescriptor, PlanSnapshot } from "./plan.ts";
+import type { ProgressControlDescriptor } from "./progress.ts";
 
 export interface EffectEnvelope<TType extends string, TInput> {
   readonly attempt: number;
@@ -26,6 +27,7 @@ export interface ModelGenerateInput {
   readonly messages: readonly ModelMessage[];
   readonly model: ModelRef;
   readonly planControl: PlanControlDescriptor;
+  readonly progressControl: ProgressControlDescriptor;
   readonly tools: readonly ToolDescriptor[];
 }
 

@@ -268,8 +268,8 @@ try {
     model: "vendor/model-example",
   });
   // JX-AC-018: the wide working surface keeps chat dominant beside activity.
-  assert.match(connectedFrame, /router\.example · vendor\/model-example/);
-  assert.match(connectedFrame, /Chat Completions/);
+  assert.match(connectedFrame, /vendor\/model-example/);
+  assert.doesNotMatch(connectedFrame, /router\.example|Chat Completions/);
   assert.match(connectedFrame, /╚█████╔╝/);
   assert.match(connectedFrame, /Ask Jixu anything/);
   assert.match(connectedFrame, /\/help · \/new · \/clear/);
@@ -384,7 +384,8 @@ try {
   assert.match(restoredFrame, /╚█████╔╝/);
   assert.match(restoredFrame, /ACTIVITY/);
   assert.match(restoredFrame, /Ask Jixu anything/);
-  assert.match(restoredFrame, /router\.example · vendor\/model-example/);
+  assert.match(restoredFrame, /vendor\/model-example/);
+  assert.doesNotMatch(restoredFrame, /router\.example|Responses/);
   assert.doesNotMatch(restoredFrame, /Next Level Agent/);
   assert.doesNotMatch(restoredFrame, /Conversation|Run activity|New Run/);
   assert.doesNotMatch(restoredFrame, /openrouter-secret-fixture/);

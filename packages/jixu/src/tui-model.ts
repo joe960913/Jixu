@@ -34,6 +34,24 @@ export interface ThreadInspection {
   readonly title: string;
 }
 
+export type WorkPhase = "planning" | "responding" | "thinking" | "tool";
+
+export interface WorkStatus {
+  readonly detail?: string;
+  readonly label: string;
+  readonly phase: WorkPhase;
+  readonly tone: JixuTone;
+}
+
+export type ToolOperationStatus = "failed" | "running" | "succeeded";
+
+export interface ToolOperation {
+  readonly detail?: string;
+  readonly effectId: string;
+  readonly name: string;
+  readonly status: ToolOperationStatus;
+}
+
 export interface ThreadSummary {
   readonly current: boolean;
   readonly id: string;
@@ -53,5 +71,7 @@ export interface ThreadControllerSnapshot {
   readonly threadPickerOpen: boolean;
   readonly threads: readonly ThreadSummary[];
   readonly threadStatus: ThreadStatus | "none";
+  readonly toolOperations: readonly ToolOperation[];
   readonly transcript: readonly TranscriptEntry[];
+  readonly workStatus: WorkStatus | null;
 }

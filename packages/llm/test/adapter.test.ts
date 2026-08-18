@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { PLAN_CONTROL } from "@jixu/core";
+import { PLAN_CONTROL, PROGRESS_CONTROL } from "@jixu/core";
 import type {
   ModelDriverContext,
   ModelGenerateEffect,
+  PlanSnapshot,
   Signal,
 } from "@jixu/core";
 import type {
@@ -36,6 +37,19 @@ const planProposal = {
     },
   ],
 };
+
+const activePlan: PlanSnapshot = {
+  acceptanceCriteria: ["SPEC is understood"],
+  assumptions: [],
+  blockers: [],
+  id: "plan-1",
+  nextAction: "Read SPEC.md",
+  objective: "Understand the repository",
+  revision: 1,
+  schemaVersion: 1,
+  status: "active",
+  steps: planProposal.steps,
+};
 import type {
   OpenChatCompletionsClient,
   OpenResponsesClient,
@@ -63,13 +77,17 @@ function response(output: Response["output"]): Response {
   } as unknown as Response;
 }
 
-function effect(provider = "openai", model = "gpt-test"): ModelGenerateEffect {
+function effect(
+  provider = "openai",
+  model = "gpt-test",
+  plan: PlanSnapshot | null = null,
+): ModelGenerateEffect {
   return {
     attempt: 1,
     id: "effect-1",
     idempotencyKey: "effect-1",
     input: {
-      activePlan: null,
+      activePlan: plan,
       instructions: "Use tools when useful.",
       messages: [
         { content: "Read it", role: "user" },
@@ -89,6 +107,7 @@ function effect(provider = "openai", model = "gpt-test"): ModelGenerateEffect {
       ],
       model: { model, provider },
       planControl: PLAN_CONTROL,
+      progressControl: PROGRESS_CONTROL,
       tools: [
         {
           description: "Read a file",
@@ -121,6 +140,7 @@ function context(signals: Signal[] = []): ModelDriverContext {
 
 class FakeResponsesClient implements OpenResponsesClient {
   body: ResponseCreateParamsStreaming | undefined;
+  readonly bodies: ResponseCreateParamsStreaming[] = [];
   readonly #events: readonly ResponseStreamEvent[];
 
   constructor(events: readonly ResponseStreamEvent[]) {
@@ -129,6 +149,7 @@ class FakeResponsesClient implements OpenResponsesClient {
 
   create(body: ResponseCreateParamsStreaming): Promise<AsyncIterable<unknown>> {
     this.body = structuredClone(body);
+    this.bodies.push(structuredClone(body));
     const events = this.#events;
     return Promise.resolve({
       async *[Symbol.asyncIterator]() {
@@ -138,7 +159,7 @@ class FakeResponsesClient implements OpenResponsesClient {
   }
 }
 
-test("JX-PROV-005 JX-AC-002 OpenAI factory translates canonical input and emits deltas as Signals", async () => {
+test("JX-PROV-005 JX-AC-002 JX-AC-034 Responses maps model controls and emits progress", async () => {
   const client = new FakeResponsesClient([
     {
       content_index: 0,
@@ -161,9 +182,25 @@ test("JX-PROV-005 JX-AC-002 OpenAI factory translates canonical input and emits 
           type: "message",
         },
         {
+          arguments: JSON.stringify({
+            message: "Inspecting the repository specification",
+          }),
+          call_id: "call-progress",
+          name: PROGRESS_CONTROL.name,
+          status: "completed",
+          type: "function_call",
+        },
+        {
           arguments: JSON.stringify(planProposal),
           call_id: "call-plan",
           name: PLAN_CONTROL.name,
+          status: "completed",
+          type: "function_call",
+        },
+        {
+          arguments: "{invalid",
+          call_id: "call-progress-invalid",
+          name: PROGRESS_CONTROL.name,
           status: "completed",
           type: "function_call",
         },
@@ -237,9 +274,75 @@ test("JX-PROV-005 JX-AC-002 OpenAI factory translates canonical input and emits 
     (client.body?.tools as Array<{ readonly name: string }> | undefined)?.map(
       (tool) => tool.name,
     ),
-    ["read", PLAN_CONTROL.name],
+    ["read", PLAN_CONTROL.name, PROGRESS_CONTROL.name],
   );
   assert.equal(signals[0]?.type, "model.output_text.delta");
+  assert.deepEqual(signals[1], {
+    data: { message: "Inspecting the repository specification" },
+    kind: "signal",
+    threadId: "run-1",
+    type: "model.progress",
+  });
+});
+
+test("JX-AC-035 active Plan revisions preserve the provider prefix and use one Thread cache key", async () => {
+  const completed: ResponseStreamEvent = {
+    response: response([
+      {
+        content: [{ annotations: [], text: "done", type: "output_text" }],
+        id: "message-cache",
+        role: "assistant",
+        status: "completed",
+        type: "message",
+      },
+    ]),
+    sequence_number: 1,
+    type: "response.completed",
+  };
+  const responsesClient = new FakeResponsesClient([completed]);
+  const responsesDriver = createOpenAIModelDriver({ client: responsesClient });
+  const revisedPlan = { ...activePlan, revision: 2 } satisfies PlanSnapshot;
+
+  await responsesDriver.generate(effect("openai", "gpt-test", activePlan), context());
+  await responsesDriver.generate(effect("openai", "gpt-test", revisedPlan), context());
+
+  const [first, second] = responsesClient.bodies;
+  assert.equal(first?.instructions, "Use tools when useful.");
+  assert.equal(second?.instructions, first?.instructions);
+  assert.equal(first?.prompt_cache_key, "run-1");
+  assert.equal(second?.prompt_cache_key, first?.prompt_cache_key);
+  assert.deepEqual(second?.tools, first?.tools);
+  assert.ok(Array.isArray(first?.input));
+  assert.ok(Array.isArray(second?.input));
+  assert.deepEqual(second.input.slice(0, -1), first.input.slice(0, -1));
+  const firstPlanMessage = first.input.at(-1) as { readonly content?: unknown };
+  const secondPlanMessage = second.input.at(-1) as { readonly content?: unknown };
+  assert.match(String(firstPlanMessage.content), /"revision":1/);
+  assert.match(String(secondPlanMessage.content), /"revision":2/);
+
+  let chatBody: Record<string, unknown> = {};
+  const chatClient: OpenChatCompletionsClient = {
+    create(body): Promise<AsyncIterable<unknown>> {
+      chatBody = structuredClone(body) as unknown as Record<string, unknown>;
+      return Promise.resolve({
+        async *[Symbol.asyncIterator]() {
+          // Capturing the request is sufficient for this adapter contract.
+        },
+      });
+    },
+  };
+  await createOpenAICompatibleModelDriver({
+    apiFormat: "chat-completions",
+    baseURL: "https://openrouter.ai/api/v1",
+    chatCompletionsClient: chatClient,
+  }).generate(effect("openrouter", "deepseek/test", activePlan), context());
+
+  assert.equal(chatBody.prompt_cache_key, "run-1");
+  assert.equal(
+    (chatBody.messages as Array<{ content: string; role: string }>).at(-1)?.role,
+    "system",
+  );
+  assert.match(JSON.stringify(chatBody.messages), /Current active Plan/);
 });
 
 test("JX-PROV-007 JX-AC-019 OpenRouter factory uses the stateless Responses endpoint with attribution headers", async () => {
@@ -295,6 +398,7 @@ test("JX-PROV-007 JX-AC-019 OpenRouter factory uses the stateless Responses endp
 
 test("JX-PROV-008 JX-AC-019 compatible Responses format uses the caller Base URL", async () => {
   let url = "";
+  let body: Record<string, unknown> = {};
   const completed = {
     response: response([
       {
@@ -308,8 +412,9 @@ test("JX-PROV-008 JX-AC-019 compatible Responses format uses the caller Base URL
     sequence_number: 1,
     type: "response.completed",
   };
-  const fetchMock: typeof fetch = async (input) => {
+  const fetchMock: typeof fetch = async (input, init) => {
     url = input instanceof Request ? input.url : input.toString();
+    body = JSON.parse(String(init?.body)) as Record<string, unknown>;
     return new Response(
       `data: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`,
       { headers: { "content-type": "text/event-stream" }, status: 200 },
@@ -323,6 +428,7 @@ test("JX-PROV-008 JX-AC-019 compatible Responses format uses the caller Base URL
   }).generate(effect("openai-compatible"), context());
 
   assert.equal(url, "https://gateway.example/v1/responses");
+  assert.equal("prompt_cache_key" in body, false);
   assert.equal(outcome.status, "succeeded");
   if (outcome.status === "succeeded") {
     assert.equal(outcome.accounting?.cost, null);
@@ -331,7 +437,7 @@ test("JX-PROV-008 JX-AC-019 compatible Responses format uses the caller Base URL
   }
 });
 
-test("JX-PROV-008 JX-AC-002 JX-AC-019 Chat Completions maps full Tool history and streamed output", async () => {
+test("JX-PROV-008 JX-AC-002 JX-AC-019 JX-AC-034 Chat Completions maps controls and progress", async () => {
   let url = "";
   let body: Record<string, unknown> = {};
   const chunks = [
@@ -366,6 +472,17 @@ test("JX-PROV-008 JX-AC-002 JX-AC-019 Chat Completions maps full Tool history an
                 },
                 id: "call-plan-chat",
                 index: 1,
+                type: "function",
+              },
+              {
+                function: {
+                  arguments: JSON.stringify({
+                    message: "Checking the current specification",
+                  }),
+                  name: PROGRESS_CONTROL.name,
+                },
+                id: "call-progress-chat",
+                index: 2,
                 type: "function",
               },
             ],
@@ -440,7 +557,7 @@ test("JX-PROV-008 JX-AC-002 JX-AC-019 Chat Completions maps full Tool history an
     (body.tools as Array<{ function: { name: string } }>).map(
       (tool) => tool.function.name,
     ),
-    ["read", PLAN_CONTROL.name],
+    ["read", PLAN_CONTROL.name, PROGRESS_CONTROL.name],
   );
   assert.deepEqual(body.messages, [
     { content: "Use tools when useful.", role: "system" },
@@ -464,6 +581,12 @@ test("JX-PROV-008 JX-AC-002 JX-AC-019 Chat Completions maps full Tool history an
   ]);
   assert.equal(signals[0]?.type, "model.output_text.delta");
   assert.equal(signals[1]?.type, "model.tool_arguments.delta");
+  assert.deepEqual(signals.at(-1), {
+    data: { message: "Checking the current specification" },
+    kind: "signal",
+    threadId: "run-1",
+    type: "model.progress",
+  });
   assert.equal(outcome.status, "succeeded");
   if (outcome.status === "succeeded") {
     assert.deepEqual(outcome.accounting, {
