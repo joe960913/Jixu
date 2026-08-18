@@ -1,11 +1,13 @@
 {
-  "name": "@jixu/testkit",
+  "name": "@jixu/tools-node",
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
   "exports": {
-    ".": "./src/index.ts",
-    "./store-contract": "./src/store-contract.ts"
+    ".": "./src/index.ts"
   },
   "dependencies": {
     "@jixu/core": "workspace:*"

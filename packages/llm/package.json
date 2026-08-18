@@ -1,0 +1,16 @@
+{
+  "name": "@jixu/llm",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@jixu/core": "workspace:*",
+    "openai": "7.5.0"
+  }
+}

@@ -5,15 +5,18 @@
   "type": "module",
   "packageManager": "pnpm@11.12.0",
   "engines": {
-    "node": ">=24.0.0"
+    "node": ">=22.18.0"
   },
   "scripts": {
+    "dev": "bun run packages/jixu/src/cli.tsx",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
+    "test:tui": "pnpm --filter jixu test:tui",
     "lint": "node scripts/lint.mjs",
-    "check": "pnpm run typecheck && pnpm run lint && pnpm run test"
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run test:tui"
   },
   "devDependencies": {
+    "@types/react": "19.2.18",
     "@types/node": "24.13.2",
     "typescript": "6.0.3"
   }

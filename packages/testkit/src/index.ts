@@ -39,7 +39,11 @@ export class SequenceClock implements Clock {
 }
 
 export class SequenceIdGenerator implements IdGenerator {
-  #sequence = 0;
+  #sequence: number;
+
+  constructor(initialSequence = 0) {
+    this.#sequence = initialSequence;
+  }
 
   next(prefix: "event" | "run"): string {
     this.#sequence += 1;
