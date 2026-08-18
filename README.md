@@ -5,8 +5,8 @@
 Jixu is a small, event-sourced TypeScript runtime for agents that can pause,
 resume, fork, and replay.
 
-> **Project status:** specification baseline. Runtime implementation has not
-> started yet.
+> **Project status:** M1 deterministic kernel implemented. The package is not
+> published; continuity features begin in M2.
 
 ## Why Jixu
 
