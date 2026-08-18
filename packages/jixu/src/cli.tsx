@@ -10,6 +10,7 @@ import { createNodeTools } from "@jixu/tools-node";
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 
+import { JIXU_REFERENCE_AGENT_INSTRUCTIONS } from "./agent-instructions.ts";
 import { JixuConfigStore } from "./config.ts";
 import type {
   JixuApiFormat,
@@ -40,6 +41,7 @@ Environment:
   JIXU_MODEL             Prefill the model ID
   JIXU_API_KEY           Prefill credentials when auth.json has none
   JIXU_HOME              Override the global config directory
+  JIXU_MOTION            Set to off for a static execution indicator
 
 Examples:
   pnpm dev
@@ -169,14 +171,7 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
       provider: MODEL_DRIVER_ID,
     });
     const agent = defineAgent({
-      instructions: [
-        "You are Jixu, a general-purpose agent working with the user in a local workspace.",
-        "Use read, write, edit, and bash when they materially help complete the request.",
-        "File tools are restricted to the workspace root.",
-        "bash is an unsandboxed local shell with the Jixu process permissions.",
-        "Do not perform destructive or irreversible actions unless the user explicitly asks.",
-        "Be concise about progress and concrete about the completed outcome.",
-      ].join("\n"),
+      instructions: JIXU_REFERENCE_AGENT_INSTRUCTIONS,
       model: { model: config.model, provider: MODEL_DRIVER_ID },
       tools: tools.all,
     });
@@ -209,6 +204,7 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
           ...(baseUrl === undefined ? {} : { baseUrl }),
           ...(model === undefined ? {} : { model }),
         }}
+        motion={process.env.JIXU_MOTION !== "off"}
         onQuit={quit}
         workspace={options.root}
       />,

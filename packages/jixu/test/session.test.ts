@@ -8,6 +8,7 @@ import {
   createHarness,
   defineAgent,
   InMemoryEventStore,
+  MODEL_PROGRESS_SIGNAL_TYPE,
 } from "@jixu/core";
 import type {
   ModelDriver,
@@ -18,8 +19,9 @@ import type {
 import { createNodeTools } from "@jixu/tools-node";
 
 import { createThreadController } from "../src/thread-controller.ts";
+import type { ThreadControllerSnapshot } from "../src/tui-model.ts";
 
-test("JX-AC-015 JX-AC-018 TUI controller uses the public multi-turn Thread path", async () => {
+test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 TUI controller keeps public text and Tool progress continuous", async () => {
   const root = await mkdtemp(join(tmpdir(), "jixu-controller-"));
   try {
     await writeFile(join(root, "note.txt"), "durable hello", "utf8");
@@ -34,15 +36,35 @@ test("JX-AC-015 JX-AC-018 TUI controller uses the public multi-turn Thread path"
         effects.push(structuredClone(effect));
         if (calls === 1) {
           context.signals.emit({
-            data: { delta: "Reading" },
+            data: { message: "Inspecting the requested note" },
+            kind: "signal",
+            threadId: effect.threadId,
+            type: MODEL_PROGRESS_SIGNAL_TYPE,
+          });
+          context.signals.emit({
+            data: { delta: "Re" },
             kind: "signal",
             threadId: effect.threadId,
             type: "model.output_text.delta",
           });
+          context.signals.emit({
+            data: { delta: "ad" },
+            kind: "signal",
+            threadId: effect.threadId,
+            type: "model.output_text.delta",
+          });
+          await new Promise((resolve) => setTimeout(resolve, 35));
+          context.signals.emit({
+            data: { delta: "ing" },
+            kind: "signal",
+            threadId: effect.threadId,
+            type: "model.output_text.delta",
+          });
+          await new Promise((resolve) => setTimeout(resolve, 40));
           return {
             status: "succeeded",
             value: {
-              content: "",
+              content: "Reading note.txt.",
               toolCalls: [
                 { arguments: { path: "note.txt" }, id: "read-1", name: "read" },
               ],
@@ -111,8 +133,31 @@ test("JX-AC-015 JX-AC-018 TUI controller uses the public multi-turn Thread path"
       },
     });
     const observedLiveText: string[] = [];
+    const observedPresentation: Array<{
+      readonly activity: ThreadControllerSnapshot["activity"];
+      readonly streamingText: string;
+      readonly transcript: ThreadControllerSnapshot["transcript"];
+    }> = [];
+    const observedToolOperations: string[] = [];
+    const observedWorkStatus: string[] = [];
     const unsubscribe = controller.subscribe(() => {
-      observedLiveText.push(controller.getSnapshot().streamingText);
+      const snapshot = controller.getSnapshot();
+      observedLiveText.push(snapshot.streamingText);
+      observedPresentation.push({
+        activity: snapshot.activity,
+        streamingText: snapshot.streamingText,
+        transcript: snapshot.transcript,
+      });
+      observedToolOperations.push(
+        snapshot.toolOperations
+          .map((operation) => `${operation.name}:${operation.status}`)
+          .join(","),
+      );
+      if (snapshot.workStatus !== null) {
+        observedWorkStatus.push(
+          `${snapshot.workStatus.label}|${snapshot.workStatus.detail ?? ""}`,
+        );
+      }
     });
 
     await controller.submit("Read note.txt");
@@ -120,6 +165,38 @@ test("JX-AC-015 JX-AC-018 TUI controller uses the public multi-turn Thread path"
     assert.equal(first.busy, false);
     assert.equal(first.threadStatus, "idle");
     assert.ok(observedLiveText.includes("Reading"));
+    assert.ok(observedLiveText.includes("Read"));
+    assert.equal(observedLiveText.includes("Re"), false);
+    assert.ok(
+      first.transcript.some((entry) => entry.content === "Reading note.txt."),
+    );
+    assert.ok(observedToolOperations.includes("read:running"));
+    assert.ok(observedToolOperations.includes("read:succeeded"));
+    assert.deepEqual(first.toolOperations, []);
+    assert.equal(
+      observedPresentation.some(
+        (frame) =>
+          frame.streamingText.length > 0 &&
+          frame.transcript.some((entry) => entry.content === "Reading note.txt."),
+      ),
+      false,
+    );
+    const streamingFrames = observedPresentation.filter(
+      (frame) => frame.streamingText.length > 0,
+    );
+    assert.ok(streamingFrames.length >= 2);
+    assert.ok(
+      streamingFrames.every(
+        (frame) =>
+          frame.activity === streamingFrames[0]?.activity &&
+          frame.transcript === streamingFrames[0]?.transcript,
+      ),
+    );
+    assert.ok(
+      observedWorkStatus.includes(
+        "Inspecting the requested note|Reading note.txt",
+      ),
+    );
     assert.equal(first.transcript.at(-1)?.content, "The file says durable hello.");
     // JX-AC-028: the controller exposes the canonical Thread projection.
     assert.equal(first.metrics?.model.calls, 2);

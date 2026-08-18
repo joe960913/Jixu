@@ -100,14 +100,14 @@ function defineTestAgent(tools: NonNullable<AgentConfig["tools"]> = []) {
 }
 
 function recoveryPlan(
-  operation: "complete" | "create" | "revise",
+  operation: "create" | "revise",
   status: "completed" | "in_progress",
 ): PlanUpdateProposal {
   return {
     acceptanceCriteria: ["Recovery completes without duplicate work"],
     assumptions: [],
     blockers: [],
-    nextAction: operation === "complete" ? null : "Execute the safe Tool",
+    nextAction: status === "completed" ? null : "Execute the safe Tool",
     objective: "Recover the planned Tool boundary",
     operation,
     steps: [
@@ -268,7 +268,7 @@ test("JX-AC-022 recovery commits a proposed Plan before Tool dispatch and restor
     generate(effect) {
       calls += 1;
       restoredPlanId = effect.input.activePlan?.id;
-      assert.match(effect.input.instructions, /Recover the planned Tool boundary/);
+      assert.equal(effect.input.instructions, "Continue precisely.");
       if (calls === 1) {
         return Promise.resolve(
           succeed({
@@ -281,7 +281,7 @@ test("JX-AC-022 recovery commits a proposed Plan before Tool dispatch and restor
       return Promise.resolve(
         succeed({
           content: "Recovered and verified.",
-          planUpdates: [recoveryPlan("complete", "completed")],
+          planUpdates: [recoveryPlan("revise", "completed")],
           toolCalls: [],
         }),
       );

@@ -26,6 +26,7 @@ export interface JixuAppProps {
     controls: JixuAppControls,
   ) => ThreadController | Promise<ThreadController>;
   readonly initial?: JixuInitialConfiguration;
+  readonly motion?: boolean;
   readonly onQuit: () => void;
   readonly workspace: string;
 }
@@ -46,7 +47,13 @@ function completeInitial(
     : { apiFormat, apiKey, baseUrl, model };
 }
 
-export function JixuApp({ connect, initial, onQuit, workspace }: JixuAppProps) {
+export function JixuApp({
+  connect,
+  initial,
+  motion = true,
+  onQuit,
+  workspace,
+}: JixuAppProps) {
   const [active, setActive] = useState<JixuActiveConnection | null>(null);
   const [configuration, setConfiguration] =
     useState<JixuInitialConfiguration | undefined>(initial);
@@ -124,6 +131,7 @@ export function JixuApp({ connect, initial, onQuit, workspace }: JixuAppProps) {
     <AgentWorkspace
       active={active}
       connectionError={connectionError}
+      motion={motion}
       onConfigure={() => {
         setActive(null);
         setView("config");

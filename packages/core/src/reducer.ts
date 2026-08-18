@@ -24,13 +24,13 @@ import {
 } from "./metrics.ts";
 import {
   assertPlanUpdateTransition,
-  compilePlanInstructions,
+  createPlanControl,
   materializePlanUpdates,
-  PLAN_CONTROL,
   samePlan,
 } from "./plan.ts";
+import { PROGRESS_CONTROL } from "./progress.ts";
 
-export const REDUCER_VERSION = 5;
+export const REDUCER_VERSION = 8;
 
 export interface TransitionResult {
   readonly effects: readonly EffectRequest[];
@@ -132,10 +132,11 @@ function createModelEffect(
     idempotencyKey: id,
     input: {
       activePlan: state.activePlan,
-      instructions: compilePlanInstructions(agent.instructions, state.activePlan),
+      instructions: agent.instructions,
       messages: state.messages,
       model: agent.model,
-      planControl: PLAN_CONTROL,
+      planControl: createPlanControl(state.activePlan),
+      progressControl: PROGRESS_CONTROL,
       tools: agent.tools,
     },
     requestedByEventId,
@@ -492,6 +493,13 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         }),
       };
     }
+
+    case "plan.rejected":
+      requireAgent(state);
+      return {
+        effects: [],
+        state: advance(state, event.sequence, {}),
+      };
 
     case "model.failed": {
       requireStatus(state, event.type, "running");

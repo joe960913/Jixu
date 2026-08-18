@@ -350,27 +350,40 @@ export class ThreadExecution implements Thread {
   ): Promise<void> {
     switch (proposal.type) {
       case "model.completed": {
+        const planUpdates = proposal.payload.response.planUpdates ?? [];
         try {
           materializePlanUpdates(
             this.#state.activePlan,
-            proposal.payload.response.planUpdates ?? [],
+            planUpdates,
             "preview",
           );
         } catch (error) {
-          await this.#commit(
-            "model.failed",
+          const planError = {
+            code: "plan_update_invalid",
+            message:
+              error instanceof Error ? error.message : "Invalid Plan update",
+            retryable: false,
+          } as const;
+          const completed = await this.#commit(
+            "model.completed",
             {
               accounting: proposal.payload.accounting,
-              disposition: "failed",
               effectId: proposal.payload.effectId,
-              error: {
-                code: "plan_update_invalid",
-                message:
-                  error instanceof Error ? error.message : "Invalid Plan update",
-                retryable: false,
+              response: {
+                ...proposal.payload.response,
+                planUpdates: [],
               },
             },
             causationId,
+          );
+          await this.#commit(
+            "plan.rejected",
+            {
+              effectId: proposal.payload.effectId,
+              error: planError,
+              proposals: planUpdates,
+            },
+            completed.event.id,
           );
           return;
         }

@@ -255,11 +255,10 @@ interface ThreadEvent<TType extends string, TPayload> {
 - **JX-EVT-004.** Events MUST be immutable after append.
 - **JX-EVT-005.** Correlation metadata MAY group work but MUST NOT replace
   Thread or Event identity.
-- **JX-EVT-006.** Event schema version 2 is the current Thread schema. A schema
-  version 1 Thread Event MUST be deterministically upcast at the core boundary:
-  model requests gain no active Plan, and terminal model outcomes gain unknown
-  usage and pricing. Other unknown versions and version/type combinations MUST
-  still fail closed.
+- **JX-EVT-006.** Event schema version 5 is the current Thread schema. During
+  pre-release development, every other Event schema version MUST fail closed;
+  incompatible local development Threads are deleted and recreated rather than
+  hidden behind runtime upcasters.
 
 The v0.4 families are:
 
@@ -271,6 +270,7 @@ The v0.4 families are:
 - `thread.waiting`
 - `input.received`
 - `plan.updated`
+- `plan.rejected`
 - `context.cleared`
 - `context.compaction_requested`
 - `context.compacted`
@@ -290,6 +290,11 @@ The v0.4 families are:
   durable Events.
 - **JX-SIG-004.** A live Thread stream MUST expose committed Events and Signals
   through one ordered observation surface without claiming Signals are durable.
+- **JX-SIG-005.** A model Driver MAY expose one reserved progress control in an
+  existing model request. A valid control call MUST emit a bounded, single-line
+  `model.progress` Signal and MUST NOT become a Tool call, Event, State field, or
+  additional model request. Invalid or missing progress output MUST be ignored
+  without changing the model outcome or suppressing ordinary Tool calls.
 
 ## 8. Effects and Drivers
 
@@ -398,7 +403,9 @@ Mode, which is a surface policy outside the core specification.
   objective, acceptance criteria, a bounded ordered step list, step statuses,
   evidence references, assumptions or blockers, the next safe action, and one
   of `active`, `completed`, `superseded`, or `abandoned`. Step status MUST be
-  `pending`, `in_progress`, `completed`, `blocked`, or `skipped`.
+  `pending`, `in_progress`, `completed`, `blocked`, or `skipped`. A revision
+  whose steps are all `completed` or `skipped` MUST project `completed`
+  without requiring a second ceremonial completion operation.
 - **JX-PLAN-004.** A Thread MUST have at most one active Plan and one active
   step. New evidence MAY revise that Plan; a materially changed objective MUST
   supersede it instead of silently rewriting its history.
@@ -412,6 +419,16 @@ Mode, which is a surface policy outside the core specification.
   every subsequent model context and Continuity Handoff. Completed,
   superseded, and abandoned Plans remain inspectable in Events but MUST be
   excluded from default model context.
+- **JX-PLAN-008.** The model-facing Plan control MUST be derived from current
+  State. It MUST offer `create` only when no active Plan exists, and MUST NOT
+  offer `create` while a Plan is active. Revising, superseding, or abandoning
+  an active Plan updates that Plan's history; Plan control MUST NOT create a
+  second active Plan.
+- **JX-PLAN-009.** An invalid model-proposed Plan change MUST be durably recorded
+  as `plan.rejected` before any ordinary Effects from the same model output are
+  dispatched. Rejection MUST preserve the last valid Plan and MUST NOT convert
+  an otherwise successful model outcome into `model.failed`, suppress its
+  user-visible response, or discard its valid Tool calls.
 
 ### 10.2 Context compilation and manifest
 
@@ -435,6 +452,20 @@ through an Effect.
 - **JX-CTX-004.** Deterministic hygiene MAY deduplicate content, omit stale
   capability metadata, or replace large Tool output with an Artifact reference.
   It MUST NOT mutate or delete the source Event or Artifact.
+- **JX-CTX-014.** Provider requests MUST place immutable Agent instructions and
+  stable capability descriptors before request-varying context. Active Plan
+  content, Thread identifiers, timestamps, user input, and other changing data
+  MUST NOT be interpolated into Agent instructions. New conversational and
+  runtime context MUST extend the reusable prefix instead of rewriting earlier
+  content. The State-derived Plan control required by `JX-PLAN-008` MAY change
+  only when its allowed operation set changes; dynamic Plan data MUST NOT be
+  smuggled into an otherwise stable Tool descriptor.
+- **JX-CTX-015.** Provider prompt-cache keys, breakpoints, retention hints, and
+  routing affinity are optional Driver optimizations. They MUST be derived from
+  stable Jixu identities or immutable content, MUST NOT create a Session concept
+  or provider-owned Thread authority, and MUST NOT affect Event reduction,
+  replay, recovery, or model semantics. Unsupported providers MUST be able to
+  omit them. Reported cache reads and writes remain durable accounting facts.
 
 ### 10.3 Adaptive compaction and Continuity Handoff
 
@@ -508,6 +539,19 @@ continue safely without treating the compacted text as Thread authority.
 - Model providers MUST adapt to the model Driver port.
 - Neither MCP nor a provider may introduce a second Thread state machine.
 - Provider conversation IDs MAY be correlation metadata only.
+
+### 11.4 Reference Agent instructions
+
+- **JX-AGENT-001.** The reference Jixu Agent instructions MUST describe only
+  capabilities available in the current executable Harness. Planned Context,
+  Skill, Handoff, approval, sandbox, or provider features MUST NOT be presented
+  to the model as usable capabilities before their ordinary public path exists.
+- **JX-AGENT-002.** The reference instructions MUST define the single-Agent
+  mission, Tool boundary, adaptive Plan and public-progress policies, evidence
+  and validation expectations, destructive-action constraints, secret handling,
+  scope discipline, efficiency expectations, and final-response contract. They
+  MUST distinguish observable progress from hidden reasoning and MUST NOT ask
+  the model to manage provider caching itself.
 
 ## 12. Storage and recovery
 
@@ -637,6 +681,41 @@ not own execution truth.
   Shift+Enter when the terminal reports that modifier. It MUST grow with visual
   content only to a bounded maximum height, then scroll internally instead of
   displacing the surrounding workspace without limit.
+- **JX-TUI-018.** The active Plan MUST render in a bounded dock owned by the
+  composer column and outside the transcript scrollbox. Transcript growth MUST
+  NOT move the dock away from the composer; an oversized Plan MUST scroll or
+  condense inside its own bound.
+- **JX-TUI-019.** While work is live, the TUI SHOULD present a compact execution
+  strip derived from observable execution phases, Tool activity, and optional
+  model-generated public progress Signals, using the existing Nippon-color
+  tokens. Model progress MUST describe only the next observable action, remain
+  concise, and never expose hidden chain-of-thought or become execution
+  authority. The surface MUST fall back to factual Event-derived status when no
+  progress Signal exists. The existing fixed two-row status bar beneath the
+  input MUST present the current phase on its first row and incrementally
+  project Tool requests for the current live turn on its second row, updating
+  each corresponding entry when its durable outcome arrives. Tool entries MUST
+  remain visible through the turn, MAY compact repeated or overflowing
+  operations, and MUST NOT replace the durable Activity history.
+  Optional motion MUST use a fixed-width Jixu wordmark, update only its color
+  treatment on a bounded cadence, stop at stable boundaries, and provide an
+  intentional static wordmark rather than a frozen animation frame. The status
+  bar MUST retain its existing footprint and expose only the selected model on
+  its idle model row; endpoint host and API format belong to configuration and
+  MUST NOT appear there. The remaining idle row exposes shell and cost context.
+  Live work MAY replace its left-side fields but MUST NOT increase the Composer
+  height or reflow the transcript, input, cost, or quit affordance.
+- **JX-TUI-020.** Rich transcript content, including Markdown tables, MUST stay
+  inside the transcript viewport after padding and scrollbar space are applied;
+  it MUST NOT hide or draw its right boundary outside the composer column.
+- **JX-TUI-021.** High-frequency model output deltas MUST preserve exact text
+  order while being coalesced into bounded presentation frames. A committed
+  model Event remains authoritative and MUST replace the transient stream in
+  the same surface publication at the stable boundary. Non-empty public model
+  content MUST remain visible when the same response also requests Tools; it
+  MUST NOT appear transiently and then vanish merely because Tool execution
+  follows. Promotion MUST NOT render both transient and committed copies of the
+  same content in an intermediate frame.
 
 Configuration stores credentials separately from non-secret settings, uses
 restrictive POSIX permissions, and never records secrets in Thread data.
@@ -755,6 +834,48 @@ frameworks, and UI frameworks.
   model, shell, cost, and quit status remain left of the Activity rail while the
   rail reaches its own bottom row. The composer preserves Shift+Enter newlines,
   Enter submits, and its rendered height never exceeds the documented bound.
+- **JX-AC-031 — Plan control resilience and live presentation.** With no active
+  Plan the model can create one; with an active Plan the exposed control omits
+  `create`; a revision with only terminal steps completes automatically. If a
+  provider nevertheless proposes an invalid Plan change alongside response
+  content or valid Tool calls, Replay observes `model.completed` followed by
+  `plan.rejected`, the previous Plan remains active, and the Tool path proceeds
+  normally. The reference TUI keeps the active Plan outside transcript
+  scrolling and reports only observable high-level work phases.
+- **JX-AC-032 — Transcript rendering stability.** A wide Markdown table renders
+  complete left and right boundaries inside the transcript viewport. A burst of
+  ordered output deltas is presented as coalesced text rather than one surface
+  publication per delta, and the committed response remains exact.
+- **JX-AC-033 — Branded execution motion.** Thinking and Tool phases render one
+  fixed-width `JIXU` wordmark whose emphasis travels through existing Nippon
+  semantic colors without changing dock height or durable State. Response
+  streaming and disabled motion use an intentional static wordmark, not a frozen
+  progress track. The Composer occupies the same rows before, during, and after
+  transient work status is present.
+- **JX-AC-034 — Model-generated public progress.** Responses and Chat
+  Completions requests expose one reserved progress control in the existing
+  model call. A valid concise update is emitted as `model.progress`, excluded
+  from model Tool calls and durable Events, and carried by the TUI through the
+  following observable Tool action. A malformed or absent update falls back to
+  Event-derived status without failing otherwise valid content, Plan changes, or
+  Tool calls and without dispatching another model request.
+- **JX-AC-035 — Accurate Agent contract and cache-stable context.** The
+  reference Agent receives one versioned, immutable instruction prefix that
+  accurately describes its current Harness, Tools, Plan, progress, safety,
+  validation, and efficiency contract. Consecutive requests in the same Thread
+  preserve byte-identical instructions, ordinary Tool order, and control
+  descriptors while their State-valid operation set is unchanged. Revising an
+  active Plan changes only request-tail runtime context, not instructions. An
+  OpenAI or OpenRouter Driver supplies a stable Thread-derived prompt-cache key;
+  an arbitrary compatible Driver can omit it without changing logical input.
+- **JX-AC-036 — Live turn presentation continuity.** Public model text emitted
+  before Tool calls remains in the transcript. Tool requests append to one
+  fixed-height footer beneath the Composer and their outcomes update the
+  matching entries without erasing earlier operations from the same turn. At a
+  final model boundary, the transient stream is atomically replaced by the
+  exact committed response, with no duplicate or empty intermediate frame;
+  presentation-only updates preserve unchanged transcript and Activity
+  identities.
 
 The minimum validation for a code change is targeted tests, typecheck, lint, and
 `git diff --check`. Release work also runs the complete acceptance suite and
@@ -789,14 +910,21 @@ never an accepted architectural requirement and MUST NOT be implemented.
 Version 0.4 adds `plan.updated` and the `context.compaction_*` Event family,
 Context Manifests, immutable Handoff Artifacts, and running-input queue semantics
 to the pre-release design. These are not aliases for old Run or Session data.
-Persisted 0.3 drafts without explicit compatible upcasters MUST fail closed; no
-automatic migration is promised before the first stable release.
+Persisted pre-release drafts using any non-current Event schema MUST fail closed;
+no automatic migration is provided before the first stable release.
 
-Within the Thread model, Event schema version 2 adds Plan-control input and
-terminal model accounting. The core decoder deterministically upcasts schema
-version 1 Thread Events produced before those fields existed. Their historical
-model and Tool call counts remain exact, while unavailable historical token and
-cost values remain explicitly unknown. The Store is not rewritten in place.
+Within the Thread model, Event schema version 5 derives the exposed Plan control
+from State, adds `plan.rejected`, records the reserved progress-control
+descriptor inside each requested Model Effect, and keeps immutable Agent
+instructions separate from dynamic active-Plan context. Earlier Event schemas
+were pre-release drafts: the core decoder rejects them, and incompatible local
+development Threads are removed instead of migrated. No Store is rewritten in
+place.
+
+Pre-release Plan control no longer asks the model for a separate `complete`
+operation. New revisions derive completion from their step statuses. Proposals
+that still use `complete` are invalid; semantic Plan errors are retained as
+`plan.rejected` facts without invalidating the surrounding model result.
 
 ## 19. Implementation order
 
