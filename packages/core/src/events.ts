@@ -8,6 +8,14 @@ import type {
   ToolExecuteEffect,
 } from "./effects.ts";
 import type { JsonValue } from "./json.ts";
+import type { ModelAccounting } from "./metrics.ts";
+import type { PlanSnapshot } from "./plan.ts";
+
+export const CURRENT_EVENT_SCHEMA_VERSION = 2;
+
+export function isSupportedEventSchemaVersion(value: number): boolean {
+  return value === 1 || value === CURRENT_EVENT_SCHEMA_VERSION;
+}
 
 export interface ThreadEvent<TType extends string, TPayload> {
   readonly causationId?: string;
@@ -25,15 +33,18 @@ export interface ThreadEventPayloads {
   readonly "context.cleared": Record<string, never>;
   readonly "input.received": { readonly content: string };
   readonly "model.completed": {
+    readonly accounting: ModelAccounting;
     readonly effectId: string;
     readonly response: ModelResponse;
   };
   readonly "model.failed": {
+    readonly accounting: ModelAccounting;
     readonly disposition: "failed" | "indeterminate";
     readonly effectId: string;
     readonly error: DriverError;
   };
   readonly "model.requested": { readonly effect: ModelGenerateEffect };
+  readonly "plan.updated": { readonly plan: PlanSnapshot };
   readonly "thread.created": { readonly agent: AgentSnapshot };
   readonly "thread.forked": {
     readonly parentEventId: string;
@@ -85,6 +96,6 @@ export function createThreadEvent<TType extends ThreadEventType>(
 ): ThreadEvent<TType, ThreadEventPayloads[TType]> {
   return {
     ...input,
-    schemaVersion: 1,
+    schemaVersion: CURRENT_EVENT_SCHEMA_VERSION,
   };
 }

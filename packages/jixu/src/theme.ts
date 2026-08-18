@@ -1,6 +1,7 @@
 export const jixuTheme = Object.freeze({
   background: "#141414",
   brand: "#D05A6E",
+  canvas: "transparent",
   danger: "#D66A63",
   info: "#6E93B8",
   secondary: "#9C9892",

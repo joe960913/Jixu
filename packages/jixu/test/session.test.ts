@@ -56,6 +56,39 @@ test("JX-AC-015 JX-AC-018 TUI controller uses the public multi-turn Thread path"
             value: { content: "The file says durable hello.", toolCalls: [] },
           };
         }
+        if (calls === 3) {
+          return {
+            status: "succeeded",
+            value: {
+              content: "I will verify this in two steps.",
+              planUpdates: [
+                {
+                  acceptanceCriteria: ["The follow-up is verified"],
+                  assumptions: [],
+                  blockers: [],
+                  nextAction: "Inspect the relevant state",
+                  objective: "Verify the follow-up",
+                  operation: "create",
+                  steps: [
+                    {
+                      description: "Inspect the relevant state",
+                      evidence: [],
+                      id: "inspect",
+                      status: "in_progress",
+                    },
+                    {
+                      description: "Validate the result",
+                      evidence: [],
+                      id: "validate",
+                      status: "pending",
+                    },
+                  ],
+                },
+              ],
+              toolCalls: [],
+            },
+          };
+        }
         return {
           status: "succeeded",
           value: { content: `reply-${calls}`, toolCalls: [] },
@@ -88,12 +121,21 @@ test("JX-AC-015 JX-AC-018 TUI controller uses the public multi-turn Thread path"
     assert.equal(first.threadStatus, "idle");
     assert.ok(observedLiveText.includes("Reading"));
     assert.equal(first.transcript.at(-1)?.content, "The file says durable hello.");
+    // JX-AC-028: the controller exposes the canonical Thread projection.
+    assert.equal(first.metrics?.model.calls, 2);
+    assert.equal(first.metrics?.model.succeeded, 2);
+    assert.equal(first.metrics?.tools.calls, 1);
+    assert.equal(first.metrics?.cost.unpricedOutcomes, 2);
     const originalThreadId = first.currentThreadId;
     assert.notEqual(originalThreadId, null);
     if (originalThreadId === null) return;
 
     await controller.submit("Follow up");
     assert.equal(controller.getSnapshot().currentThreadId, originalThreadId);
+    assert.equal(
+      controller.getSnapshot().activePlan?.objective,
+      "Verify the follow-up",
+    );
     assert.deepEqual(effects[2]?.input.messages.slice(-2), [
       {
         content: "The file says durable hello.",
@@ -112,6 +154,9 @@ test("JX-AC-015 JX-AC-018 TUI controller uses the public multi-turn Thread path"
 
     await controller.submit("/clear");
     assert.deepEqual(controller.getSnapshot().transcript, []);
+    assert.equal(controller.getSnapshot().activePlan, null);
+    assert.equal(controller.getSnapshot().metrics?.model.calls, 3);
+    assert.equal(controller.getSnapshot().metrics?.cost.unpricedOutcomes, 3);
     await controller.submit("Fresh start");
     assert.equal(controller.getSnapshot().currentThreadId, originalThreadId);
     assert.deepEqual(effects[3]?.input.messages, [

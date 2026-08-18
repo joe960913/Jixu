@@ -579,6 +579,7 @@ Thread ID -> one actor address -> serialized commands -> Event Store
 | Immutable Artifact Store | Large content addressed by digest and referenced from Events | Authority for bytes only; cannot decide Thread status |
 | Derived State | Fast executable projection | Rebuilt from Events |
 | Effect ledger | View of requested, dispatched, and resolved Effects | Derived from Events |
+| Efficiency accounting | Model/Tool calls and attempts, outcomes, reported tokens, trusted cost | Derived from terminal and request Events |
 | Checkpoint | State plus replay cursor and digest | Disposable cache |
 | Live workspace / sandbox | External execution target | Not Thread authority; snapshot when continuity requires it |
 | Search index | Retrieval optimization | Rebuildable derivative |
@@ -632,6 +633,14 @@ Jixu needs two observation levels:
 
 Events answer what was accepted, requested, and completed. They support replay,
 recovery, audit, fork, and time-travel inspection.
+
+The same Events carry compact canonical accounting facts. Thread State projects
+logical model and Tool calls separately from dispatch attempts, terminal
+outcomes, provider-reported input/output/reasoning/cache tokens, and trusted USD
+cost. Missing usage and unpriced outcomes remain explicit. Cost is integer
+nanodollars with source metadata; core never guesses current model prices or
+turns an unknown value into zero. This ledger enables efficiency review without
+becoming a hosted billing product or replacing a provider invoice.
 
 ### Operational telemetry
 

@@ -1,6 +1,12 @@
-import type { InputRenderable, SubmitEvent } from "@opentui/core";
+import {
+  MouseButton,
+  type InputRenderable,
+  type MouseEvent as OpenTUIMouseEvent,
+  type SubmitEvent,
+} from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useRef, useState } from "react";
+import type { RefObject } from "react";
 
 import { normalizeJixuBaseUrl } from "./config.ts";
 import type { JixuApiFormat, JixuConnectionConfig } from "./config.ts";
@@ -23,6 +29,136 @@ interface SetupProps {
 
 type SetupFocus = 0 | 1 | 2 | 3;
 
+function onPrimaryMouseDown(action: () => void) {
+  return (event: OpenTUIMouseEvent) => {
+    if (event.button === MouseButton.LEFT) action();
+  };
+}
+
+function FieldLabel({
+  active,
+  hint,
+  label,
+  number,
+}: {
+  readonly active: boolean;
+  readonly hint: string;
+  readonly label: string;
+  readonly number: SetupFocus;
+}) {
+  return (
+    <box
+      style={{
+        flexDirection: "row",
+        justifyContent: "space-between",
+        width: "100%",
+      }}
+    >
+      <text fg={active ? jixuTheme.text : jixuTheme.secondary} selectable={false}>
+        <span fg={active ? jixuTheme.brand : jixuTheme.secondary}>
+          <strong>0{number + 1}</strong>
+        </span>
+        {`  ${label}`}
+      </text>
+      <text fg={active ? jixuTheme.info : jixuTheme.secondary} selectable={false}>
+        {hint}
+      </text>
+    </box>
+  );
+}
+
+function FormatOption({
+  focused,
+  label,
+  number,
+  onSelect,
+  selected,
+}: {
+  readonly focused: boolean;
+  readonly label: string;
+  readonly number: 1 | 2;
+  readonly onSelect: () => void;
+  readonly selected: boolean;
+}) {
+  return (
+    <box
+      backgroundColor={selected ? jixuTheme.surface : jixuTheme.background}
+      border
+      borderColor={
+        selected
+          ? focused
+            ? jixuTheme.brand
+            : jixuTheme.info
+          : jixuTheme.secondary
+      }
+      onMouseDown={onPrimaryMouseDown(onSelect)}
+      style={{ flexGrow: 1, paddingLeft: 1, paddingRight: 1 }}
+    >
+      <text fg={selected ? jixuTheme.text : jixuTheme.secondary} selectable={false}>
+        <strong>{selected ? "●" : "○"}</strong>
+        {`  ${number}  ${label}`}
+      </text>
+    </box>
+  );
+}
+
+interface SetupFieldProps {
+  readonly active: boolean;
+  readonly hint: string;
+  readonly inputRef: RefObject<InputRenderable | null>;
+  readonly label: string;
+  readonly maxLength?: number;
+  readonly number: 1 | 2 | 3;
+  readonly onFocus: () => void;
+  readonly onInput: (value: string) => void;
+  readonly onSubmit: (event: string | SubmitEvent) => void;
+  readonly placeholder: string;
+  readonly value: string;
+}
+
+function SetupField({
+  active,
+  hint,
+  inputRef,
+  label,
+  maxLength,
+  number,
+  onFocus,
+  onInput,
+  onSubmit,
+  placeholder,
+  value,
+}: SetupFieldProps) {
+  return (
+    <>
+      <FieldLabel active={active} hint={hint} label={label} number={number} />
+      <box
+        backgroundColor={jixuTheme.surface}
+        border
+        borderColor={active ? jixuTheme.brand : jixuTheme.secondary}
+        onMouseDown={onPrimaryMouseDown(onFocus)}
+        style={{ height: 3, paddingLeft: 1, paddingRight: 1, width: "100%" }}
+      >
+        <input
+          ref={inputRef}
+          backgroundColor={jixuTheme.surface}
+          cursorColor={jixuTheme.brand}
+          focused={active}
+          focusedBackgroundColor={jixuTheme.surface}
+          focusedTextColor={jixuTheme.text}
+          {...(maxLength === undefined ? {} : { maxLength })}
+          onInput={onInput}
+          onSubmit={onSubmit}
+          placeholder={placeholder}
+          placeholderColor={jixuTheme.secondary}
+          textColor={jixuTheme.text}
+          value={value}
+        />
+      </box>
+    </>
+  );
+}
+
 export function Setup({ initial, initialError, onConnect, workspace }: SetupProps) {
   const [apiFormat, setApiFormat] = useState<JixuApiFormat>(
     initial?.apiFormat ?? "responses",
@@ -37,6 +173,7 @@ export function Setup({ initial, initialError, onConnect, workspace }: SetupProp
   const apiKeyInput = useRef<InputRenderable>(null);
   const modelInput = useRef<InputRenderable>(null);
   const { width } = useTerminalDimensions();
+  const compact = width < 72;
 
   useEffect(() => {
     if (focus !== 1) baseUrlInput.current?.blur();
@@ -47,6 +184,11 @@ export function Setup({ initial, initialError, onConnect, workspace }: SetupProp
   const selectApiFormat = (next: JixuApiFormat) => {
     setApiFormat(next);
     setError(null);
+  };
+
+  const selectFormatByPointer = (next: JixuApiFormat) => {
+    setFocus(0);
+    selectApiFormat(next);
   };
 
   const connect = async () => {
@@ -144,180 +286,134 @@ export function Setup({ initial, initialError, onConnect, workspace }: SetupProp
     <box
       style={{
         alignItems: "center",
-        backgroundColor: jixuTheme.background,
+        backgroundColor: jixuTheme.canvas,
         flexDirection: "column",
         height: "100%",
-        justifyContent: "center",
-        padding: 1,
+        justifyContent: "space-between",
+        paddingLeft: 1,
+        paddingRight: 1,
         width: "100%",
       }}
     >
-      <box style={{ flexDirection: "row", width: "100%" }}>
-        <text fg={jixuTheme.brand}>
+      <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
+        <text fg={jixuTheme.brand} selectable={false}>
           <strong>JIXU</strong>
         </text>
-        <text fg={jixuTheme.text}>  Agents that continue.</text>
+        <text fg={jixuTheme.text} selectable={false}>  Configuration</text>
         <box style={{ flexGrow: 1 }} />
-        <text fg={jixuTheme.secondary}>Setup · saved in ~/.jixu</text>
+        <text fg={jixuTheme.secondary} selectable={false}>
+          {compact ? "~/.jixu" : "saved locally · ~/.jixu"}
+        </text>
       </box>
 
       <box
-        border
+        backgroundColor={jixuTheme.background}
+        borderStyle="rounded"
         borderColor={jixuTheme.secondary}
-        title=" Connect a model "
+        title=" Model connection "
         titleColor={jixuTheme.text}
         style={{
           flexDirection: "column",
-          gap: 0,
           padding: 1,
-          width: width >= 76 ? 72 : "100%",
+          width: width >= 80 ? 76 : "100%",
         }}
       >
-        <text fg={jixuTheme.secondary}>1  API format</text>
+        <FieldLabel
+          active={focus === 0}
+          hint="COMPATIBILITY MODE"
+          label="API FORMAT"
+          number={0}
+        />
         <box style={{ flexDirection: "row", gap: 1, height: 3, width: "100%" }}>
-          <box
-            border
-            borderColor={
-              apiFormat === "responses"
-                ? focus === 0
-                  ? jixuTheme.brand
-                  : jixuTheme.info
-                : jixuTheme.secondary
-            }
-            style={{ flexGrow: 1, paddingLeft: 1 }}
-          >
-            <text
-              fg={
-                apiFormat === "responses"
-                  ? jixuTheme.text
-                  : jixuTheme.secondary
-              }
-            >
-              <strong>
-                {apiFormat === "responses" ? "●" : "○"} 1 Responses
-              </strong>
-            </text>
-          </box>
-          <box
-            border
-            borderColor={
-              apiFormat === "chat-completions"
-                ? focus === 0
-                  ? jixuTheme.brand
-                  : jixuTheme.info
-                : jixuTheme.secondary
-            }
-            style={{ flexGrow: 1, paddingLeft: 1 }}
-          >
-            <text
-              fg={
-                apiFormat === "chat-completions"
-                  ? jixuTheme.text
-                  : jixuTheme.secondary
-              }
-            >
-              <strong>
-                {apiFormat === "chat-completions" ? "●" : "○"} 2 Chat
-                Completions
-              </strong>
-            </text>
-          </box>
+          <FormatOption
+            focused={focus === 0}
+            label="Responses"
+            number={1}
+            onSelect={() => selectFormatByPointer("responses")}
+            selected={apiFormat === "responses"}
+          />
+          <FormatOption
+            focused={focus === 0}
+            label="Chat Completions"
+            number={2}
+            onSelect={() => selectFormatByPointer("chat-completions")}
+            selected={apiFormat === "chat-completions"}
+          />
         </box>
-        <text fg={focus === 0 ? jixuTheme.brand : jixuTheme.secondary}>
-          ←/→ or 1/2 select · Enter continue
+        <text fg={focus === 0 ? jixuTheme.brand : jixuTheme.secondary} selectable={false}>
+          ←/→ or 1/2 choose · click select · Enter next
         </text>
 
-        <text fg={jixuTheme.secondary}>2  Base URL</text>
-        <box
-          border
-          borderColor={focus === 1 ? jixuTheme.brand : jixuTheme.secondary}
-          style={{ height: 3, paddingLeft: 1, paddingRight: 1, width: "100%" }}
-        >
-          <input
-            ref={baseUrlInput}
-            backgroundColor={jixuTheme.background}
-            cursorColor={jixuTheme.brand}
-            focused={focus === 1}
-            focusedBackgroundColor={jixuTheme.background}
-            focusedTextColor={jixuTheme.text}
-            onInput={setBaseUrl}
-            onSubmit={() => {
-              baseUrlInput.current?.blur();
-              setFocus(2);
-            }}
-            placeholder="https://api.example.com/v1"
-            placeholderColor={jixuTheme.secondary}
-            textColor={jixuTheme.text}
-            value={baseUrl}
-          />
-        </box>
+        <SetupField
+          active={focus === 1}
+          hint="OPENAI-COMPATIBLE"
+          inputRef={baseUrlInput}
+          label="BASE URL"
+          number={1}
+          onFocus={() => setFocus(1)}
+          onInput={setBaseUrl}
+          onSubmit={() => {
+            baseUrlInput.current?.blur();
+            setFocus(2);
+          }}
+          placeholder="https://api.example.com/v1"
+          value={baseUrl}
+        />
 
-        <text fg={jixuTheme.secondary}>3  API Key</text>
-        <box
-          border
-          borderColor={focus === 2 ? jixuTheme.brand : jixuTheme.secondary}
-          style={{ height: 3, paddingLeft: 1, paddingRight: 1, width: "100%" }}
-        >
-          <input
-            ref={apiKeyInput}
-            backgroundColor={jixuTheme.background}
-            cursorColor={jixuTheme.brand}
-            focused={focus === 2}
-            focusedBackgroundColor={jixuTheme.background}
-            focusedTextColor={jixuTheme.text}
-            maxLength={8192}
-            onInput={setApiKey}
-            onSubmit={() => {
-              apiKeyInput.current?.blur();
-              setFocus(3);
-            }}
-            placeholder="Paste or type the endpoint API key"
-            placeholderColor={jixuTheme.secondary}
-            textColor={jixuTheme.text}
-            value={apiKey}
-          />
-        </box>
+        <SetupField
+          active={focus === 2}
+          hint="SAVED SEPARATELY"
+          inputRef={apiKeyInput}
+          label="API KEY"
+          maxLength={8192}
+          number={2}
+          onFocus={() => setFocus(2)}
+          onInput={setApiKey}
+          onSubmit={() => {
+            apiKeyInput.current?.blur();
+            setFocus(3);
+          }}
+          placeholder="Paste or type the endpoint API key"
+          value={apiKey}
+        />
 
-        <text fg={jixuTheme.secondary}>4  Model ID</text>
-        <box
-          border
-          borderColor={focus === 3 ? jixuTheme.brand : jixuTheme.secondary}
-          style={{ height: 3, paddingLeft: 1, paddingRight: 1, width: "100%" }}
-        >
-          <input
-            ref={modelInput}
-            backgroundColor={jixuTheme.background}
-            cursorColor={jixuTheme.brand}
-            focused={focus === 3}
-            focusedBackgroundColor={jixuTheme.background}
-            focusedTextColor={jixuTheme.text}
-            onInput={setModel}
-            onSubmit={submitModel}
-            placeholder="e.g. vendor/model-name"
-            placeholderColor={jixuTheme.secondary}
-            textColor={jixuTheme.text}
-            value={model}
-          />
-        </box>
+        <SetupField
+          active={focus === 3}
+          hint="VENDOR / MODEL"
+          inputRef={modelInput}
+          label="MODEL ID"
+          number={3}
+          onFocus={() => setFocus(3)}
+          onInput={setModel}
+          onSubmit={submitModel}
+          placeholder="e.g. vendor/model-name"
+          value={model}
+        />
 
-        <box style={{ flexDirection: "row", width: "100%" }}>
-          <text fg={error === null ? jixuTheme.secondary : jixuTheme.danger}>
-            {error ??
-              (connecting
-                ? "Connecting…"
-                : "Tab move · Enter continue / connect")}
+        <box
+          style={{
+            flexDirection: "row",
+            justifyContent: "space-between",
+            width: "100%",
+          }}
+        >
+          <text fg={error === null ? jixuTheme.secondary : jixuTheme.danger} selectable={false}>
+            {error ?? (connecting ? "Verifying endpoint…" : "Tab / Shift+Tab move · Enter advance")}
           </text>
-          <box style={{ flexGrow: 1 }} />
-          <text fg={jixuTheme.brand}>
-            <strong>{connecting ? "CONNECTING" : "ENTER TO CONNECT"}</strong>
-          </text>
+          <box onMouseDown={onPrimaryMouseDown(() => void connect())}>
+            <text fg={connecting ? jixuTheme.warning : jixuTheme.brand} selectable={false}>
+              <strong>{connecting ? "CONNECTING…" : "CONNECT  ↵"}</strong>
+            </text>
+          </box>
         </box>
       </box>
 
-      <box style={{ flexDirection: "row", width: "100%" }}>
-        <text fg={jixuTheme.secondary}>Compatible endpoint</text>
+      <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
+        <text fg={jixuTheme.info} selectable={false}>OpenAI-compatible endpoint</text>
         <box style={{ flexGrow: 1 }} />
-        <text fg={jixuTheme.secondary}>Ctrl+C quit · {workspace}</text>
+        <text fg={jixuTheme.secondary} selectable={false}>
+          {compact ? "Ctrl+C quit" : `Ctrl+C quit · ${workspace}`}
+        </text>
       </box>
     </box>
   );
@@ -328,7 +424,7 @@ export function Booting({ workspace }: { readonly workspace: string }) {
     <box
       style={{
         alignItems: "center",
-        backgroundColor: jixuTheme.background,
+        backgroundColor: jixuTheme.canvas,
         flexDirection: "column",
         height: "100%",
         justifyContent: "center",

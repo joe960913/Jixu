@@ -10,6 +10,11 @@ import type {
 import { InvalidTransitionError } from "./errors.ts";
 import { assertJsonValue, cloneJson } from "./json.ts";
 import type { JsonValue } from "./json.ts";
+import {
+  EMPTY_MODEL_ACCOUNTING,
+  parseModelAccounting,
+} from "./metrics.ts";
+import type { ModelAccounting } from "./metrics.ts";
 import type { ModelDriver, Signal, SignalSink } from "./ports.ts";
 import type { ThreadEventPayloads } from "./events.ts";
 import type { ObservationBroker } from "./observation.ts";
@@ -68,6 +73,7 @@ export class EffectDispatcher {
     if (driver === undefined) {
       return {
         payload: {
+          accounting: EMPTY_MODEL_ACCOUNTING,
           disposition: "failed",
           effectId: effect.id,
           error: driverError(
@@ -93,9 +99,31 @@ export class EffectDispatcher {
       };
     }
 
+    let accounting: ModelAccounting;
+    try {
+      accounting = parseModelAccounting(
+        outcome.accounting ?? EMPTY_MODEL_ACCOUNTING,
+      );
+    } catch (error) {
+      return {
+        payload: {
+          accounting: EMPTY_MODEL_ACCOUNTING,
+          disposition: "failed",
+          effectId: effect.id,
+          error: driverError(
+            "model_accounting_invalid",
+            messageFrom(error),
+            false,
+          ),
+        },
+        type: "model.failed",
+      };
+    }
+
     if (outcome.status !== "succeeded") {
       return {
         payload: {
+          accounting,
           disposition: outcome.status,
           effectId: effect.id,
           error: outcome.error,
@@ -107,6 +135,7 @@ export class EffectDispatcher {
     try {
       return {
         payload: {
+          accounting,
           effectId: effect.id,
           response: parseModelResponse(outcome.value),
         },
@@ -115,6 +144,7 @@ export class EffectDispatcher {
     } catch (error) {
       return {
         payload: {
+          accounting,
           disposition: "failed",
           effectId: effect.id,
           error: driverError("model_response_invalid", messageFrom(error), false),

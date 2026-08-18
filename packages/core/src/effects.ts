@@ -7,6 +7,8 @@ import type {
   ToolIdempotency,
 } from "./domain.ts";
 import type { JsonObject } from "./json.ts";
+import type { ModelAccounting } from "./metrics.ts";
+import type { PlanControlDescriptor, PlanSnapshot } from "./plan.ts";
 
 export interface EffectEnvelope<TType extends string, TInput> {
   readonly attempt: number;
@@ -19,9 +21,11 @@ export interface EffectEnvelope<TType extends string, TInput> {
 }
 
 export interface ModelGenerateInput {
+  readonly activePlan: PlanSnapshot | null;
   readonly instructions: string;
   readonly messages: readonly ModelMessage[];
   readonly model: ModelRef;
+  readonly planControl: PlanControlDescriptor;
   readonly tools: readonly ToolDescriptor[];
 }
 
@@ -61,4 +65,6 @@ export type DriverOutcome<T> =
   | DriverIndeterminate
   | DriverSuccess<T>;
 
-export type ModelOutcome = DriverOutcome<ModelResponse>;
+export type ModelOutcome = DriverOutcome<ModelResponse> & {
+  readonly accounting?: ModelAccounting;
+};

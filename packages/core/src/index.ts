@@ -61,7 +61,11 @@ export {
   SchemaValidationError,
   UnsupportedEventError,
 } from "./errors.ts";
-export { createThreadEvent } from "./events.ts";
+export {
+  createThreadEvent,
+  CURRENT_EVENT_SCHEMA_VERSION,
+  isSupportedEventSchemaVersion,
+} from "./events.ts";
 export type {
   AnyThreadEvent,
   ThreadEvent,
@@ -79,6 +83,41 @@ export {
   jsonEquals,
 } from "./json.ts";
 export type { JsonObject, JsonPrimitive, JsonValue } from "./json.ts";
+export {
+  createInitialThreadMetrics,
+  EMPTY_MODEL_ACCOUNTING,
+  parseModelAccounting,
+  parseModelCost,
+  parseModelTokenUsage,
+  parseThreadMetrics,
+} from "./metrics.ts";
+export type {
+  CostMetrics,
+  EffectMetrics,
+  ModelAccounting,
+  ModelCost,
+  ModelTokenUsage,
+  ThreadMetrics,
+  TokenMetrics,
+} from "./metrics.ts";
+export {
+  compilePlanInstructions,
+  materializePlanUpdates,
+  parsePlanSnapshot,
+  parsePlanUpdateProposal,
+  PLAN_CONTROL,
+  PLAN_CONTROL_NAME,
+} from "./plan.ts";
+export type {
+  PendingPlanUpdate,
+  PlanControlDescriptor,
+  PlanSnapshot,
+  PlanStatus,
+  PlanStep,
+  PlanStepStatus,
+  PlanUpdateOperation,
+  PlanUpdateProposal,
+} from "./plan.ts";
 export type {
   Clock,
   EventStore,

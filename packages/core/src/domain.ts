@@ -1,6 +1,14 @@
 import type { EffectRequest } from "./effects.ts";
 import { cloneJson, isJsonObject } from "./json.ts";
 import type { JsonObject, JsonValue } from "./json.ts";
+import { createInitialThreadMetrics } from "./metrics.ts";
+import type { ThreadMetrics } from "./metrics.ts";
+import { parsePlanUpdateProposal } from "./plan.ts";
+import type {
+  PendingPlanUpdate,
+  PlanSnapshot,
+  PlanUpdateProposal,
+} from "./plan.ts";
 
 export type ThreadStatus =
   | "idle"
@@ -59,6 +67,7 @@ export type ModelMessage = AssistantMessage | ToolMessage | UserMessage;
 
 export interface ModelResponse {
   readonly content: string;
+  readonly planUpdates?: readonly PlanUpdateProposal[];
   readonly toolCalls: readonly ToolCall[];
 }
 
@@ -90,7 +99,18 @@ export function parseModelResponse(value: unknown): ModelResponse {
     };
   });
 
-  return { content, toolCalls: parsedCalls };
+  const planUpdates = value.planUpdates ?? [];
+  if (!Array.isArray(planUpdates)) {
+    throw new TypeError("Model response planUpdates must be an array");
+  }
+
+  return {
+    content,
+    planUpdates: planUpdates.map((proposal, index) =>
+      parsePlanUpdateProposal(proposal, `Model response planUpdates[${index}]`),
+    ),
+    toolCalls: parsedCalls,
+  };
 }
 
 export interface DriverError {
@@ -116,13 +136,16 @@ export interface QueuedInput {
 }
 
 export interface ThreadState {
+  readonly activePlan: PlanSnapshot | null;
   readonly agent: AgentSnapshot | null;
   readonly error: DriverError | null;
   readonly inputQueue: readonly QueuedInput[];
   readonly lineage: ForkLineage | null;
   readonly messages: readonly ModelMessage[];
+  readonly metrics: ThreadMetrics;
   readonly pauseRequested: boolean;
   readonly pendingEffects: Readonly<Record<string, EffectRequest>>;
+  readonly pendingPlanUpdates: readonly PendingPlanUpdate[];
   readonly readyEffects: readonly EffectRequest[];
   readonly result: string | null;
   readonly revision: number;
@@ -143,13 +166,16 @@ export interface Checkpoint {
 
 export function createInitialThreadState(threadId: string): ThreadState {
   return {
+    activePlan: null,
     agent: null,
     error: null,
     inputQueue: [],
     lineage: null,
     messages: [],
+    metrics: createInitialThreadMetrics(),
     pauseRequested: false,
     pendingEffects: {},
+    pendingPlanUpdates: [],
     readyEffects: [],
     result: null,
     revision: 0,

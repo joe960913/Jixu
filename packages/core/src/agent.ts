@@ -8,6 +8,7 @@ import { SchemaValidationError } from "./errors.ts";
 import { cloneFrozenJson } from "./json.ts";
 import type { JsonObject, JsonValue } from "./json.ts";
 import type { SignalSink } from "./ports.ts";
+import { PLAN_CONTROL_NAME } from "./plan.ts";
 
 export interface Schema<TValue extends JsonValue> {
   readonly jsonSchema: JsonObject;
@@ -96,6 +97,11 @@ export interface AgentConfig {
 export function defineAgent(config: AgentConfig): AgentDefinition {
   const tools = new Map<string, ExecutableTool>();
   for (const tool of config.tools ?? []) {
+    if (tool.descriptor.name === PLAN_CONTROL_NAME) {
+      throw new SchemaValidationError(
+        `Tool name ${PLAN_CONTROL_NAME} is reserved for Jixu Plan control`,
+      );
+    }
     if (tools.has(tool.descriptor.name)) {
       throw new SchemaValidationError(
         `Tool name ${tool.descriptor.name} is duplicated`,

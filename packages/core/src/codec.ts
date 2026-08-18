@@ -2,9 +2,26 @@ import type { Checkpoint } from "./domain.ts";
 import { parseModelResponse } from "./domain.ts";
 import type { EffectRequest } from "./effects.ts";
 import { SchemaValidationError, UnsupportedEventError } from "./errors.ts";
+import {
+  CURRENT_EVENT_SCHEMA_VERSION,
+  isSupportedEventSchemaVersion,
+} from "./events.ts";
 import type { AnyThreadEvent, ThreadEventType } from "./events.ts";
 import { cloneJson, isJsonObject } from "./json.ts";
 import type { JsonObject, JsonValue } from "./json.ts";
+import {
+  EMPTY_MODEL_ACCOUNTING,
+  parseModelAccounting,
+  parseThreadMetrics,
+} from "./metrics.ts";
+import {
+  materializePlanUpdates,
+  parsePlanSnapshot,
+  parsePlanUpdateProposal,
+  PLAN_CONTROL,
+  PLAN_CONTROL_NAME,
+} from "./plan.ts";
+import type { PlanSnapshot } from "./plan.ts";
 
 function object(value: unknown, label: string): JsonObject {
   if (!isJsonObject(value)) {
@@ -145,6 +162,35 @@ function assertThreadState(
   }
   assertAgentSnapshot(state.agent, `${label}.agent`);
 
+  let projectedPlan: PlanSnapshot | null =
+    state.activePlan === null
+      ? null
+      : parsePlanSnapshot(state.activePlan, `${label}.activePlan`);
+  array(state.pendingPlanUpdates, `${label}.pendingPlanUpdates`).forEach(
+    (value, index) => {
+      const pending = object(value, `${label}.pendingPlanUpdates[${index}]`);
+      const identitySeed = string(
+        pending.identitySeed,
+        `${label}.pendingPlanUpdates[${index}].identitySeed`,
+      );
+      const proposal = parsePlanUpdateProposal(
+        pending.proposal,
+        `${label}.pendingPlanUpdates[${index}].proposal`,
+      );
+      const parsed = materializePlanUpdates(
+        projectedPlan,
+        [proposal],
+        identitySeed,
+      )[0];
+      if (parsed === undefined) {
+        throw new SchemaValidationError(
+          `${label}.pendingPlanUpdates[${index}] did not materialize`,
+        );
+      }
+      projectedPlan = parsed.status === "active" ? parsed : null;
+    },
+  );
+
   if (state.error !== null) {
     assertDriverError(state.error, `${label}.error`);
   }
@@ -172,6 +218,7 @@ function assertThreadState(
   array(state.messages, `${label}.messages`).forEach((message, index) =>
     assertModelMessage(message, `${label}.messages[${index}]`),
   );
+  parseThreadMetrics(state.metrics, `${label}.metrics`);
   const pauseRequested = boolean(
     state.pauseRequested,
     `${label}.pauseRequested`,
@@ -271,6 +318,9 @@ function parseEffect(
   const input = object(item.input, `${label}.input`);
 
   if (type === "model.generate") {
+    if (input.activePlan !== null) {
+      parsePlanSnapshot(input.activePlan, `${label}.input.activePlan`);
+    }
     string(input.instructions, `${label}.input.instructions`);
     const model = object(input.model, `${label}.input.model`);
     string(model.model, `${label}.input.model.model`);
@@ -278,6 +328,17 @@ function parseEffect(
     array(input.messages, `${label}.input.messages`).forEach((message, index) =>
       assertModelMessage(message, `${label}.input.messages[${index}]`),
     );
+    const planControl = object(input.planControl, `${label}.input.planControl`);
+    if (
+      string(planControl.name, `${label}.input.planControl.name`) !==
+      PLAN_CONTROL_NAME
+    ) {
+      throw new SchemaValidationError(
+        `${label}.input.planControl.name is unsupported`,
+      );
+    }
+    string(planControl.description, `${label}.input.planControl.description`);
+    object(planControl.inputSchema, `${label}.input.planControl.inputSchema`);
     array(input.tools, `${label}.input.tools`).forEach((tool, index) =>
       assertToolDescriptor(tool, `${label}.input.tools[${index}]`),
     );
@@ -319,6 +380,7 @@ const eventTypes = new Set<ThreadEventType>([
   "model.completed",
   "model.failed",
   "model.requested",
+  "plan.updated",
   "thread.created",
   "thread.forked",
   "thread.pause_requested",
@@ -329,6 +391,40 @@ const eventTypes = new Set<ThreadEventType>([
   "tool.failed",
   "tool.requested",
 ]);
+
+function migrateLegacyPayload(
+  type: ThreadEventType,
+  payload: JsonObject,
+): JsonObject {
+  if (type === "plan.updated") {
+    throw new UnsupportedEventError(
+      "Event type plan.updated is unsupported for schema version 1",
+    );
+  }
+  if (type === "model.requested") {
+    const effect = object(payload.effect, "payload.effect");
+    if (effect.type !== "model.generate") return payload;
+    const input = object(effect.input, "payload.effect.input");
+    return {
+      ...payload,
+      effect: {
+        ...effect,
+        input: {
+          ...input,
+          activePlan: null,
+          planControl: cloneJson(PLAN_CONTROL) as unknown as JsonValue,
+        },
+      },
+    };
+  }
+  if (type === "model.completed" || type === "model.failed") {
+    return {
+      ...payload,
+      accounting: cloneJson(EMPTY_MODEL_ACCOUNTING) as unknown as JsonValue,
+    };
+  }
+  return payload;
+}
 
 function assertEventPayload(type: ThreadEventType, payload: JsonObject, threadId: string): void {
   switch (type) {
@@ -367,10 +463,15 @@ function assertEventPayload(type: ThreadEventType, payload: JsonObject, threadId
       return;
     }
     case "model.completed":
+      parseModelAccounting(payload.accounting, "payload.accounting");
       string(payload.effectId, "payload.effectId");
       parseModelResponse(payload.response);
       return;
+    case "plan.updated":
+      parsePlanSnapshot(payload.plan, "payload.plan");
+      return;
     case "model.failed":
+      parseModelAccounting(payload.accounting, "payload.accounting");
       string(payload.effectId, "payload.effectId");
       assertDriverError(payload.error, "payload.error");
       if (payload.disposition !== "failed" && payload.disposition !== "indeterminate") {
@@ -400,7 +501,7 @@ function assertEventPayload(type: ThreadEventType, payload: JsonObject, threadId
 export function decodeThreadEvent(value: unknown): AnyThreadEvent {
   const event = object(value, "Event");
   const schemaVersion = integer(event.schemaVersion, "Event.schemaVersion");
-  if (schemaVersion !== 1) {
+  if (!isSupportedEventSchemaVersion(schemaVersion)) {
     throw new UnsupportedEventError(
       `Event uses unsupported schema version ${schemaVersion}`,
     );
@@ -419,9 +520,13 @@ export function decodeThreadEvent(value: unknown): AnyThreadEvent {
   string(event.timestamp, "Event.timestamp");
   optionalString(event.causationId, "Event.causationId");
   optionalString(event.correlationId, "Event.correlationId");
-  const payload = object(event.payload, "Event.payload");
+  const rawPayload = object(event.payload, "Event.payload");
+  const payload =
+    schemaVersion === CURRENT_EVENT_SCHEMA_VERSION
+      ? rawPayload
+      : migrateLegacyPayload(type, rawPayload);
   assertEventPayload(type, payload, threadId);
-  return cloneJson(event) as unknown as AnyThreadEvent;
+  return cloneJson({ ...event, payload }) as unknown as AnyThreadEvent;
 }
 
 export function decodeCheckpoint(value: unknown): Checkpoint {

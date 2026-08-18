@@ -1,4 +1,4 @@
-import type { InputRenderable, SelectRenderable } from "@opentui/core";
+import type { SelectRenderable, TextareaRenderable } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
 import type { RefObject } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -10,7 +10,7 @@ import type { ThreadSummary } from "./tui-model.ts";
 
 interface SlashCommandMenuProps {
   readonly draft: string;
-  readonly input: RefObject<InputRenderable | null>;
+  readonly input: RefObject<TextareaRenderable | null>;
   readonly onInsert: (value: string) => void;
   readonly onInvoke: (command: string) => void;
 }
@@ -135,7 +135,7 @@ export function SlashCommandMenu({
 }
 
 interface ThreadPickerProps {
-  readonly input: RefObject<InputRenderable | null>;
+  readonly input: RefObject<TextareaRenderable | null>;
   readonly onClose: () => void;
   readonly onSelect: (threadId: string) => void;
   readonly open: boolean;

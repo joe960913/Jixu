@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 import { createHarness, defineAgent } from "@jixu/core";
 import type { ModelDriver } from "@jixu/core";
+import type { TextareaRenderable } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 
@@ -12,6 +13,9 @@ import { JixuApp } from "../src/tui.tsx";
 
 const successfulDriver: ModelDriver = {
   generate: async (effect, context) => {
+    const priced = !effect.input.messages.some(
+      (message) => message.role === "user" && message.content === "Compact activity",
+    );
     context.signals.emit({
       data: { delta: "Working" },
       kind: "signal",
@@ -19,9 +23,51 @@ const successfulDriver: ModelDriver = {
       type: "model.output_text.delta",
     });
     return {
+      accounting: {
+        cost: priced
+          ? {
+              currency: "USD",
+              pricingVersion: "smoke-1",
+              source: "calculator",
+              usdNanos: 13_200_000,
+            }
+          : null,
+        usage: {
+          cacheWriteTokens: null,
+          cachedInputTokens: 24,
+          inputTokens: 120,
+          outputTokens: 30,
+          reasoningTokens: 8,
+          totalTokens: 150,
+        },
+      },
       status: "succeeded",
       value: {
         content: "The **durable** run completed.",
+        planUpdates: [
+          {
+            acceptanceCriteria: ["The repository is explained accurately"],
+            assumptions: [],
+            blockers: [],
+            nextAction: "Inspect the architecture",
+            objective: "Explain the repository architecture",
+            operation: "create",
+            steps: [
+              {
+                description: "Inspect the architecture",
+                evidence: [],
+                id: "inspect",
+                status: "in_progress",
+              },
+              {
+                description: "Explain the durable execution model",
+                evidence: [],
+                id: "explain",
+                status: "pending",
+              },
+            ],
+          },
+        ],
         toolCalls: [],
       },
     };
@@ -38,6 +84,7 @@ const harness = createHarness({
 let connected: JixuConnectionConfig | null = null;
 const activeController: { current: ThreadController | null } = { current: null };
 const secret = "openrouter-secret-fixture";
+
 const setup = await testRender(
   <JixuApp
     connect={async (config, controls) => {
@@ -49,7 +96,7 @@ const setup = await testRender(
     onQuit={() => undefined}
     workspace="/workspace"
   />,
-  { height: 30, width: 120 },
+  { height: 30, kittyKeyboard: true, width: 120 },
 );
 
 try {
@@ -63,17 +110,36 @@ try {
   assert.match(initialFrame, /not configured/i);
   assert.match(initialFrame, /Use \/config to connect a model/);
   assert.match(initialFrame, /Model not configured · use \/config/);
-  const initialRows = initialFrame.split("\n");
-  const configurationHintRow = initialRows.findIndex((row) =>
-    row.includes("Model not configured · use /config"),
-  );
-  const shellContextRow = initialRows.findIndex((row) =>
-    row.includes("Local shell · unsandboxed"),
-  );
-  assert.equal(shellContextRow, configurationHintRow + 1);
+  assert.match(initialFrame, /USD —/);
   assert.doesNotMatch(initialFrame, /Connect a model/);
   assert.doesNotMatch(initialFrame, /API Key/);
   assert.doesNotMatch(initialFrame, /OpenAI|OpenRouter/);
+
+  const composerEditor = setup.renderer.root.findDescendantById(
+    "composer-editor",
+  ) as TextareaRenderable | undefined;
+  assert.notEqual(composerEditor, undefined);
+  await act(async () => {
+    await setup.mockInput.typeText("line 1");
+    setup.mockInput.pressEnter({ shift: true });
+    await setup.mockInput.typeText("line 2");
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  // JX-AC-030: preserve the core keyboard contract without freezing layout.
+  assert.equal(composerEditor?.plainText, "line 1\nline 2");
+
+  await act(async () => {
+    setup.mockInput.pressEnter();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.equal(composerEditor?.plainText, "");
+  assert.match(setup.captureCharFrame(), /No model configured/);
 
   await act(async () => {
     await setup.mockInput.typeText("/");
@@ -136,46 +202,58 @@ try {
     await setup.flush();
   });
   const configurationFrame = setup.captureCharFrame();
-  assert.match(configurationFrame, /Connect a model/);
-  assert.match(configurationFrame, /Responses/);
-  assert.match(configurationFrame, /Chat Completions/);
-  assert.match(configurationFrame, /Base URL/);
-  assert.match(configurationFrame, /API Key/);
-  assert.match(configurationFrame, /Model ID/);
-  assert.match(configurationFrame, /saved in ~\/\.jixu/);
+  assert.match(configurationFrame, /Model connection/);
 
   await act(async () => {
-    await setup.mockInput.pressKeys(["TAB"], 5);
+    setup.mockInput.pressEnter();
+  });
+  await act(async () => {
+    await setup.renderOnce();
     await setup.flush();
   });
   await act(async () => {
     await setup.mockInput.typeText("https://router.example/v1", 1);
+  });
+  await act(async () => {
+    await setup.renderOnce();
     await setup.flush();
   });
   await act(async () => {
     setup.mockInput.pressEnter();
+  });
+  await act(async () => {
+    await setup.renderOnce();
     await setup.flush();
   });
   await act(async () => {
     await setup.mockInput.typeText(secret, 1);
     await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+  await act(async () => {
+    await setup.renderOnce();
     await setup.flush();
   });
-  const credentialFrame = setup.captureCharFrame();
-  assert.match(credentialFrame, /openrouter-secret-fixture/);
-
   await act(async () => {
     setup.mockInput.pressEnter();
+  });
+  await act(async () => {
+    await setup.renderOnce();
     await setup.flush();
   });
   await act(async () => {
     await setup.mockInput.typeText("vendor/model-example");
+  });
+  await act(async () => {
+    await setup.renderOnce();
     await setup.flush();
   });
   let connectedFrame = "";
   await act(async () => {
     setup.mockInput.pressEnter();
     await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+  await act(async () => {
+    await setup.renderOnce();
     await setup.flush();
   });
   await act(async () => {
@@ -200,6 +278,7 @@ try {
   assert.match(connectedFrame, /No activity yet/);
   assert.match(connectedFrame, /\/config/);
   assert.match(connectedFrame, /Local shell · unsandboxed/);
+  assert.match(connectedFrame, /USD —/);
   assert.doesNotMatch(connectedFrame, /Next Level Agent/);
   assert.doesNotMatch(connectedFrame, /Conversation|Run activity|New Run/);
   assert.doesNotMatch(connectedFrame, /openrouter-secret-fixture/);
@@ -214,12 +293,18 @@ try {
   });
   const completedFrame = setup.captureCharFrame();
   assert.match(completedFrame, /Explain this repository/);
-  assert.match(completedFrame, /ACTIVITY\s+4/);
+  assert.match(completedFrame, /ACTIVITY\s+5/);
   assert.match(completedFrame, /\+ Thinking/);
   assert.match(completedFrame, /vendor\/model-example/);
   assert.match(completedFrame, /✓ Model response/);
   assert.match(completedFrame, /committed/);
   assert.match(completedFrame, /The durable run completed\./);
+  assert.match(completedFrame, /PLAN · r1/);
+  assert.match(completedFrame, /Explain the repository architecture/);
+  assert.match(completedFrame, /→ Inspect the architecture/);
+  assert.match(completedFrame, /Next · Inspect the architecture/);
+  // JX-AC-028: the footer reads durable Thread cost, not UI-local counters.
+  assert.match(completedFrame, /USD \$0\.0132/);
   assert.doesNotMatch(completedFrame, /Conversation|Run activity|New Run/);
 
   let reconfiguredFrame = "";
@@ -351,6 +436,7 @@ try {
   assert.match(compactFrame, /╚█████╔╝/);
   assert.match(compactFrame, /Ask Jixu anything/);
   assert.match(compactFrame, /Local shell · unsandboxed/);
+  assert.match(compactFrame, /USD —/);
   assert.match(compactFrame, /\/help · \/new · \/clear/);
   assert.doesNotMatch(compactFrame, /ACTIVITY/);
   assert.doesNotMatch(compactFrame, /Conversation|Run activity|New Run/);
@@ -388,9 +474,11 @@ try {
     await compactSetup.flush();
   });
   const compactCompletedFrame = compactSetup.captureCharFrame();
-  assert.match(compactCompletedFrame, /Compact activity/);
   assert.match(compactCompletedFrame, /\+ Thinking · vendor\/model-example/);
   assert.match(compactCompletedFrame, /The durable run completed\./);
+  assert.match(compactCompletedFrame, /PLAN · r1/);
+  assert.match(compactCompletedFrame, /Explain the repository architecture/);
+  assert.match(compactCompletedFrame, /USD —/);
   assert.doesNotMatch(compactCompletedFrame, /ACTIVITY/);
 } finally {
   act(() => {

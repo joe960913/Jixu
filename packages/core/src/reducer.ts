@@ -14,10 +14,23 @@ import {
   InvalidTransitionError,
   UnsupportedEventError,
 } from "./errors.ts";
+import { isSupportedEventSchemaVersion } from "./events.ts";
 import type { AnyThreadEvent } from "./events.ts";
 import { jsonEquals } from "./json.ts";
+import {
+  recordEffectOutcome,
+  recordEffectRequest,
+  recordModelAccounting,
+} from "./metrics.ts";
+import {
+  assertPlanUpdateTransition,
+  compilePlanInstructions,
+  materializePlanUpdates,
+  PLAN_CONTROL,
+  samePlan,
+} from "./plan.ts";
 
-export const REDUCER_VERSION = 3;
+export const REDUCER_VERSION = 5;
 
 export interface TransitionResult {
   readonly effects: readonly EffectRequest[];
@@ -118,9 +131,11 @@ function createModelEffect(
     id,
     idempotencyKey: id,
     input: {
-      instructions: agent.instructions,
+      activePlan: state.activePlan,
+      instructions: compilePlanInstructions(agent.instructions, state.activePlan),
       messages: state.messages,
       model: agent.model,
+      planControl: PLAN_CONTROL,
       tools: agent.tools,
     },
     requestedByEventId,
@@ -235,7 +250,7 @@ function settleTurn(
 }
 
 export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionResult {
-  if (event.schemaVersion !== 1) {
+  if (!isSupportedEventSchemaVersion(event.schemaVersion)) {
     throw new UnsupportedEventError(
       `Event ${event.id} uses unsupported schema version ${event.schemaVersion}`,
     );
@@ -278,6 +293,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           lineage: event.payload,
           pauseRequested: false,
           pendingEffects: {},
+          pendingPlanUpdates: [],
           readyEffects: [],
           result: null,
           status: "idle",
@@ -321,6 +337,8 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           error: null,
           inputQueue: [],
           messages: [],
+          activePlan: null,
+          pendingPlanUpdates: [],
           result: null,
           waitingReason: null,
         }),
@@ -386,10 +404,14 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
 
     case "model.requested": {
       requireStatus(state, event.type, "running");
+      const retry = state.pendingEffects[event.payload.effect.id] !== undefined;
       const accepted = acceptRequest(state, event.payload.effect);
       return {
         effects: [],
-        state: advance(state, event.sequence, accepted),
+        state: advance(state, event.sequence, {
+          ...accepted,
+          metrics: recordEffectRequest(state.metrics, "model", retry),
+        }),
       };
     }
 
@@ -401,6 +423,22 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         "model.generate",
       );
       const response = event.payload.response;
+      const identitySeed = `sequence-${event.sequence}`;
+      materializePlanUpdates(
+        state.activePlan,
+        response.planUpdates ?? [],
+        identitySeed,
+      );
+      const pendingPlanUpdates = (response.planUpdates ?? []).map(
+        (proposal, index) => ({
+          identitySeed: `${identitySeed}-${index}`,
+          proposal,
+        }),
+      );
+      const metrics = recordModelAccounting(
+        recordEffectOutcome(state.metrics, "model", "succeeded"),
+        event.payload.accounting,
+      );
       const nextState = advance(state, event.sequence, {
         messages: [
           ...state.messages,
@@ -410,7 +448,9 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
             toolCalls: response.toolCalls,
           },
         ],
+        metrics,
         pendingEffects: remaining,
+        pendingPlanUpdates,
       });
       if (response.toolCalls.length === 0) {
         return settleTurn(nextState, event.sequence, {
@@ -424,6 +464,35 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
       return withReadyEffects(nextState, event.sequence, effects);
     }
 
+    case "plan.updated": {
+      const expected = state.pendingPlanUpdates[0];
+      const materialized =
+        expected === undefined
+          ? undefined
+          : materializePlanUpdates(
+              state.activePlan,
+              [expected.proposal],
+              expected.identitySeed,
+            )[0];
+      if (
+        materialized === undefined ||
+        !samePlan(materialized, event.payload.plan)
+      ) {
+        throw new InvalidTransitionError(
+          `Plan ${event.payload.plan.id} is not the next committed model proposal`,
+        );
+      }
+      assertPlanUpdateTransition(state.activePlan, event.payload.plan);
+      return {
+        effects: [],
+        state: advance(state, event.sequence, {
+          activePlan:
+            event.payload.plan.status === "active" ? event.payload.plan : null,
+          pendingPlanUpdates: state.pendingPlanUpdates.slice(1),
+        }),
+      };
+    }
+
     case "model.failed": {
       requireStatus(state, event.type, "running");
       const remaining = removePending(
@@ -432,7 +501,17 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         "model.generate",
       );
       return settleTurn(
-        advance(state, event.sequence, { pendingEffects: remaining }),
+        advance(state, event.sequence, {
+          metrics: recordModelAccounting(
+            recordEffectOutcome(
+              state.metrics,
+              "model",
+              event.payload.disposition,
+            ),
+            event.payload.accounting,
+          ),
+          pendingEffects: remaining,
+        }),
         event.sequence,
         { error: event.payload.error, result: null },
       );
@@ -440,10 +519,14 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
 
     case "tool.requested": {
       requireStatus(state, event.type, "running");
+      const retry = state.pendingEffects[event.payload.effect.id] !== undefined;
       const accepted = acceptRequest(state, event.payload.effect);
       return {
         effects: [],
-        state: advance(state, event.sequence, accepted),
+        state: advance(state, event.sequence, {
+          ...accepted,
+          metrics: recordEffectRequest(state.metrics, "tools", retry),
+        }),
       };
     }
 
@@ -464,6 +547,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
             toolCallId: event.payload.toolCallId,
           },
         ],
+        metrics: recordEffectOutcome(state.metrics, "tools", "succeeded"),
         pendingEffects: remaining,
       });
       const hasPendingTools = Object.values(remaining).some(
@@ -490,7 +574,13 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         "tool.execute",
       );
       return failAfterToolOutcome(
-        state,
+        advance(state, event.sequence, {
+          metrics: recordEffectOutcome(
+            state.metrics,
+            "tools",
+            event.payload.disposition,
+          ),
+        }),
         event.sequence,
         remaining,
         event.payload.error,

@@ -1,4 +1,5 @@
 import { RGBA, SyntaxStyle } from "@opentui/core";
+import type { PlanSnapshot, PlanStepStatus } from "@jixu/core";
 
 import type {
   ActivityEntry,
@@ -125,6 +126,65 @@ function ActivityItem({ entry }: { readonly entry: ActivityEntry }) {
   );
 }
 
+function planStepPresentation(status: PlanStepStatus): {
+  readonly color: string;
+  readonly symbol: string;
+} {
+  switch (status) {
+    case "completed":
+      return { color: jixuTheme.success, symbol: "✓" };
+    case "in_progress":
+      return { color: jixuTheme.warning, symbol: "→" };
+    case "blocked":
+      return { color: jixuTheme.danger, symbol: "×" };
+    case "skipped":
+      return { color: jixuTheme.secondary, symbol: "–" };
+    case "pending":
+      return { color: jixuTheme.info, symbol: "·" };
+  }
+}
+
+function ActivePlan({ plan }: { readonly plan: PlanSnapshot }) {
+  return (
+    <box
+      backgroundColor={jixuTheme.surface}
+      border={["left"]}
+      borderColor={jixuTheme.warning}
+      style={{
+        flexDirection: "column",
+        marginBottom: 1,
+        paddingLeft: 1,
+        paddingRight: 1,
+        width: "100%",
+      }}
+    >
+      <text fg={jixuTheme.brand}>
+        <strong>PLAN</strong>
+        <span fg={jixuTheme.secondary}> · r{plan.revision}</span>
+      </text>
+      <text fg={jixuTheme.text} wrapMode="word">
+        {plan.objective}
+      </text>
+      <box style={{ flexDirection: "column", marginTop: 1, width: "100%" }}>
+        {plan.steps.map((step) => {
+          const presentation = planStepPresentation(step.status);
+          return (
+            <box key={step.id} style={{ flexDirection: "row", width: "100%" }}>
+              <text fg={presentation.color}>{presentation.symbol} </text>
+              <text fg={jixuTheme.text} wrapMode="word">
+                {step.description}
+              </text>
+            </box>
+          );
+        })}
+      </box>
+      <text fg={jixuTheme.secondary} wrapMode="word">
+        Next · <span fg={jixuTheme.info}>{plan.nextAction}</span>
+      </text>
+    </box>
+  );
+}
+
 function EmptyState({ configured, top }: { configured: boolean; top: number }) {
   return (
     <box
@@ -199,6 +259,7 @@ export function Transcript({
           <ActivityItem entry={item.entry} key={`activity-${item.entry.id}`} />
         ),
       )}
+      {snapshot.activePlan === null ? null : <ActivePlan plan={snapshot.activePlan} />}
       {snapshot.streamingText.length > 0 ? (
         <box
           style={{

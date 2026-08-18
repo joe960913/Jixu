@@ -12,18 +12,34 @@ import type {
   Tool as OpenAITool,
 } from "openai/resources/responses/responses";
 
-import { cloneJson, isJsonObject } from "@jixu/core";
+import {
+  cloneJson,
+  isJsonObject,
+  parsePlanUpdateProposal,
+  PLAN_CONTROL_NAME,
+  EMPTY_MODEL_ACCOUNTING,
+} from "@jixu/core";
 import type {
   DriverError,
   JsonValue,
   ModelDriver,
   ModelDriverContext,
   ModelGenerateEffect,
+  ModelAccounting,
   ModelMessage,
   ModelOutcome,
   ModelResponse,
+  PlanControlDescriptor,
+  PlanUpdateProposal,
   ToolDescriptor,
 } from "@jixu/core";
+
+import { isOpenRouterBaseUrl, modelAccounting } from "./accounting.ts";
+import type { ModelCostCalculator } from "./accounting.ts";
+export type {
+  ModelCostCalculationInput,
+  ModelCostCalculator,
+} from "./accounting.ts";
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
@@ -48,8 +64,10 @@ export interface OpenAICompatibleModelDriverConfig {
   readonly apiKey?: string;
   readonly baseURL: string;
   readonly chatCompletionsClient?: OpenChatCompletionsClient;
+  readonly costCalculator?: ModelCostCalculator;
   readonly fetch?: typeof fetch;
   readonly provider?: string;
+  readonly providerReportsUsdCost?: boolean;
   readonly redactError?: (message: string) => string;
   readonly responsesClient?: OpenResponsesClient;
   readonly store?: boolean;
@@ -58,6 +76,7 @@ export interface OpenAICompatibleModelDriverConfig {
 interface SharedProviderConfig {
   readonly apiKey?: string;
   readonly client?: OpenResponsesClient;
+  readonly costCalculator?: ModelCostCalculator;
   readonly fetch?: typeof fetch;
   readonly redactError?: (message: string) => string;
 }
@@ -79,7 +98,9 @@ export type LLMAdapter = Readonly<Record<string, ModelDriver>>;
 
 interface OpenResponsesModelDriverConfig {
   readonly client: OpenResponsesClient;
+  readonly costCalculator?: ModelCostCalculator;
   readonly provider: string;
+  readonly providerReportsUsdCost: boolean;
   readonly redactError?: (message: string) => string;
   readonly secret?: string;
   readonly store: boolean;
@@ -120,7 +141,9 @@ function toInput(messages: readonly ModelMessage[]): ResponseInputItem[] {
   return input;
 }
 
-function toTool(tool: ToolDescriptor): OpenAITool {
+function toTool(
+  tool: ToolDescriptor | PlanControlDescriptor,
+): OpenAITool {
   return {
     description: tool.description,
     name: tool.name,
@@ -171,7 +194,9 @@ function toChatMessages(
   return input;
 }
 
-function toChatTool(tool: ToolDescriptor): ChatCompletionTool {
+function toChatTool(
+  tool: ToolDescriptor | PlanControlDescriptor,
+): ChatCompletionTool {
   return {
     function: {
       description: tool.description,
@@ -188,6 +213,7 @@ function toModelResponse(response: Response): ModelResponse {
     throw new TypeError("OpenResponses response.output must be an array");
   }
   const content: string[] = [];
+  const planUpdates: PlanUpdateProposal[] = [];
   const toolCalls: ModelResponse["toolCalls"][number][] = [];
 
   for (const item of response.output) {
@@ -205,14 +231,20 @@ function toModelResponse(response: Response): ModelResponse {
         `Function call ${item.call_id} arguments must be a JSON object`,
       );
     }
-    toolCalls.push({
-      arguments: cloneJson(parsed),
-      id: item.call_id,
-      name: item.name,
-    });
+    if (item.name === PLAN_CONTROL_NAME) {
+      planUpdates.push(
+        parsePlanUpdateProposal(parsed, `Plan control ${item.call_id}`),
+      );
+    } else {
+      toolCalls.push({
+        arguments: cloneJson(parsed),
+        id: item.call_id,
+        name: item.name,
+      });
+    }
   }
 
-  return { content: content.join(""), toolCalls };
+  return { content: content.join(""), planUpdates, toolCalls };
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -237,8 +269,11 @@ function statusCode(error: unknown): number | undefined {
   return number(record(error)?.status);
 }
 
-function failed(error: DriverError): ModelOutcome {
-  return { error, status: "failed" };
+function failed(
+  error: DriverError,
+  accounting: ModelAccounting = EMPTY_MODEL_ACCOUNTING,
+): ModelOutcome {
+  return { accounting, error, status: "failed" };
 }
 
 function providerHeaders(config: OpenRouterModelDriverConfig): Record<string, string> {
@@ -252,13 +287,17 @@ function providerHeaders(config: OpenRouterModelDriverConfig): Record<string, st
 
 export class OpenResponsesModelDriver implements ModelDriver {
   readonly #client: OpenResponsesClient;
+  readonly #costCalculator: ModelCostCalculator | undefined;
   readonly #provider: string;
+  readonly #providerReportsUsdCost: boolean;
   readonly #redactError: (message: string) => string;
   readonly #store: boolean;
 
   constructor(config: OpenResponsesModelDriverConfig) {
     this.#client = config.client;
+    this.#costCalculator = config.costCalculator;
     this.#provider = config.provider;
+    this.#providerReportsUsdCost = config.providerReportsUsdCost;
     this.#store = config.store;
     this.#redactError = (message) => {
       const withoutSecret =
@@ -282,7 +321,7 @@ export class OpenResponsesModelDriver implements ModelDriver {
           model: effect.input.model.model,
           store: this.#store,
           stream: true,
-          tools: effect.input.tools.map(toTool),
+          tools: [...effect.input.tools, effect.input.planControl].map(toTool),
         },
         { signal: context.cancellation },
       );
@@ -340,27 +379,53 @@ export class OpenResponsesModelDriver implements ModelDriver {
               type: "model.tool_arguments.delta",
             });
             break;
-          case "response.completed":
+          case "response.completed": {
+            const accounting = modelAccounting(
+              event.response.usage,
+              "responses",
+              {
+                costCalculator: this.#costCalculator,
+                model: effect.input.model.model,
+                provider: this.#provider,
+                providerReportsUsdCost: this.#providerReportsUsdCost,
+              },
+            );
             try {
-              return { status: "succeeded", value: toModelResponse(event.response) };
+              return {
+                accounting,
+                status: "succeeded",
+                value: toModelResponse(event.response),
+              };
             } catch (error) {
-              return this.#invalidEvent(errorMessage(error, this.#provider));
+              return this.#invalidEvent(
+                errorMessage(error, this.#provider),
+                accounting,
+              );
             }
+          }
           case "response.failed":
           case "response.incomplete":
-            return failed({
-              code:
-                event.response.error?.code ??
-                (event.type === "response.failed"
-                  ? `${this.#provider}_response_failed`
-                  : `${this.#provider}_response_incomplete`),
-              message: this.#redactError(
-                event.response.error?.message ??
-                  event.response.incomplete_details?.reason ??
-                  `${this.#provider} did not complete the response`,
-              ),
-              retryable: event.response.error?.code !== "invalid_prompt",
-            });
+            return failed(
+              {
+                code:
+                  event.response.error?.code ??
+                  (event.type === "response.failed"
+                    ? `${this.#provider}_response_failed`
+                    : `${this.#provider}_response_incomplete`),
+                message: this.#redactError(
+                  event.response.error?.message ??
+                    event.response.incomplete_details?.reason ??
+                    `${this.#provider} did not complete the response`,
+                ),
+                retryable: event.response.error?.code !== "invalid_prompt",
+              },
+              modelAccounting(event.response.usage, "responses", {
+                costCalculator: this.#costCalculator,
+                model: effect.input.model.model,
+                provider: this.#provider,
+                providerReportsUsdCost: this.#providerReportsUsdCost,
+              }),
+            );
           default:
             break;
         }
@@ -379,12 +444,18 @@ export class OpenResponsesModelDriver implements ModelDriver {
     };
   }
 
-  #invalidEvent(message: string): ModelOutcome {
-    return failed({
-      code: `${this.#provider}_response_invalid`,
-      message: this.#redactError(message),
-      retryable: false,
-    });
+  #invalidEvent(
+    message: string,
+    accounting: ModelAccounting = EMPTY_MODEL_ACCOUNTING,
+  ): ModelOutcome {
+    return failed(
+      {
+        code: `${this.#provider}_response_invalid`,
+        message: this.#redactError(message),
+        retryable: false,
+      },
+      accounting,
+    );
   }
 
   #requestFailure(error: unknown): ModelOutcome {
@@ -413,17 +484,23 @@ interface PendingChatToolCall {
 
 export class OpenChatCompletionsModelDriver implements ModelDriver {
   readonly #client: OpenChatCompletionsClient;
+  readonly #costCalculator: ModelCostCalculator | undefined;
   readonly #provider: string;
+  readonly #providerReportsUsdCost: boolean;
   readonly #redactError: (message: string) => string;
 
   constructor(config: {
     readonly client: OpenChatCompletionsClient;
+    readonly costCalculator?: ModelCostCalculator;
     readonly provider: string;
+    readonly providerReportsUsdCost: boolean;
     readonly redactError?: (message: string) => string;
     readonly secret?: string;
   }) {
     this.#client = config.client;
+    this.#costCalculator = config.costCalculator;
     this.#provider = config.provider;
+    this.#providerReportsUsdCost = config.providerReportsUsdCost;
     this.#redactError = (message) => {
       const withoutSecret =
         config.secret === undefined || config.secret.length === 0
@@ -437,7 +514,7 @@ export class OpenChatCompletionsModelDriver implements ModelDriver {
     effect: ModelGenerateEffect,
     context: ModelDriverContext,
   ): Promise<ModelOutcome> {
-    const tools = effect.input.tools.map(toChatTool);
+    const tools = [...effect.input.tools, effect.input.planControl].map(toChatTool);
     let stream: AsyncIterable<unknown>;
     try {
       stream = await this.#client.create(
@@ -448,6 +525,7 @@ export class OpenChatCompletionsModelDriver implements ModelDriver {
           ),
           model: effect.input.model.model,
           stream: true,
+          stream_options: { include_usage: true },
           ...(tools.length === 0 ? {} : { tools }),
         },
         { signal: context.cancellation },
@@ -457,6 +535,7 @@ export class OpenChatCompletionsModelDriver implements ModelDriver {
     }
 
     let content = "";
+    let accounting = EMPTY_MODEL_ACCOUNTING;
     let finishReason: string | null = null;
     let sawChoice = false;
     let signalSequence = 0;
@@ -466,17 +545,34 @@ export class OpenChatCompletionsModelDriver implements ModelDriver {
       for await (const rawChunk of stream) {
         const chunk = record(rawChunk);
         if (chunk === null || !Array.isArray(chunk.choices)) {
-          return this.#invalidEvent("Chat Completions emitted an invalid chunk");
+          return this.#invalidEvent(
+            "Chat Completions emitted an invalid chunk",
+            accounting,
+          );
+        }
+        if (chunk.usage !== undefined && chunk.usage !== null) {
+          accounting = modelAccounting(chunk.usage, "chat-completions", {
+            costCalculator: this.#costCalculator,
+            model: effect.input.model.model,
+            provider: this.#provider,
+            providerReportsUsdCost: this.#providerReportsUsdCost,
+          });
         }
         for (const rawChoice of chunk.choices) {
           const choice = record(rawChoice);
           if (choice === null) {
-            return this.#invalidEvent("Chat Completions emitted an invalid choice");
+            return this.#invalidEvent(
+              "Chat Completions emitted an invalid choice",
+              accounting,
+            );
           }
           if (number(choice.index) !== 0) continue;
           const delta = record(choice.delta);
           if (delta === null) {
-            return this.#invalidEvent("Chat Completions choice has no delta");
+            return this.#invalidEvent(
+              "Chat Completions choice has no delta",
+              accounting,
+            );
           }
           sawChoice = true;
           finishReason = string(choice.finish_reason) ?? finishReason;
@@ -498,16 +594,25 @@ export class OpenChatCompletionsModelDriver implements ModelDriver {
 
           if (delta.tool_calls === undefined) continue;
           if (!Array.isArray(delta.tool_calls)) {
-            return this.#invalidEvent("Chat Completions tool_calls is invalid");
+            return this.#invalidEvent(
+              "Chat Completions tool_calls is invalid",
+              accounting,
+            );
           }
           for (const rawTool of delta.tool_calls) {
             const tool = record(rawTool);
             const index = number(tool?.index);
             if (tool === null || index === undefined) {
-              return this.#invalidEvent("Chat Completions Tool delta is invalid");
+              return this.#invalidEvent(
+                "Chat Completions Tool delta is invalid",
+                accounting,
+              );
             }
             if (tool.type !== undefined && tool.type !== "function") {
-              return this.#invalidEvent("Only function Tool calls are supported");
+              return this.#invalidEvent(
+                "Only function Tool calls are supported",
+                accounting,
+              );
             }
             const current = pendingTools.get(index) ?? { arguments: "" };
             const functionDelta = record(tool.function);
@@ -538,11 +643,12 @@ export class OpenChatCompletionsModelDriver implements ModelDriver {
         }
       }
     } catch (error) {
-      return this.#requestFailure(error);
+      return this.#requestFailure(error, accounting);
     }
 
     if (!sawChoice) {
       return {
+        accounting,
         error: {
           code: `${this.#provider}_stream_ended`,
           message: `${this.#provider} stream ended without a completion choice`,
@@ -556,48 +662,73 @@ export class OpenChatCompletionsModelDriver implements ModelDriver {
         code: `${this.#provider}_response_incomplete`,
         message: `${this.#provider} stopped with ${finishReason}`,
         retryable: false,
-      });
+      }, accounting);
     }
 
     const toolCalls: ModelResponse["toolCalls"][number][] = [];
+    const planUpdates: PlanUpdateProposal[] = [];
     for (const [index, pending] of [...pendingTools].sort(
       ([left], [right]) => left - right,
     )) {
       if (pending.id === undefined || pending.name === undefined) {
-        return this.#invalidEvent(`Tool call ${index} is incomplete`);
+        return this.#invalidEvent(`Tool call ${index} is incomplete`, accounting);
       }
       let parsed: unknown;
       try {
         parsed = JSON.parse(pending.arguments) as unknown;
       } catch {
-        return this.#invalidEvent(`Tool call ${pending.id} arguments are invalid JSON`);
+        return this.#invalidEvent(
+          `Tool call ${pending.id} arguments are invalid JSON`,
+          accounting,
+        );
       }
       if (!isJsonObject(parsed)) {
         return this.#invalidEvent(
           `Tool call ${pending.id} arguments must be a JSON object`,
+          accounting,
         );
       }
-      toolCalls.push({
-        arguments: cloneJson(parsed),
-        id: pending.id,
-        name: pending.name,
-      });
+      if (pending.name === PLAN_CONTROL_NAME) {
+        planUpdates.push(
+          parsePlanUpdateProposal(parsed, `Plan control ${pending.id}`),
+        );
+      } else {
+        toolCalls.push({
+          arguments: cloneJson(parsed),
+          id: pending.id,
+          name: pending.name,
+        });
+      }
     }
-    return { status: "succeeded", value: { content, toolCalls } };
+    return {
+      accounting,
+      status: "succeeded",
+      value: { content, planUpdates, toolCalls },
+    };
   }
 
-  #invalidEvent(message: string): ModelOutcome {
-    return failed({
-      code: `${this.#provider}_response_invalid`,
-      message: this.#redactError(message),
-      retryable: false,
-    });
+  #invalidEvent(
+    message: string,
+    accounting: ModelAccounting = EMPTY_MODEL_ACCOUNTING,
+  ): ModelOutcome {
+    return failed(
+      {
+        code: `${this.#provider}_response_invalid`,
+        message: this.#redactError(message),
+        retryable: false,
+      },
+      accounting,
+    );
   }
 
-  #requestFailure(error: unknown): ModelOutcome {
+  #requestFailure(
+    error: unknown,
+    accounting: ModelAccounting = EMPTY_MODEL_ACCOUNTING,
+  ): ModelOutcome {
     const status = statusCode(error);
     const knownRejection = status !== undefined && status >= 400 && status < 500;
     return {
+      accounting,
       error: {
         code:
           status === undefined
@@ -628,7 +759,11 @@ export function createOpenAIModelDriver(
     }).responses;
   return new OpenResponsesModelDriver({
     client,
+    ...(config.costCalculator === undefined
+      ? {}
+      : { costCalculator: config.costCalculator }),
     provider: "openai",
+    providerReportsUsdCost: false,
     ...(config.redactError === undefined
       ? {}
       : { redactError: config.redactError }),
@@ -653,7 +788,11 @@ export function createOpenRouterModelDriver(
     }).responses;
   return new OpenResponsesModelDriver({
     client,
+    ...(config.costCalculator === undefined
+      ? {}
+      : { costCalculator: config.costCalculator }),
     provider: "openrouter",
+    providerReportsUsdCost: true,
     ...(config.redactError === undefined
       ? {}
       : { redactError: config.redactError }),
@@ -686,7 +825,12 @@ export function createOpenAICompatibleModelDriver(
       }).responses;
     return new OpenResponsesModelDriver({
       client,
+      ...(config.costCalculator === undefined
+        ? {}
+        : { costCalculator: config.costCalculator }),
       provider,
+      providerReportsUsdCost:
+        config.providerReportsUsdCost ?? isOpenRouterBaseUrl(config.baseURL),
       ...(config.redactError === undefined
         ? {}
         : { redactError: config.redactError }),
@@ -704,7 +848,12 @@ export function createOpenAICompatibleModelDriver(
     }).chat.completions;
   return new OpenChatCompletionsModelDriver({
     client,
+    ...(config.costCalculator === undefined
+      ? {}
+      : { costCalculator: config.costCalculator }),
     provider,
+    providerReportsUsdCost:
+      config.providerReportsUsdCost ?? isOpenRouterBaseUrl(config.baseURL),
     ...(config.redactError === undefined
       ? {}
       : { redactError: config.redactError }),

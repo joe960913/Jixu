@@ -6,7 +6,10 @@ import {
   InvalidTransitionError,
   ThreadNotFoundError,
 } from "./errors.ts";
-import { createThreadEvent } from "./events.ts";
+import {
+  createThreadEvent,
+  CURRENT_EVENT_SCHEMA_VERSION,
+} from "./events.ts";
 import type {
   AnyThreadEvent,
   ThreadEventPayloads,
@@ -21,6 +24,7 @@ import type {
   ThreadStreamItem,
 } from "./ports.ts";
 import { REDUCER_VERSION, reduce, replayEvents } from "./reducer.ts";
+import { materializePlanUpdates } from "./plan.ts";
 import type { ForkOptions, Thread, ThreadStreamOptions } from "./thread.ts";
 
 interface PreparedEffect {
@@ -177,7 +181,12 @@ export class ThreadExecution implements Thread {
   }
 
   startRecovery(): void {
-    if (this.#state.status === "running") this.#schedule();
+    if (
+      this.#state.status === "running" ||
+      this.#state.pendingPlanUpdates.length > 0
+    ) {
+      this.#schedule();
+    }
   }
 
   async initialize(agent: AgentSnapshot): Promise<void> {
@@ -252,6 +261,19 @@ export class ThreadExecution implements Thread {
   async #drive(): Promise<void> {
     while (true) {
       const state = this.#state;
+      const pendingPlanUpdate = state.pendingPlanUpdates[0];
+      if (pendingPlanUpdate !== undefined) {
+        const plan = materializePlanUpdates(
+          state.activePlan,
+          [pendingPlanUpdate.proposal],
+          pendingPlanUpdate.identitySeed,
+        )[0];
+        if (plan === undefined) {
+          throw new InvalidTransitionError("Pending Plan update did not materialize");
+        }
+        await this.#commit("plan.updated", { plan });
+        continue;
+      }
       if (state.status !== "running") {
         await this.#writeCheckpoint();
         return;
@@ -327,9 +349,34 @@ export class ThreadExecution implements Thread {
     causationId: string,
   ): Promise<void> {
     switch (proposal.type) {
-      case "model.completed":
+      case "model.completed": {
+        try {
+          materializePlanUpdates(
+            this.#state.activePlan,
+            proposal.payload.response.planUpdates ?? [],
+            "preview",
+          );
+        } catch (error) {
+          await this.#commit(
+            "model.failed",
+            {
+              accounting: proposal.payload.accounting,
+              disposition: "failed",
+              effectId: proposal.payload.effectId,
+              error: {
+                code: "plan_update_invalid",
+                message:
+                  error instanceof Error ? error.message : "Invalid Plan update",
+                retryable: false,
+              },
+            },
+            causationId,
+          );
+          return;
+        }
         await this.#commit(proposal.type, proposal.payload, causationId);
         return;
+      }
       case "model.failed":
         await this.#commit(proposal.type, proposal.payload, causationId);
         return;
@@ -392,7 +439,7 @@ function validCheckpoint(
 ): boolean {
   if (
     checkpoint.reducerVersion !== REDUCER_VERSION ||
-    checkpoint.eventSchemaVersion !== 1 ||
+    checkpoint.eventSchemaVersion !== CURRENT_EVENT_SCHEMA_VERSION ||
     checkpoint.sequence < 1 ||
     checkpoint.sequence > events.length ||
     checkpoint.state.threadId !== checkpoint.threadId ||

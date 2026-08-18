@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { PLAN_CONTROL } from "@jixu/core";
 import type {
   ModelDriverContext,
   ModelGenerateEffect,
@@ -18,6 +19,23 @@ import {
   createOpenAICompatibleModelDriver,
   createOpenRouterModelDriver,
 } from "../src/index.ts";
+
+const planProposal = {
+  acceptanceCriteria: ["SPEC is understood"],
+  assumptions: [],
+  blockers: [],
+  nextAction: "Read SPEC.md",
+  objective: "Understand the repository",
+  operation: "create" as const,
+  steps: [
+    {
+      description: "Read the specification",
+      evidence: [],
+      id: "read-spec",
+      status: "in_progress" as const,
+    },
+  ],
+};
 import type {
   OpenChatCompletionsClient,
   OpenResponsesClient,
@@ -31,7 +49,18 @@ function response(output: Response["output"]): Response {
     output,
     output_text: "",
     status: "completed",
-  } as Response;
+    usage: {
+      input_tokens: 80,
+      input_tokens_details: {
+        cache_write_tokens: 4,
+        cached_tokens: 20,
+      },
+      output_tokens: 20,
+      output_tokens_details: { reasoning_tokens: 8 },
+      total_tokens: 100,
+      cost: 0.0042,
+    },
+  } as unknown as Response;
 }
 
 function effect(provider = "openai", model = "gpt-test"): ModelGenerateEffect {
@@ -40,6 +69,7 @@ function effect(provider = "openai", model = "gpt-test"): ModelGenerateEffect {
     id: "effect-1",
     idempotencyKey: "effect-1",
     input: {
+      activePlan: null,
       instructions: "Use tools when useful.",
       messages: [
         { content: "Read it", role: "user" },
@@ -58,6 +88,7 @@ function effect(provider = "openai", model = "gpt-test"): ModelGenerateEffect {
         },
       ],
       model: { model, provider },
+      planControl: PLAN_CONTROL,
       tools: [
         {
           description: "Read a file",
@@ -130,6 +161,13 @@ test("JX-PROV-005 JX-AC-002 OpenAI factory translates canonical input and emits 
           type: "message",
         },
         {
+          arguments: JSON.stringify(planProposal),
+          call_id: "call-plan",
+          name: PLAN_CONTROL.name,
+          status: "completed",
+          type: "function_call",
+        },
+        {
           arguments: '{"path":"README.md"}',
           call_id: "call-next",
           name: "read",
@@ -142,15 +180,40 @@ test("JX-PROV-005 JX-AC-002 OpenAI factory translates canonical input and emits 
     },
   ]);
   const signals: Signal[] = [];
-  const outcome = await createOpenAIModelDriver({ client }).generate(
+  const outcome = await createOpenAIModelDriver({
+    client,
+    costCalculator: ({ usage }) => ({
+      currency: "USD",
+      pricingVersion: "fixture-1",
+      source: "calculator",
+      usdNanos: usage.totalTokens * 25_000,
+    }),
+  }).generate(
     effect(),
     context(signals),
   );
 
   assert.equal(outcome.status, "succeeded");
   if (outcome.status !== "succeeded") return;
+  assert.deepEqual(outcome.accounting, {
+    cost: {
+      currency: "USD",
+      pricingVersion: "fixture-1",
+      source: "calculator",
+      usdNanos: 2_500_000,
+    },
+    usage: {
+      cacheWriteTokens: 4,
+      cachedInputTokens: 20,
+      inputTokens: 80,
+      outputTokens: 20,
+      reasoningTokens: 8,
+      totalTokens: 100,
+    },
+  });
   assert.deepEqual(outcome.value, {
     content: "I will read it.",
+    planUpdates: [planProposal],
     toolCalls: [
       { arguments: { path: "README.md" }, id: "call-next", name: "read" },
     ],
@@ -170,6 +233,12 @@ test("JX-PROV-005 JX-AC-002 OpenAI factory translates canonical input and emits 
       type: "function_call_output",
     },
   ]);
+  assert.deepEqual(
+    (client.body?.tools as Array<{ readonly name: string }> | undefined)?.map(
+      (tool) => tool.name,
+    ),
+    ["read", PLAN_CONTROL.name],
+  );
   assert.equal(signals[0]?.type, "model.output_text.delta");
 });
 
@@ -211,6 +280,12 @@ test("JX-PROV-007 JX-AC-019 OpenRouter factory uses the stateless Responses endp
   );
 
   assert.equal(outcome.status, "succeeded");
+  assert.deepEqual(outcome.accounting?.cost, {
+    currency: "USD",
+    pricingVersion: null,
+    source: "provider_reported",
+    usdNanos: 4_200_000,
+  });
   assert.equal(url, "https://openrouter.ai/api/v1/responses");
   assert.equal(headers.get("authorization"), "Bearer or-secret");
   assert.equal(headers.get("http-referer"), "https://github.com/joe960913/Jixu");
@@ -250,6 +325,8 @@ test("JX-PROV-008 JX-AC-019 compatible Responses format uses the caller Base URL
   assert.equal(url, "https://gateway.example/v1/responses");
   assert.equal(outcome.status, "succeeded");
   if (outcome.status === "succeeded") {
+    assert.equal(outcome.accounting?.cost, null);
+    assert.equal(outcome.accounting?.usage?.totalTokens, 100);
     assert.equal(outcome.value.content, "compatible");
   }
 });
@@ -282,6 +359,15 @@ test("JX-PROV-008 JX-AC-002 JX-AC-019 Chat Completions maps full Tool history an
                 index: 0,
                 type: "function",
               },
+              {
+                function: {
+                  arguments: JSON.stringify(planProposal),
+                  name: PLAN_CONTROL.name,
+                },
+                id: "call-plan-chat",
+                index: 1,
+                type: "function",
+              },
             ],
           },
           finish_reason: null,
@@ -310,6 +396,21 @@ test("JX-PROV-008 JX-AC-002 JX-AC-019 Chat Completions maps full Tool history an
       model: "chat-model",
       object: "chat.completion.chunk",
     },
+    {
+      choices: [],
+      created: 1,
+      id: "chatcmpl-test",
+      model: "chat-model",
+      object: "chat.completion.chunk",
+      usage: {
+        completion_tokens: 20,
+        completion_tokens_details: { reasoning_tokens: 6 },
+        cost: 0.0035,
+        prompt_tokens: 60,
+        prompt_tokens_details: { cached_tokens: 10 },
+        total_tokens: 80,
+      },
+    },
   ];
   const fetchMock: typeof fetch = async (input, init) => {
     url = input instanceof Request ? input.url : input.toString();
@@ -325,6 +426,7 @@ test("JX-PROV-008 JX-AC-002 JX-AC-019 Chat Completions maps full Tool history an
     apiKey: "chat-secret",
     baseURL: "https://chat.example/v1",
     fetch: fetchMock,
+    providerReportsUsdCost: true,
   }).generate(
     effect("openai-compatible", "chat-model"),
     context(signals),
@@ -333,6 +435,13 @@ test("JX-PROV-008 JX-AC-002 JX-AC-019 Chat Completions maps full Tool history an
   assert.equal(url, "https://chat.example/v1/chat/completions");
   assert.equal(body.model, "chat-model");
   assert.equal(body.stream, true);
+  assert.deepEqual(body.stream_options, { include_usage: true });
+  assert.deepEqual(
+    (body.tools as Array<{ function: { name: string } }>).map(
+      (tool) => tool.function.name,
+    ),
+    ["read", PLAN_CONTROL.name],
+  );
   assert.deepEqual(body.messages, [
     { content: "Use tools when useful.", role: "system" },
     { content: "Read it", role: "user" },
@@ -357,8 +466,25 @@ test("JX-PROV-008 JX-AC-002 JX-AC-019 Chat Completions maps full Tool history an
   assert.equal(signals[1]?.type, "model.tool_arguments.delta");
   assert.equal(outcome.status, "succeeded");
   if (outcome.status === "succeeded") {
+    assert.deepEqual(outcome.accounting, {
+      cost: {
+        currency: "USD",
+        pricingVersion: null,
+        source: "provider_reported",
+        usdNanos: 3_500_000,
+      },
+      usage: {
+        cacheWriteTokens: null,
+        cachedInputTokens: 10,
+        inputTokens: 60,
+        outputTokens: 20,
+        reasoningTokens: 6,
+        totalTokens: 80,
+      },
+    });
     assert.deepEqual(outcome.value, {
       content: "Checking",
+      planUpdates: [planProposal],
       toolCalls: [
         { arguments: { path: "SPEC.md" }, id: "call-chat", name: "read" },
       ],
