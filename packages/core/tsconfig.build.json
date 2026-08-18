@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.release.json",
+  "compilerOptions": {
+    "composite": true,
+    "incremental": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "tsBuildInfoFile": "../../.cache/tsbuild/core.tsbuildinfo"
+  },
+  "include": ["./src/**/*.ts"]
+}

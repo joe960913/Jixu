@@ -1,22 +1,41 @@
 {
   "name": "jixu",
   "version": "0.0.0",
-  "private": true,
+  "description": "The public Jixu library facade.",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joe960913/Jixu.git",
+    "directory": "packages/jixu"
+  },
   "engines": {
-    "bun": ">=1.3.0",
     "node": ">=22.18.0"
   },
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
-    "dev": "bun run src/cli.tsx",
+    "dev": "pnpm --workspace-root run build:packages && bun run src/cli.tsx",
     "test:tui": "bun run test/tui-smoke.tsx",
-    "build:executable": "bun build --compile src/cli.tsx --outfile dist/jixu"
+    "build:executable": "pnpm --workspace-root run build:packages && bun build --compile src/cli.tsx --outfile dist/jixu"
   },
   "dependencies": {
-    "@jixu/core": "workspace:*",
+    "@jixu/core": "workspace:*"
+  },
+  "devDependencies": {
     "@jixu/llm": "workspace:*",
     "@jixu/store-jsonl": "workspace:*",
     "@jixu/tools-node": "workspace:*",

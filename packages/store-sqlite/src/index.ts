@@ -10,12 +10,12 @@ import {
   RevisionConflictError,
   RunAlreadyExistsError,
   RunNotFoundError,
-} from "../../core/src/index.ts";
+} from "@jixu/core";
 import type {
   AnyRunEvent,
   Checkpoint,
   EventStore,
-} from "../../core/src/index.ts";
+} from "@jixu/core";
 
 function record(value: unknown, label: string): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {

@@ -8,16 +8,24 @@
     "node": ">=22.18.0"
   },
   "scripts": {
-    "dev": "bun run packages/jixu/src/cli.tsx",
-    "typecheck": "tsc --noEmit",
-    "test": "node --test",
-    "test:tui": "pnpm --filter jixu test:tui",
+    "build:packages": "tsc -b tsconfig.build.json",
+    "clean:packages": "tsc -b tsconfig.build.json --clean",
+    "pack:packages": "node scripts/package-artifacts.mjs --out .artifacts/packages",
+    "dev": "pnpm run build:packages && bun run packages/jixu/src/cli.tsx",
+    "typecheck": "pnpm run build:packages && tsc --noEmit",
+    "test": "pnpm run build:packages && node --test",
+    "test:tui": "pnpm run build:packages && pnpm --filter jixu test:tui",
+    "test:packages": "node scripts/verify-package-portability.mjs",
     "lint": "node scripts/lint.mjs",
-    "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run test:tui"
+    "check": "pnpm run build:packages && tsc --noEmit && pnpm run lint && node --test && pnpm --filter jixu test:tui",
+    "check:release": "pnpm run check && pnpm run test:packages"
   },
   "devDependencies": {
-    "@types/react": "19.2.18",
+    "@arethetypeswrong/cli": "0.18.5",
+    "@publint/pack": "0.1.6",
     "@types/node": "24.13.2",
+    "@types/react": "19.2.18",
+    "publint": "0.3.23",
     "typescript": "6.0.3"
   }
 }

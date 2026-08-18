@@ -1,9 +1,30 @@
 {
   "name": "@jixu/core",
   "version": "0.0.0",
-  "private": true,
+  "description": "Durable Agent Run kernel and public runtime API for Jixu.",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joe960913/Jixu.git",
+    "directory": "packages/core"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

@@ -2,8 +2,8 @@
 
 | Field | Value |
 | --- | --- |
-| Version | `0.2.6` |
-| Status | M2 Active — experiential acceptance pending |
+| Version | `0.2.7` |
+| Status | M2.2 Active — package portability acceptance pending |
 | Updated | 2026-08-18 |
 | Target | Jixu v0.1 |
 
@@ -776,6 +776,23 @@ examples/
 - **JX-PKG-006.** OpenTUI's runtime requirement applies only to the reference
   TUI source and its build pipeline. It MUST NOT raise the Node requirement or
   add import-time native initialization for headless packages.
+- **JX-PKG-007.** Packed headless release candidates MUST expose compiled ESM
+  JavaScript and matching TypeScript declarations. Runtime exports MUST NOT
+  point at TypeScript source under `node_modules`, and cross-package imports
+  MUST resolve through declared package dependencies rather than monorepo source
+  paths.
+- **JX-PKG-008.** One package-candidate build MUST produce the exact tarball set
+  used by every package-manager fixture. Packed manifests MUST contain ordinary
+  version ranges instead of workspace-only protocols. The candidate build and
+  consumer verification MUST use temporary directories and MUST NOT add a
+  second repository lockfile.
+
+The `0.2.7` packaging boundary advances package-manager verification ahead of
+the full developer release. Source development continues to use the canonical
+pnpm workspace and lockfile. Release candidates are derived artifacts; this
+change neither publishes them to a registry nor commits generated package
+output. Existing source-checkout consumers require no migration. Published
+package consumers do not yet exist because Jixu remains unpublished.
 
 ## 17. v0.1 acceptance criteria
 
@@ -828,9 +845,13 @@ Every criterion is release-blocking.
 - **JX-AC-016 — Headless runtime boundary.** On Node `22.18.0` or newer, a clean
   process can import and execute the headless public API without Bun or OpenTUI
   native initialization.
-- **JX-AC-017 — Package-manager portability.** Packed release candidates install
-  and expose the documented headless entry point in clean npm, pnpm, Yarn, and
-  Bun consumer fixtures. Repository development retains one canonical lockfile.
+- **JX-AC-017 — Package-manager portability.** One set of packed release
+  candidates installs in isolated npm, pnpm, Yarn, and Bun consumer fixtures.
+  Each fixture executes the documented `@jixu/core` headless entry point on
+  Node, completes an ordinary deterministic Agent Run, and imports the shipped
+  first-party headless adapters. Packed manifests contain no `workspace:`
+  dependency and runtime exports resolve only compiled JavaScript. Repository
+  development retains one canonical lockfile.
 - **JX-AC-018 — TUI lifecycle and harness surface.** OpenTUI renderer ownership
   is released after normal quit, handled failure, and repeated cleanup;
   in-memory renderer tests at `80x24` and a wide terminal verify a bounded
@@ -855,10 +876,17 @@ Every criterion is release-blocking.
    Tools, and the reference OpenTUI surface. This dependency advance exists
    because continuity tests alone did not provide a developer-runnable
    acceptance path; it does not mark the full adapter milestone complete.
-5. **M3 — Ecosystem adapters.** Complete Anthropic, MCP, and Skills adapters and
+5. **M2.2 — Package portability gate.** Before M3, build compiled headless
+   package candidates once and verify that the same tarballs install and run in
+   isolated npm, pnpm, Yarn, and Bun consumers. This advances `JX-AC-017`
+   because workspace-source execution cannot reveal broken packed exports or
+   monorepo-only imports. Registry publication, release versioning, and
+   standalone executables remain M4 work.
+6. **M3 — Ecosystem adapters.** Complete Anthropic, MCP, and Skills adapters and
    provider portability acceptance.
-6. **M4 — Developer release.** Complete release packaging, examples,
-   failure-injection suite, API documentation, and v0.1 release checks.
+7. **M4 — Developer release.** Complete registry publication and versioning,
+   standalone executable packaging, examples, failure-injection suite, API
+   documentation, and v0.1 release checks.
 
 Implementation MUST proceed in this order unless this specification is updated
 with the reason and changed dependencies.
