@@ -8,34 +8,34 @@ export class JixuError extends Error {
   }
 }
 
-export class RunAlreadyExistsError extends JixuError {
-  constructor(runId: string) {
-    super("run_already_exists", `Run ${runId} already exists`);
-    this.name = "RunAlreadyExistsError";
+export class ThreadAlreadyExistsError extends JixuError {
+  constructor(threadId: string) {
+    super("thread_already_exists", `Thread ${threadId} already exists`);
+    this.name = "ThreadAlreadyExistsError";
   }
 }
 
-export class RunNotFoundError extends JixuError {
-  constructor(runId: string) {
-    super("run_not_found", `Run ${runId} does not exist`);
-    this.name = "RunNotFoundError";
+export class ThreadNotFoundError extends JixuError {
+  constructor(threadId: string) {
+    super("thread_not_found", `Thread ${threadId} does not exist`);
+    this.name = "ThreadNotFoundError";
   }
 }
 
 export class RevisionConflictError extends JixuError {
   readonly actualRevision: number;
   readonly expectedRevision: number;
-  readonly runId: string;
+  readonly threadId: string;
 
-  constructor(runId: string, expectedRevision: number, actualRevision: number) {
+  constructor(threadId: string, expectedRevision: number, actualRevision: number) {
     super(
       "revision_conflict",
-      `Run ${runId} expected revision ${expectedRevision}, received ${actualRevision}`,
+      `Thread ${threadId} expected revision ${expectedRevision}, received ${actualRevision}`,
     );
     this.name = "RevisionConflictError";
     this.actualRevision = actualRevision;
     this.expectedRevision = expectedRevision;
-    this.runId = runId;
+    this.threadId = threadId;
   }
 }
 
@@ -61,20 +61,20 @@ export class SchemaValidationError extends JixuError {
 }
 
 export class AgentMismatchError extends JixuError {
-  constructor(runId: string) {
+  constructor(threadId: string) {
     super(
       "agent_mismatch",
-      `Agent definition does not match the durable snapshot for Run ${runId}`,
+      `Agent definition does not match the durable snapshot for Thread ${threadId}`,
     );
     this.name = "AgentMismatchError";
   }
 }
 
 export class InvalidForkPointError extends JixuError {
-  constructor(runId: string, eventId: string) {
+  constructor(threadId: string, eventId: string) {
     super(
       "invalid_fork_point",
-      `Event ${eventId} is not a valid fork point in Run ${runId}`,
+      `Event ${eventId} is not a valid fork point in Thread ${threadId}`,
     );
     this.name = "InvalidForkPointError";
   }

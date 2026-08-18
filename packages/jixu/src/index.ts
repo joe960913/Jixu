@@ -4,14 +4,17 @@ export type {
   JixuConnectionConfig,
   JixuStoredConfiguration,
 } from "./config.ts";
-export { createJixuSession, JixuSession } from "./session.ts";
+export { createThreadController, ThreadController } from "./thread-controller.ts";
+export type {
+  ThreadControllerConfig,
+} from "./thread-controller.ts";
 export type {
   ActivityEntry,
-  JixuSessionConfig,
-  JixuSessionSnapshot,
-  SessionInspection,
-  SessionTone,
+  JixuTone,
+  ThreadControllerSnapshot,
+  ThreadInspection,
+  ThreadSummary,
   TranscriptEntry,
-} from "./session.ts";
+} from "./tui-model.ts";
 export { jixuTheme } from "./theme.ts";
 export type { JixuTheme } from "./theme.ts";

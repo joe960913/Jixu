@@ -2,7 +2,7 @@ import type { Checkpoint } from "./domain.ts";
 import { parseModelResponse } from "./domain.ts";
 import type { EffectRequest } from "./effects.ts";
 import { SchemaValidationError, UnsupportedEventError } from "./errors.ts";
-import type { AnyRunEvent, RunEventType } from "./events.ts";
+import type { AnyThreadEvent, ThreadEventType } from "./events.ts";
 import { cloneJson, isJsonObject } from "./json.ts";
 import type { JsonObject, JsonValue } from "./json.ts";
 
@@ -127,16 +127,16 @@ function assertDriverError(
   boolean(item.retryable, `${label}.retryable`);
 }
 
-function assertRunState(
+function assertThreadState(
   value: JsonValue | undefined,
   label: string,
-  checkpointRunId: string,
+  checkpointThreadId: string,
 ): void {
   const state = object(value, label);
-  const runId = string(state.runId, `${label}.runId`);
-  if (runId !== checkpointRunId) {
+  const threadId = string(state.threadId, `${label}.threadId`);
+  if (threadId !== checkpointThreadId) {
     throw new SchemaValidationError(
-      `${label}.runId does not match the Checkpoint`,
+      `${label}.threadId does not match the Checkpoint`,
     );
   }
 
@@ -150,7 +150,7 @@ function assertRunState(
   }
   if (state.lineage !== null) {
     const lineage = object(state.lineage, `${label}.lineage`);
-    string(lineage.parentRunId, `${label}.lineage.parentRunId`);
+    string(lineage.parentThreadId, `${label}.lineage.parentThreadId`);
     string(lineage.parentEventId, `${label}.lineage.parentEventId`);
     const parentSequence = integer(
       lineage.parentSequence,
@@ -163,6 +163,12 @@ function assertRunState(
     }
   }
 
+  array(state.inputQueue, `${label}.inputQueue`).forEach((value, index) => {
+    const queued = object(value, `${label}.inputQueue[${index}]`);
+    string(queued.content, `${label}.inputQueue[${index}].content`);
+    string(queued.eventId, `${label}.inputQueue[${index}].eventId`);
+  });
+
   array(state.messages, `${label}.messages`).forEach((message, index) =>
     assertModelMessage(message, `${label}.messages[${index}]`),
   );
@@ -174,7 +180,7 @@ function assertRunState(
   const effectIds = new Set<string>();
   const pending = object(state.pendingEffects, `${label}.pendingEffects`);
   for (const [key, effectValue] of Object.entries(pending)) {
-    const effect = parseEffect(effectValue, `${label}.pendingEffects.${key}`, runId);
+    const effect = parseEffect(effectValue, `${label}.pendingEffects.${key}`, threadId);
     if (effect.id !== key) {
       throw new SchemaValidationError(
         `${label}.pendingEffects.${key} has a mismatched Effect ID`,
@@ -187,7 +193,7 @@ function assertRunState(
       const effect = parseEffect(
         effectValue,
         `${label}.readyEffects[${index}]`,
-        runId,
+        threadId,
       );
       if (effectIds.has(effect.id)) {
         throw new SchemaValidationError(
@@ -207,10 +213,7 @@ function assertRunState(
   }
   const status = string(state.status, `${label}.status`);
   if (
-    status !== "cancelled" &&
-    status !== "completed" &&
-    status !== "created" &&
-    status !== "failed" &&
+    status !== "idle" &&
     status !== "paused" &&
     status !== "running" &&
     status !== "waiting"
@@ -251,15 +254,15 @@ function assertRunState(
 function parseEffect(
   value: JsonValue | undefined,
   label: string,
-  runId: string,
+  threadId: string,
 ): EffectRequest {
   const item = object(value, label);
   const type = string(item.type, `${label}.type`);
   string(item.id, `${label}.id`);
   string(item.idempotencyKey, `${label}.idempotencyKey`);
   string(item.requestedByEventId, `${label}.requestedByEventId`);
-  if (string(item.runId, `${label}.runId`) !== runId) {
-    throw new SchemaValidationError(`${label}.runId does not match the Event`);
+  if (string(item.threadId, `${label}.threadId`) !== threadId) {
+    throw new SchemaValidationError(`${label}.threadId does not match the Event`);
   }
   const attempt = integer(item.attempt, `${label}.attempt`);
   if (attempt < 1) {
@@ -310,38 +313,40 @@ function assertEmptyPayload(payload: JsonObject, label: string): void {
   }
 }
 
-const eventTypes = new Set<RunEventType>([
+const eventTypes = new Set<ThreadEventType>([
+  "context.cleared",
   "input.received",
   "model.completed",
   "model.failed",
   "model.requested",
-  "run.created",
-  "run.forked",
-  "run.pause_requested",
-  "run.paused",
-  "run.resumed",
-  "run.waiting",
+  "thread.created",
+  "thread.forked",
+  "thread.pause_requested",
+  "thread.paused",
+  "thread.continued",
+  "thread.waiting",
   "tool.completed",
   "tool.failed",
   "tool.requested",
 ]);
 
-function assertEventPayload(type: RunEventType, payload: JsonObject, runId: string): void {
+function assertEventPayload(type: ThreadEventType, payload: JsonObject, threadId: string): void {
   switch (type) {
-    case "run.created":
+    case "thread.created":
       assertAgentSnapshot(payload.agent, "payload.agent");
       return;
-    case "run.forked":
-      string(payload.parentRunId, "payload.parentRunId");
+    case "thread.forked":
+      string(payload.parentThreadId, "payload.parentThreadId");
       string(payload.parentEventId, "payload.parentEventId");
       integer(payload.parentSequence, "payload.parentSequence");
       return;
-    case "run.pause_requested":
-    case "run.paused":
-    case "run.resumed":
+    case "thread.pause_requested":
+    case "thread.paused":
+    case "thread.continued":
+    case "context.cleared":
       assertEmptyPayload(payload, "payload");
       return;
-    case "run.waiting":
+    case "thread.waiting":
       string(payload.effectId, "payload.effectId");
       if (payload.reasonCode !== "effect_outcome_unknown") {
         throw new SchemaValidationError("payload.reasonCode is unsupported");
@@ -352,7 +357,7 @@ function assertEventPayload(type: RunEventType, payload: JsonObject, runId: stri
       return;
     case "model.requested":
     case "tool.requested": {
-      const effect = parseEffect(payload.effect, "payload.effect", runId);
+      const effect = parseEffect(payload.effect, "payload.effect", threadId);
       if (
         (type === "model.requested" && effect.type !== "model.generate") ||
         (type === "tool.requested" && effect.type !== "tool.execute")
@@ -392,7 +397,7 @@ function assertEventPayload(type: RunEventType, payload: JsonObject, runId: stri
   }
 }
 
-export function decodeRunEvent(value: unknown): AnyRunEvent {
+export function decodeThreadEvent(value: unknown): AnyThreadEvent {
   const event = object(value, "Event");
   const schemaVersion = integer(event.schemaVersion, "Event.schemaVersion");
   if (schemaVersion !== 1) {
@@ -401,11 +406,11 @@ export function decodeRunEvent(value: unknown): AnyRunEvent {
     );
   }
   const typeValue = string(event.type, "Event.type");
-  if (!eventTypes.has(typeValue as RunEventType)) {
+  if (!eventTypes.has(typeValue as ThreadEventType)) {
     throw new UnsupportedEventError(`Unknown Event type ${typeValue}`);
   }
-  const type = typeValue as RunEventType;
-  const runId = string(event.runId, "Event.runId");
+  const type = typeValue as ThreadEventType;
+  const threadId = string(event.threadId, "Event.threadId");
   string(event.id, "Event.id");
   const sequence = integer(event.sequence, "Event.sequence");
   if (sequence < 1) {
@@ -415,13 +420,13 @@ export function decodeRunEvent(value: unknown): AnyRunEvent {
   optionalString(event.causationId, "Event.causationId");
   optionalString(event.correlationId, "Event.correlationId");
   const payload = object(event.payload, "Event.payload");
-  assertEventPayload(type, payload, runId);
-  return cloneJson(event) as unknown as AnyRunEvent;
+  assertEventPayload(type, payload, threadId);
+  return cloneJson(event) as unknown as AnyThreadEvent;
 }
 
 export function decodeCheckpoint(value: unknown): Checkpoint {
   const checkpoint = object(value, "Checkpoint");
-  const runId = string(checkpoint.runId, "Checkpoint.runId");
+  const threadId = string(checkpoint.threadId, "Checkpoint.threadId");
   string(checkpoint.eventId, "Checkpoint.eventId");
   const sequence = integer(checkpoint.sequence, "Checkpoint.sequence");
   if (sequence < 1) {
@@ -429,7 +434,7 @@ export function decodeCheckpoint(value: unknown): Checkpoint {
   }
   integer(checkpoint.eventSchemaVersion, "Checkpoint.eventSchemaVersion");
   integer(checkpoint.reducerVersion, "Checkpoint.reducerVersion");
-  assertRunState(checkpoint.state, "Checkpoint.state", runId);
+  assertThreadState(checkpoint.state, "Checkpoint.state", threadId);
   string(checkpoint.stateDigest, "Checkpoint.stateDigest");
   return cloneJson(checkpoint) as unknown as Checkpoint;
 }

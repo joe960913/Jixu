@@ -32,7 +32,7 @@ export interface ToolExecutionContext {
   readonly cancellation: AbortSignal;
   readonly effectId: string;
   readonly idempotencyKey: string;
-  readonly runId: string;
+  readonly threadId: string;
   readonly signals: SignalSink;
 }
 

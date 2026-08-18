@@ -1,7 +1,7 @@
 {
   "name": "@jixu/core",
   "version": "0.0.0",
-  "description": "Durable Agent Run kernel and public runtime API for Jixu.",
+  "description": "Durable single-Agent Harness and Thread kernel for Jixu.",
   "type": "module",
   "license": "MIT",
   "repository": {

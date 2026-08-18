@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 
-import { createRuntime, defineAgent } from "@jixu/core";
+import { createHarness, defineAgent } from "@jixu/core";
 import {
   createLLMAdapter,
   createOpenAICompatibleModelDriver,
@@ -15,7 +15,7 @@ import type {
   JixuApiFormat,
   JixuConnectionConfig,
 } from "./config.ts";
-import { createJixuSession } from "./session.ts";
+import { createThreadController } from "./thread-controller.ts";
 import { jixuTheme } from "./theme.ts";
 import { JixuApp } from "./tui.tsx";
 
@@ -168,10 +168,6 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
       baseURL: config.baseUrl,
       provider: MODEL_DRIVER_ID,
     });
-    const runtime = createRuntime({
-      modelDrivers: createLLMAdapter({ [MODEL_DRIVER_ID]: driver }),
-      store: new JsonlEventStore(resolve(options.root, ".jixu")),
-    });
     const agent = defineAgent({
       instructions: [
         "You are Jixu, a general-purpose agent working with the user in a local workspace.",
@@ -184,7 +180,12 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
       model: { model: config.model, provider: MODEL_DRIVER_ID },
       tools: tools.all,
     });
-    return createJixuSession({ agent, ...controls, runtime });
+    const harness = createHarness({
+      agent,
+      modelDrivers: createLLMAdapter({ [MODEL_DRIVER_ID]: driver }),
+      store: new JsonlEventStore(resolve(options.root, ".jixu")),
+    });
+    return createThreadController({ harness, ...controls });
   };
   const renderer = await createCliRenderer({
     backgroundColor: jixuTheme.background,

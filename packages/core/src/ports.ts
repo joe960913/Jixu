@@ -1,6 +1,6 @@
 import type { ModelOutcome, ModelGenerateEffect } from "./effects.ts";
 import type { Checkpoint } from "./domain.ts";
-import type { AnyRunEvent } from "./events.ts";
+import type { AnyThreadEvent } from "./events.ts";
 import type { JsonValue } from "./json.ts";
 
 export interface Clock {
@@ -8,13 +8,13 @@ export interface Clock {
 }
 
 export interface IdGenerator {
-  next(prefix: "event" | "run"): string;
+  next(prefix: "event" | "thread"): string;
 }
 
 export interface Signal {
   readonly data: JsonValue;
   readonly kind: "signal";
-  readonly runId: string;
+  readonly threadId: string;
   readonly type: string;
 }
 
@@ -23,11 +23,11 @@ export interface SignalSink {
 }
 
 export interface EventStreamItem {
-  readonly event: AnyRunEvent;
+  readonly event: AnyThreadEvent;
   readonly kind: "event";
 }
 
-export type RunStreamItem = EventStreamItem | Signal;
+export type ThreadStreamItem = EventStreamItem | Signal;
 
 export interface ModelDriverContext {
   readonly cancellation: AbortSignal;
@@ -43,14 +43,14 @@ export interface ModelDriver {
 
 export interface EventStore {
   append(
-    runId: string,
+    threadId: string,
     expectedRevision: number,
-    event: AnyRunEvent,
+    event: AnyThreadEvent,
   ): Promise<void>;
-  createFork(runId: string, events: readonly AnyRunEvent[]): Promise<void>;
-  createRun(runId: string): Promise<void>;
-  listNonTerminalRuns(): Promise<readonly string[]>;
-  read(runId: string, fromSequence?: number): Promise<readonly AnyRunEvent[]>;
-  readCheckpoint(runId: string): Promise<Checkpoint | null>;
+  createFork(threadId: string, events: readonly AnyThreadEvent[]): Promise<void>;
+  createThread(threadId: string): Promise<void>;
+  listThreads(): Promise<readonly string[]>;
+  read(threadId: string, fromSequence?: number): Promise<readonly AnyThreadEvent[]>;
+  readCheckpoint(threadId: string): Promise<Checkpoint | null>;
   writeCheckpoint(checkpoint: Checkpoint): Promise<void>;
 }

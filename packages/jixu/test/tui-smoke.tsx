@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 
-import { createRuntime, defineAgent } from "@jixu/core";
+import { createHarness, defineAgent } from "@jixu/core";
 import type { ModelDriver } from "@jixu/core";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 
 import type { JixuConnectionConfig } from "../src/config.ts";
-import { createJixuSession } from "../src/session.ts";
-import type { JixuSession } from "../src/session.ts";
+import { createThreadController } from "../src/thread-controller.ts";
+import type { ThreadController } from "../src/thread-controller.ts";
 import { JixuApp } from "../src/tui.tsx";
 
 const successfulDriver: ModelDriver = {
@@ -15,7 +15,7 @@ const successfulDriver: ModelDriver = {
     context.signals.emit({
       data: { delta: "Working" },
       kind: "signal",
-      runId: effect.runId,
+      threadId: effect.threadId,
       type: "model.output_text.delta",
     });
     return {
@@ -27,22 +27,23 @@ const successfulDriver: ModelDriver = {
     };
   },
 };
-const runtime = createRuntime({
-  modelDrivers: { "openai-compatible": successfulDriver },
-});
 const agent = defineAgent({
   instructions: "Be useful.",
   model: { model: "vendor/model-example", provider: "openai-compatible" },
 });
+const harness = createHarness({
+  agent,
+  modelDrivers: { "openai-compatible": successfulDriver },
+});
 let connected: JixuConnectionConfig | null = null;
-const activeSession: { current: JixuSession | null } = { current: null };
+const activeController: { current: ThreadController | null } = { current: null };
 const secret = "openrouter-secret-fixture";
 const setup = await testRender(
   <JixuApp
     connect={async (config, controls) => {
       connected = config;
-      activeSession.current = createJixuSession({ agent, ...controls, runtime });
-      return activeSession.current;
+      activeController.current = createThreadController({ harness, ...controls });
+      return activeController.current;
     }}
     initial={{ apiFormat: "chat-completions" }}
     onQuit={() => undefined}
@@ -57,15 +58,91 @@ try {
     await setup.flush();
   });
   const initialFrame = setup.captureCharFrame();
+  // JX-AC-015 JX-AC-018: missing credentials do not gate the working surface.
   assert.match(initialFrame, /JIXU/);
-  assert.match(initialFrame, /Connect a model/);
-  assert.match(initialFrame, /Responses/);
-  assert.match(initialFrame, /Chat Completions/);
-  assert.match(initialFrame, /Base URL/);
-  assert.match(initialFrame, /API Key/);
-  assert.match(initialFrame, /Model ID/);
-  assert.match(initialFrame, /saved in ~\/\.jixu/);
+  assert.match(initialFrame, /not configured/i);
+  assert.match(initialFrame, /Use \/config to connect a model/);
+  assert.match(initialFrame, /Model not configured · use \/config/);
+  const initialRows = initialFrame.split("\n");
+  const configurationHintRow = initialRows.findIndex((row) =>
+    row.includes("Model not configured · use /config"),
+  );
+  const shellContextRow = initialRows.findIndex((row) =>
+    row.includes("Local shell · unsandboxed"),
+  );
+  assert.equal(shellContextRow, configurationHintRow + 1);
+  assert.doesNotMatch(initialFrame, /Connect a model/);
+  assert.doesNotMatch(initialFrame, /API Key/);
   assert.doesNotMatch(initialFrame, /OpenAI|OpenRouter/);
+
+  await act(async () => {
+    await setup.mockInput.typeText("/");
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  let commandFrame = setup.captureCharFrame();
+  // JX-AC-018: slash commands appear above the composer and share one list.
+  assert.match(commandFrame, /Commands/);
+  assert.match(commandFrame, /▶ \/help/);
+  assert.match(commandFrame, /↑\/↓ select · Enter use · Esc close/);
+
+  await act(async () => {
+    setup.mockInput.pressArrow("down");
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  commandFrame = setup.captureCharFrame();
+  assert.match(commandFrame, /▶ \/new/);
+
+  await act(async () => {
+    setup.mockInput.pressArrow("up");
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  commandFrame = setup.captureCharFrame();
+  assert.match(commandFrame, /▶ \/help/);
+
+  await act(async () => {
+    setup.mockInput.pressEscape();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.doesNotMatch(setup.captureCharFrame(), /↑\/↓ select/);
+
+  await act(async () => {
+    await setup.mockInput.typeText("config");
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  commandFrame = setup.captureCharFrame();
+  assert.match(commandFrame, /▶ \/config/);
+
+  await act(async () => {
+    setup.mockInput.pressEnter();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const configurationFrame = setup.captureCharFrame();
+  assert.match(configurationFrame, /Connect a model/);
+  assert.match(configurationFrame, /Responses/);
+  assert.match(configurationFrame, /Chat Completions/);
+  assert.match(configurationFrame, /Base URL/);
+  assert.match(configurationFrame, /API Key/);
+  assert.match(configurationFrame, /Model ID/);
+  assert.match(configurationFrame, /saved in ~\/\.jixu/);
 
   await act(async () => {
     await setup.mockInput.pressKeys(["TAB"], 5);
@@ -117,7 +194,7 @@ try {
   assert.match(connectedFrame, /Chat Completions/);
   assert.match(connectedFrame, /╚█████╔╝/);
   assert.match(connectedFrame, /Ask Jixu anything/);
-  assert.match(connectedFrame, /\/help · \/events · \/state/);
+  assert.match(connectedFrame, /\/help · \/new · \/clear/);
   assert.doesNotMatch(connectedFrame, /read · write · edit · bash/);
   assert.match(connectedFrame, /ACTIVITY\s+0/);
   assert.match(connectedFrame, /No activity yet/);
@@ -127,10 +204,10 @@ try {
   assert.doesNotMatch(connectedFrame, /Conversation|Run activity|New Run/);
   assert.doesNotMatch(connectedFrame, /openrouter-secret-fixture/);
 
-  assert.notEqual(activeSession.current, null);
+  assert.notEqual(activeController.current, null);
   await act(async () => {
-    if (activeSession.current !== null) {
-      await activeSession.current.submit("Explain this repository");
+    if (activeController.current !== null) {
+      await activeController.current.submit("Explain this repository");
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
     await setup.flush();
@@ -147,8 +224,8 @@ try {
 
   let reconfiguredFrame = "";
   await act(async () => {
-    if (activeSession.current !== null) {
-      await activeSession.current.submit("/config");
+    if (activeController.current !== null) {
+      await activeController.current.submit("/config");
     }
     await setup.flush();
   });
@@ -175,7 +252,7 @@ const restoredSetup = await testRender(
     connect={async (config, controls) => {
       await restoreGate;
       restored = config;
-      return createJixuSession({ agent, ...controls, runtime });
+      return createThreadController({ harness, ...controls });
     }}
     initial={{
       apiFormat: "responses",
@@ -236,14 +313,14 @@ let releaseCompact!: () => void;
 const compactGate = new Promise<void>((resolve) => {
   releaseCompact = resolve;
 });
-let compactSession: JixuSession | null = null;
+let compactController: ThreadController | null = null;
 const compactSetup = await testRender(
   <JixuApp
     connect={async (config, controls) => {
       await compactGate;
       assert.equal(config.model, "vendor/model-example");
-      compactSession = createJixuSession({ agent, ...controls, runtime });
-      return compactSession;
+      compactController = createThreadController({ harness, ...controls });
+      return compactController;
     }}
     initial={{
       apiFormat: "responses",
@@ -274,14 +351,38 @@ try {
   assert.match(compactFrame, /╚█████╔╝/);
   assert.match(compactFrame, /Ask Jixu anything/);
   assert.match(compactFrame, /Local shell · unsandboxed/);
-  assert.match(compactFrame, /\/help · \/events · \/state/);
+  assert.match(compactFrame, /\/help · \/new · \/clear/);
   assert.doesNotMatch(compactFrame, /ACTIVITY/);
   assert.doesNotMatch(compactFrame, /Conversation|Run activity|New Run/);
   assert.doesNotMatch(compactFrame, /openrouter-secret-fixture/);
 
   await act(async () => {
-    if (compactSession !== null) {
-      await compactSession.submit("Compact activity");
+    await compactSetup.mockInput.typeText("/fork");
+  });
+  await act(async () => {
+    await compactSetup.renderOnce();
+    await compactSetup.flush();
+  });
+  let compactCommandFrame = compactSetup.captureCharFrame();
+  // JX-AC-018: the 80x24 surface keeps a usable composer and command picker.
+  assert.match(compactCommandFrame, /Commands/);
+  assert.match(compactCommandFrame, /▶ \/fork/);
+  assert.match(compactCommandFrame, /Local shell · unsandboxed/);
+
+  await act(async () => {
+    compactSetup.mockInput.pressEnter();
+  });
+  await act(async () => {
+    await compactSetup.renderOnce();
+    await compactSetup.flush();
+  });
+  compactCommandFrame = compactSetup.captureCharFrame();
+  assert.doesNotMatch(compactCommandFrame, /↑\/↓ select/);
+  assert.match(compactCommandFrame, /\/fork/);
+
+  await act(async () => {
+    if (compactController !== null) {
+      await compactController.submit("Compact activity");
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
     await compactSetup.flush();

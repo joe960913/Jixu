@@ -14,7 +14,7 @@ export interface EffectEnvelope<TType extends string, TInput> {
   readonly idempotencyKey: string;
   readonly input: TInput;
   readonly requestedByEventId: string;
-  readonly runId: string;
+  readonly threadId: string;
   readonly type: TType;
 }
 

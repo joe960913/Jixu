@@ -1,10 +1,10 @@
 import type {
   AgentSnapshot,
   DriverError,
-  RunState,
+  ThreadState,
   ToolCall,
 } from "./domain.ts";
-import { createInitialRunState } from "./domain.ts";
+import { createInitialThreadState } from "./domain.ts";
 import type {
   EffectRequest,
   ModelGenerateEffect,
@@ -14,37 +14,39 @@ import {
   InvalidTransitionError,
   UnsupportedEventError,
 } from "./errors.ts";
-import type { AnyRunEvent } from "./events.ts";
+import type { AnyThreadEvent } from "./events.ts";
 import { jsonEquals } from "./json.ts";
 
-export const REDUCER_VERSION = 1;
+export const REDUCER_VERSION = 3;
 
 export interface TransitionResult {
   readonly effects: readonly EffectRequest[];
-  readonly state: RunState;
+  readonly state: ThreadState;
 }
 
-function requireAgent(state: RunState): AgentSnapshot {
+function requireAgent(state: ThreadState): AgentSnapshot {
   if (state.agent === null) {
-    throw new InvalidTransitionError(`Run ${state.runId} has no Agent definition`);
+    throw new InvalidTransitionError(
+      `Thread ${state.threadId} has no Agent definition`,
+    );
   }
   return state.agent;
 }
 
 function requireStatus(
-  state: RunState,
+  state: ThreadState,
   eventType: string,
-  expected: RunState["status"],
+  expected: ThreadState["status"],
 ): void {
   if (state.status !== expected) {
     throw new InvalidTransitionError(
-      `${eventType} cannot apply while Run ${state.runId} is ${state.status}`,
+      `${eventType} cannot apply while Thread ${state.threadId} is ${state.status}`,
     );
   }
 }
 
 function removePending(
-  state: RunState,
+  state: ThreadState,
   effectId: string,
   expectedType: EffectRequest["type"],
 ): Readonly<Record<string, EffectRequest>> {
@@ -61,15 +63,15 @@ function removePending(
 }
 
 function acceptRequest(
-  state: RunState,
+  state: ThreadState,
   effect: EffectRequest,
 ): {
   readonly pendingEffects: Readonly<Record<string, EffectRequest>>;
   readonly readyEffects: readonly EffectRequest[];
 } {
-  if (effect.runId !== state.runId) {
+  if (effect.threadId !== state.threadId) {
     throw new InvalidTransitionError(
-      `Effect ${effect.id} belongs to Run ${effect.runId}`,
+      `Effect ${effect.id} belongs to Thread ${effect.threadId}`,
     );
   }
 
@@ -105,7 +107,7 @@ function acceptRequest(
 }
 
 function createModelEffect(
-  state: RunState,
+  state: ThreadState,
   requestedByEventId: string,
   index: number,
 ): ModelGenerateEffect {
@@ -122,13 +124,13 @@ function createModelEffect(
       tools: agent.tools,
     },
     requestedByEventId,
-    runId: state.runId,
+    threadId: state.threadId,
     type: "model.generate",
   };
 }
 
 function createToolEffect(
-  state: RunState,
+  state: ThreadState,
   call: ToolCall,
   requestedByEventId: string,
   index: number,
@@ -148,24 +150,24 @@ function createToolEffect(
       toolCallId: call.id,
     },
     requestedByEventId,
-    runId: state.runId,
+    threadId: state.threadId,
     type: "tool.execute",
   };
 }
 
 function advance(
-  state: RunState,
+  state: ThreadState,
   sequence: number,
-  updates: Partial<RunState>,
-): RunState {
+  updates: Partial<ThreadState>,
+): ThreadState {
   return { ...state, ...updates, revision: sequence };
 }
 
 function withReadyEffects(
-  state: RunState,
+  state: ThreadState,
   sequence: number,
   effects: readonly EffectRequest[],
-  updates: Partial<RunState> = {},
+  updates: Partial<ThreadState> = {},
 ): TransitionResult {
   return {
     effects,
@@ -177,7 +179,7 @@ function withReadyEffects(
 }
 
 function failAfterToolOutcome(
-  state: RunState,
+  state: ThreadState,
   sequence: number,
   remaining: Readonly<Record<string, EffectRequest>>,
   error: DriverError,
@@ -185,27 +187,62 @@ function failAfterToolOutcome(
   const hasPendingTools = Object.values(remaining).some(
     (effect) => effect.type === "tool.execute",
   );
-  return {
-    effects: [],
-    state: advance(state, sequence, {
-      error: state.error ?? error,
-      pauseRequested: hasPendingTools ? state.pauseRequested : false,
-      pendingEffects: remaining,
-      readyEffects: [],
-      status: hasPendingTools ? "running" : "failed",
-    }),
-  };
+  if (hasPendingTools) {
+    return {
+      effects: [],
+      state: advance(state, sequence, {
+        error: state.error ?? error,
+        pendingEffects: remaining,
+        readyEffects: [],
+      }),
+    };
+  }
+  return settleTurn(
+    advance(state, sequence, { pendingEffects: remaining }),
+    sequence,
+    { error: state.error ?? error, result: null },
+  );
 }
 
-export function reduce(state: RunState, event: AnyRunEvent): TransitionResult {
+function settleTurn(
+  state: ThreadState,
+  sequence: number,
+  outcome: Pick<ThreadState, "error" | "result">,
+): TransitionResult {
+  const [next, ...remaining] = state.inputQueue;
+  if (next === undefined) {
+    return {
+      effects: [],
+      state: advance(state, sequence, {
+        ...outcome,
+        pauseRequested: false,
+        readyEffects: [],
+        status: "idle",
+      }),
+    };
+  }
+
+  const nextState = advance(state, sequence, {
+    error: null,
+    inputQueue: remaining,
+    messages: [...state.messages, { content: next.content, role: "user" }],
+    result: null,
+    status: "running",
+    waitingReason: null,
+  });
+  const effects = [createModelEffect(nextState, next.eventId, 0)];
+  return withReadyEffects(nextState, sequence, effects);
+}
+
+export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionResult {
   if (event.schemaVersion !== 1) {
     throw new UnsupportedEventError(
       `Event ${event.id} uses unsupported schema version ${event.schemaVersion}`,
     );
   }
-  if (event.runId !== state.runId) {
+  if (event.threadId !== state.threadId) {
     throw new InvalidTransitionError(
-      `Event ${event.id} belongs to Run ${event.runId}, not ${state.runId}`,
+      `Event ${event.id} belongs to Thread ${event.threadId}, not ${state.threadId}`,
     );
   }
   if (event.sequence !== state.revision + 1) {
@@ -215,9 +252,11 @@ export function reduce(state: RunState, event: AnyRunEvent): TransitionResult {
   }
 
   switch (event.type) {
-    case "run.created": {
+    case "thread.created": {
       if (state.revision !== 0 || state.agent !== null) {
-        throw new InvalidTransitionError(`Run ${state.runId} is already initialized`);
+        throw new InvalidTransitionError(
+          `Thread ${state.threadId} is already initialized`,
+        );
       }
       return {
         effects: [],
@@ -225,44 +264,75 @@ export function reduce(state: RunState, event: AnyRunEvent): TransitionResult {
       };
     }
 
-    case "run.forked": {
+    case "thread.forked": {
       if (state.revision === 0 || state.agent === null) {
         throw new InvalidTransitionError(
-          `Run ${state.runId} cannot record lineage before its copied prefix`,
+          `Thread ${state.threadId} cannot record lineage before its copied prefix`,
         );
       }
       return {
         effects: [],
         state: advance(state, event.sequence, {
           error: null,
+          inputQueue: [],
           lineage: event.payload,
           pauseRequested: false,
           pendingEffects: {},
           readyEffects: [],
           result: null,
-          status: "created",
+          status: "idle",
           waitingReason: null,
         }),
       };
     }
 
     case "input.received": {
-      requireStatus(state, event.type, "created");
+      if (state.status === "running") {
+        return {
+          effects: [],
+          state: advance(state, event.sequence, {
+            inputQueue: [
+              ...state.inputQueue,
+              { content: event.payload.content, eventId: event.id },
+            ],
+          }),
+        };
+      }
+      requireStatus(state, event.type, "idle");
       const nextState = advance(state, event.sequence, {
+        error: null,
+        inputQueue: [],
         messages: [
           ...state.messages,
           { content: event.payload.content, role: "user" },
         ],
+        result: null,
         status: "running",
       });
       const effects = [createModelEffect(nextState, event.id, 0)];
       return withReadyEffects(nextState, event.sequence, effects);
     }
 
-    case "run.pause_requested": {
+    case "context.cleared": {
+      requireStatus(state, event.type, "idle");
+      return {
+        effects: [],
+        state: advance(state, event.sequence, {
+          error: null,
+          inputQueue: [],
+          messages: [],
+          result: null,
+          waitingReason: null,
+        }),
+      };
+    }
+
+    case "thread.pause_requested": {
       requireStatus(state, event.type, "running");
       if (state.pauseRequested) {
-        throw new InvalidTransitionError(`Run ${state.runId} already has a pause request`);
+        throw new InvalidTransitionError(
+          `Thread ${state.threadId} already has a pause request`,
+        );
       }
       return {
         effects: [],
@@ -270,10 +340,12 @@ export function reduce(state: RunState, event: AnyRunEvent): TransitionResult {
       };
     }
 
-    case "run.paused": {
+    case "thread.paused": {
       requireStatus(state, event.type, "running");
       if (!state.pauseRequested) {
-        throw new InvalidTransitionError(`Run ${state.runId} has no pause request`);
+        throw new InvalidTransitionError(
+          `Thread ${state.threadId} has no pause request`,
+        );
       }
       return {
         effects: [],
@@ -284,7 +356,7 @@ export function reduce(state: RunState, event: AnyRunEvent): TransitionResult {
       };
     }
 
-    case "run.resumed": {
+    case "thread.continued": {
       requireStatus(state, event.type, "paused");
       return {
         effects: state.readyEffects,
@@ -295,7 +367,7 @@ export function reduce(state: RunState, event: AnyRunEvent): TransitionResult {
       };
     }
 
-    case "run.waiting": {
+    case "thread.waiting": {
       requireStatus(state, event.type, "running");
       if (state.pendingEffects[event.payload.effectId] === undefined) {
         throw new InvalidTransitionError(
@@ -338,12 +410,14 @@ export function reduce(state: RunState, event: AnyRunEvent): TransitionResult {
             toolCalls: response.toolCalls,
           },
         ],
-        pauseRequested:
-          response.toolCalls.length === 0 ? false : state.pauseRequested,
         pendingEffects: remaining,
-        result: response.toolCalls.length === 0 ? response.content : null,
-        status: response.toolCalls.length === 0 ? "completed" : "running",
       });
+      if (response.toolCalls.length === 0) {
+        return settleTurn(nextState, event.sequence, {
+          error: null,
+          result: response.content,
+        });
+      }
       const effects = response.toolCalls.map((call, index) =>
         createToolEffect(nextState, call, event.id, index),
       );
@@ -357,16 +431,11 @@ export function reduce(state: RunState, event: AnyRunEvent): TransitionResult {
         event.payload.effectId,
         "model.generate",
       );
-      return {
-        effects: [],
-        state: advance(state, event.sequence, {
-          error: event.payload.error,
-          pauseRequested: false,
-          pendingEffects: remaining,
-          readyEffects: [],
-          status: "failed",
-        }),
-      };
+      return settleTurn(
+        advance(state, event.sequence, { pendingEffects: remaining }),
+        event.sequence,
+        { error: event.payload.error, result: null },
+      );
     }
 
     case "tool.requested": {
@@ -404,15 +473,10 @@ export function reduce(state: RunState, event: AnyRunEvent): TransitionResult {
         return { effects: [], state: nextState };
       }
       if (nextState.error !== null) {
-        return {
-          effects: [],
-          state: {
-            ...nextState,
-            pauseRequested: false,
-            readyEffects: [],
-            status: "failed",
-          },
-        };
+        return settleTurn(nextState, event.sequence, {
+          error: nextState.error,
+          result: null,
+        });
       }
       const effects = [createModelEffect(nextState, event.id, 0)];
       return withReadyEffects(nextState, event.sequence, effects);
@@ -441,10 +505,10 @@ export function reduce(state: RunState, event: AnyRunEvent): TransitionResult {
 }
 
 export function replayEvents(
-  runId: string,
-  events: readonly AnyRunEvent[],
-): RunState {
-  let state = createInitialRunState(runId);
+  threadId: string,
+  events: readonly AnyThreadEvent[],
+): ThreadState {
+  let state = createInitialThreadState(threadId);
   for (const event of events) {
     state = reduce(state, event).state;
   }

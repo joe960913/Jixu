@@ -27,5 +27,8 @@
     "@types/react": "19.2.18",
     "publint": "0.3.23",
     "typescript": "6.0.3"
-  }
+  },
+  "workspaces": [
+    "packages/*"
+  ]
 }

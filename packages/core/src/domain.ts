@@ -2,11 +2,8 @@ import type { EffectRequest } from "./effects.ts";
 import { cloneJson, isJsonObject } from "./json.ts";
 import type { JsonObject, JsonValue } from "./json.ts";
 
-export type RunStatus =
-  | "cancelled"
-  | "completed"
-  | "created"
-  | "failed"
+export type ThreadStatus =
+  | "idle"
   | "paused"
   | "running"
   | "waiting";
@@ -104,7 +101,7 @@ export interface DriverError {
 
 export interface ForkLineage {
   readonly parentEventId: string;
-  readonly parentRunId: string;
+  readonly parentThreadId: string;
   readonly parentSequence: number;
 }
 
@@ -113,9 +110,15 @@ export interface WaitingReason {
   readonly reasonCode: "effect_outcome_unknown";
 }
 
-export interface RunState {
+export interface QueuedInput {
+  readonly content: string;
+  readonly eventId: string;
+}
+
+export interface ThreadState {
   readonly agent: AgentSnapshot | null;
   readonly error: DriverError | null;
+  readonly inputQueue: readonly QueuedInput[];
   readonly lineage: ForkLineage | null;
   readonly messages: readonly ModelMessage[];
   readonly pauseRequested: boolean;
@@ -123,8 +126,8 @@ export interface RunState {
   readonly readyEffects: readonly EffectRequest[];
   readonly result: string | null;
   readonly revision: number;
-  readonly runId: string;
-  readonly status: RunStatus;
+  readonly threadId: string;
+  readonly status: ThreadStatus;
   readonly waitingReason: WaitingReason | null;
 }
 
@@ -132,16 +135,17 @@ export interface Checkpoint {
   readonly eventId: string;
   readonly eventSchemaVersion: number;
   readonly reducerVersion: number;
-  readonly runId: string;
+  readonly threadId: string;
   readonly sequence: number;
-  readonly state: RunState;
+  readonly state: ThreadState;
   readonly stateDigest: string;
 }
 
-export function createInitialRunState(runId: string): RunState {
+export function createInitialThreadState(threadId: string): ThreadState {
   return {
     agent: null,
     error: null,
+    inputQueue: [],
     lineage: null,
     messages: [],
     pauseRequested: false,
@@ -149,8 +153,8 @@ export function createInitialRunState(runId: string): RunState {
     readyEffects: [],
     result: null,
     revision: 0,
-    runId,
-    status: "created",
+    threadId,
+    status: "idle",
     waitingReason: null,
   };
 }

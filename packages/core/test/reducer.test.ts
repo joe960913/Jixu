@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  createInitialRunState,
-  createRunEvent,
+  createInitialThreadState,
+  createThreadEvent,
   reduce,
 } from "../src/index.ts";
 
@@ -14,20 +14,20 @@ const snapshot = {
 } as const;
 
 test("JX-AC-007 foundation: Reducer is deterministic and does not mutate input State", () => {
-  const initial = createInitialRunState("run-1");
-  const created = createRunEvent({
+  const initial = createInitialThreadState("run-1");
+  const created = createThreadEvent({
     id: "event-1",
     payload: { agent: snapshot },
-    runId: "run-1",
+    threadId: "run-1",
     sequence: 1,
     timestamp: "2026-01-01T00:00:00.000Z",
-    type: "run.created",
+    type: "thread.created",
   });
   const afterCreated = reduce(initial, created).state;
-  const input = createRunEvent({
+  const input = createThreadEvent({
     id: "event-2",
     payload: { content: "hello" },
-    runId: "run-1",
+    threadId: "run-1",
     sequence: 2,
     timestamp: "2026-01-01T00:00:00.000Z",
     type: "input.received",

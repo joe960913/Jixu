@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { createRunEvent } from "../../core/src/index.ts";
+import { createThreadEvent } from "../../core/src/index.ts";
 import { defineStoreContract } from "../../testkit/src/store-contract.ts";
 import { SqliteEventStore } from "../src/index.ts";
 
@@ -27,8 +27,8 @@ test("JX-AC-003 SqliteEventStore survives adapter reconstruction", async () => {
   let reopened: SqliteEventStore | undefined;
   try {
     first = new SqliteEventStore(path);
-    await first.createRun("durable-sqlite");
-    const event = createRunEvent({
+    await first.createThread("durable-sqlite");
+    const event = createThreadEvent({
       id: "durable-sqlite-event",
       payload: {
         agent: {
@@ -37,10 +37,10 @@ test("JX-AC-003 SqliteEventStore survives adapter reconstruction", async () => {
           tools: [],
         },
       },
-      runId: "durable-sqlite",
+      threadId: "durable-sqlite",
       sequence: 1,
       timestamp: "2026-01-01T00:00:00.000Z",
-      type: "run.created",
+      type: "thread.created",
     });
     await first.append("durable-sqlite", 0, event);
     first.close();
