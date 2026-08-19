@@ -13,17 +13,16 @@ import type {
   PlanSnapshot,
   Signal,
 } from "@jixu/core";
-import type {
-  Response,
-  ResponseCreateParamsStreaming,
-  ResponseStreamEvent,
-} from "openai/resources/responses/responses";
 
+import * as llm from "../src/index.ts";
 import {
   createLLMAdapter,
-  createOpenAIModelDriver,
-  createOpenAICompatibleModelDriver,
-  createOpenRouterModelDriver,
+  createLLMModelDriver,
+} from "../src/index.ts";
+import type {
+  AnthropicMessagesClient,
+  AnthropicMessagesRequest,
+  OpenAIChatCompletionsClient,
 } from "../src/index.ts";
 
 const planProposal = {
@@ -55,37 +54,11 @@ const activePlan: PlanSnapshot = {
   status: "active",
   steps: planProposal.steps,
 };
-import type {
-  OpenChatCompletionsClient,
-  OpenResponsesClient,
-} from "../src/index.ts";
-
-function response(output: Response["output"]): Response {
-  return {
-    error: null,
-    id: "resp_test",
-    incomplete_details: null,
-    output,
-    output_text: "",
-    status: "completed",
-    usage: {
-      input_tokens: 80,
-      input_tokens_details: {
-        cache_write_tokens: 4,
-        cached_tokens: 20,
-      },
-      output_tokens: 20,
-      output_tokens_details: { reasoning_tokens: 8 },
-      total_tokens: 100,
-      cost: 0.0042,
-    },
-  } as unknown as Response;
-}
 
 function effect(
-  provider = "openai",
-  model = "gpt-test",
-  plan: PlanSnapshot | null = null,
+  provider = "fixture-provider",
+  model = "fixture-model",
+  plan: PlanSnapshot | null = activePlan,
 ): ModelGenerateEffect {
   return {
     attempt: 1,
@@ -101,6 +74,7 @@ function effect(
           role: "assistant",
           toolCalls: [
             { arguments: { path: "README.md" }, id: "call-read", name: "read" },
+            { arguments: { path: "SPEC.md" }, id: "call-spec", name: "read" },
           ],
         },
         {
@@ -108,6 +82,12 @@ function effect(
           output: { content: "hello" },
           role: "tool",
           toolCallId: "call-read",
+        },
+        {
+          name: "read",
+          output: { content: "requirements" },
+          role: "tool",
+          toolCallId: "call-spec",
         },
       ],
       model: { model, provider },
@@ -131,30 +111,52 @@ function effect(
       ],
     },
     requestedByEventId: "event-1",
-    threadId: "run-1",
+    threadId: "thread-1",
     type: "model.generate",
   };
 }
 
-function context(signals: Signal[] = []): ModelDriverContext {
+function context(
+  signals: Signal[] = [],
+  cancellation = new AbortController().signal,
+): ModelDriverContext {
   return {
-    cancellation: new AbortController().signal,
+    cancellation,
     signals: { emit: (signal) => signals.push(structuredClone(signal)) },
   };
 }
 
-class FakeResponsesClient implements OpenResponsesClient {
-  body: ResponseCreateParamsStreaming | undefined;
-  readonly bodies: ResponseCreateParamsStreaming[] = [];
-  readonly #events: readonly ResponseStreamEvent[];
+class FakeOpenAIChatClient implements OpenAIChatCompletionsClient {
+  body: Parameters<OpenAIChatCompletionsClient["create"]>[0] | undefined;
+  readonly #chunks: readonly unknown[];
 
-  constructor(events: readonly ResponseStreamEvent[]) {
+  constructor(chunks: readonly unknown[]) {
+    this.#chunks = chunks;
+  }
+
+  create(
+    body: Parameters<OpenAIChatCompletionsClient["create"]>[0],
+  ): Promise<AsyncIterable<unknown>> {
+    this.body = structuredClone(body);
+    const chunks = this.#chunks;
+    return Promise.resolve({
+      async *[Symbol.asyncIterator]() {
+        for (const chunk of chunks) yield structuredClone(chunk);
+      },
+    });
+  }
+}
+
+class FakeAnthropicClient implements AnthropicMessagesClient {
+  body: AnthropicMessagesRequest | undefined;
+  readonly #events: readonly unknown[];
+
+  constructor(events: readonly unknown[]) {
     this.#events = events;
   }
 
-  create(body: ResponseCreateParamsStreaming): Promise<AsyncIterable<unknown>> {
+  create(body: AnthropicMessagesRequest): Promise<AsyncIterable<unknown>> {
     this.body = structuredClone(body);
-    this.bodies.push(structuredClone(body));
     const events = this.#events;
     return Promise.resolve({
       async *[Symbol.asyncIterator]() {
@@ -164,76 +166,174 @@ class FakeResponsesClient implements OpenResponsesClient {
   }
 }
 
-test("JX-PROV-005 JX-AC-002 JX-AC-034 Responses maps model controls and emits progress", async () => {
-  const client = new FakeResponsesClient([
+function chatChunks(): readonly unknown[] {
+  return [
     {
-      content_index: 0,
-      delta: "I will",
-      item_id: "message-1",
-      logprobs: [],
-      output_index: 0,
-      sequence_number: 2,
-      type: "response.output_text.delta",
+      choices: [
+        {
+          delta: { content: "I will read it." },
+          finish_reason: null,
+          index: 0,
+        },
+      ],
     },
     {
-      response: response([
+      choices: [
         {
-          content: [
-            { annotations: [], text: "I will read it.", type: "output_text" },
-          ],
-          id: "message-1",
-          role: "assistant",
-          status: "completed",
-          type: "message",
+          delta: {
+            tool_calls: [
+              {
+                function: {
+                  arguments: JSON.stringify({ message: "Inspecting the SPEC" }),
+                  name: PROGRESS_CONTROL.name,
+                },
+                id: "call-progress",
+                index: 0,
+                type: "function",
+              },
+              {
+                function: {
+                  arguments: JSON.stringify(planProposal),
+                  name: PLAN_CONTROL.name,
+                },
+                id: "call-plan",
+                index: 1,
+                type: "function",
+              },
+              {
+                function: {
+                  arguments: '{"path":"SPEC.md"}',
+                  name: "read",
+                },
+                id: "call-next",
+                index: 2,
+                type: "function",
+              },
+            ],
+          },
+          finish_reason: "tool_calls",
+          index: 0,
         },
-        {
-          arguments: JSON.stringify({
-            message: "Inspecting the repository specification",
-          }),
-          call_id: "call-progress",
-          name: PROGRESS_CONTROL.name,
-          status: "completed",
-          type: "function_call",
-        },
-        {
-          arguments: JSON.stringify(planProposal),
-          call_id: "call-plan",
-          name: PLAN_CONTROL.name,
-          status: "completed",
-          type: "function_call",
-        },
-        {
-          arguments: "{invalid",
-          call_id: "call-progress-invalid",
-          name: PROGRESS_CONTROL.name,
-          status: "completed",
-          type: "function_call",
-        },
-        {
-          arguments: '{"path":"README.md"}',
-          call_id: "call-next",
-          name: "read",
-          status: "completed",
-          type: "function_call",
-        },
-      ]),
-      sequence_number: 3,
-      type: "response.completed",
+      ],
     },
-  ]);
+    {
+      choices: [],
+      usage: {
+        completion_tokens: 20,
+        completion_tokens_details: { reasoning_tokens: 8 },
+        prompt_tokens: 80,
+        prompt_tokens_details: { cached_tokens: 20 },
+        total_tokens: 100,
+      },
+    },
+  ];
+}
+
+function anthropicEvents(): readonly unknown[] {
+  return [
+    {
+      message: {
+        content: [],
+        usage: {
+          cache_creation_input_tokens: 4,
+          cache_read_input_tokens: 20,
+          input_tokens: 80,
+          output_tokens: 1,
+        },
+      },
+      type: "message_start",
+    },
+    {
+      content_block: { text: "", type: "text" },
+      index: 0,
+      type: "content_block_start",
+    },
+    {
+      delta: { text: "I will read it.", type: "text_delta" },
+      index: 0,
+      type: "content_block_delta",
+    },
+    {
+      content_block: {
+        id: "call-progress",
+        input: {},
+        name: PROGRESS_CONTROL.name,
+        type: "tool_use",
+      },
+      index: 1,
+      type: "content_block_start",
+    },
+    {
+      delta: {
+        partial_json: JSON.stringify({ message: "Inspecting the SPEC" }),
+        type: "input_json_delta",
+      },
+      index: 1,
+      type: "content_block_delta",
+    },
+    {
+      content_block: {
+        id: "call-plan",
+        input: {},
+        name: PLAN_CONTROL.name,
+        type: "tool_use",
+      },
+      index: 2,
+      type: "content_block_start",
+    },
+    {
+      delta: {
+        partial_json: JSON.stringify(planProposal),
+        type: "input_json_delta",
+      },
+      index: 2,
+      type: "content_block_delta",
+    },
+    {
+      content_block: {
+        id: "call-next",
+        input: {},
+        name: "read",
+        type: "tool_use",
+      },
+      index: 3,
+      type: "content_block_start",
+    },
+    {
+      delta: {
+        partial_json: '{"path":"SPEC.md"}',
+        type: "input_json_delta",
+      },
+      index: 3,
+      type: "content_block_delta",
+    },
+    {
+      delta: { stop_reason: "tool_use", stop_sequence: null },
+      type: "message_delta",
+      usage: {
+        output_tokens: 20,
+        output_tokens_details: { thinking_tokens: 7 },
+      },
+    },
+    { type: "message_stop" },
+  ];
+}
+
+test("JX-PROV-002 JX-PROV-003 JX-AC-016 OpenAI Chat Completions normalizes controls, Tools, Signals, and usage", async () => {
+  const client = new FakeOpenAIChatClient(chatChunks());
   const signals: Signal[] = [];
-  const outcome = await createOpenAIModelDriver({
-    client,
+  const outcome = await createLLMModelDriver({
+    api: "openai-chat-completions",
+    baseURL: "https://chat.example/v1",
     costCalculator: ({ usage }) => ({
       currency: "USD",
       pricingVersion: "fixture-1",
       source: "calculator",
       usdNanos: usage.totalTokens * 25_000,
     }),
-  }).generate(
-    effect(),
-    context(signals),
-  );
+    openAIChatCompletionsClient: client,
+    provider: "chat-provider",
+  }).generate(effect("chat-provider"), context(signals));
 
   assert.equal(outcome.status, "succeeded");
   if (outcome.status !== "succeeded") return;
@@ -245,7 +345,7 @@ test("JX-PROV-005 JX-AC-002 JX-AC-034 Responses maps model controls and emits pr
       usdNanos: 2_500_000,
     },
     usage: {
-      cacheWriteTokens: 4,
+      cacheWriteTokens: null,
       cachedInputTokens: 20,
       inputTokens: 80,
       outputTokens: 20,
@@ -257,303 +357,119 @@ test("JX-PROV-005 JX-AC-002 JX-AC-034 Responses maps model controls and emits pr
     content: "I will read it.",
     planUpdates: [planProposal],
     toolCalls: [
-      { arguments: { path: "README.md" }, id: "call-next", name: "read" },
+      { arguments: { path: "SPEC.md" }, id: "call-next", name: "read" },
     ],
   });
-  assert.deepEqual(client.body?.input, [
-    { content: "Read it", role: "user" },
-    {
-      arguments: '{"path":"README.md"}',
-      call_id: "call-read",
-      name: "read",
-      type: "function_call",
-    },
-    {
-      call_id: "call-read",
-      name: "read",
-      output: '{"content":"hello"}',
-      type: "function_call_output",
-    },
+  assert.deepEqual(client.body?.messages.slice(1, 5).map((message) => message.role), [
+    "user",
+    "assistant",
+    "tool",
+    "tool",
   ]);
   assert.deepEqual(
-    (client.body?.tools as Array<{ readonly name: string }> | undefined)?.map(
-      (tool) => tool.name,
-    ),
+    (
+      client.body?.tools as
+        | readonly { readonly function: { readonly name: string } }[]
+        | undefined
+    )?.map((tool) => tool.function.name),
     ["read", PLAN_CONTROL.name, PROGRESS_CONTROL.name],
   );
   assert.equal(signals[0]?.type, "model.output_text.delta");
-  assert.deepEqual(signals[1], {
-    data: { message: "Inspecting the repository specification" },
+  assert.deepEqual(signals.at(-1), {
+    data: { message: "Inspecting the SPEC" },
     kind: "signal",
-    threadId: "run-1",
+    threadId: "thread-1",
     type: "model.progress",
   });
 });
 
-test("JX-SIG-005 JX-AC-034 Responses and Chat Completions fail closed on progress-only output", async () => {
-  const progressArguments = JSON.stringify({ message: "Preparing the final answer" });
-  const responsesSignals: Signal[] = [];
-  const responsesOutcome = await createOpenAIModelDriver({
-    client: new FakeResponsesClient([
-      {
-        response: response([
-          {
-            arguments: progressArguments,
-            call_id: "call-progress-only",
-            name: PROGRESS_CONTROL.name,
-            status: "completed",
-            type: "function_call",
-          },
-        ]),
-        sequence_number: 1,
-        type: "response.completed",
-      },
-    ]),
-  }).generate(effect(), context(responsesSignals));
+test("JX-PROV-002 JX-PROV-004 JX-PROV-005 JX-AC-016 Anthropic Messages groups Tool results and normalizes streaming usage", async () => {
+  const client = new FakeAnthropicClient(anthropicEvents());
+  const signals: Signal[] = [];
+  const outcome = await createLLMModelDriver({
+    anthropicMessagesClient: client,
+    api: "anthropic-messages",
+    baseURL: "https://api.anthropic.test",
+    costCalculator: ({ usage }) => ({
+      currency: "USD",
+      pricingVersion: "anthropic-fixture-1",
+      source: "calculator",
+      usdNanos: usage.totalTokens * 10_000,
+    }),
+    provider: "anthropic",
+  }).generate(effect("anthropic", "claude-fixture"), context(signals));
 
-  assert.deepEqual(responsesOutcome, {
-    accounting: {
-      cost: null,
-      usage: {
-        cacheWriteTokens: 4,
-        cachedInputTokens: 20,
-        inputTokens: 80,
-        outputTokens: 20,
-        reasoningTokens: 8,
-        totalTokens: 100,
-      },
+  assert.equal(outcome.status, "succeeded");
+  if (outcome.status !== "succeeded") return;
+  assert.deepEqual(outcome.accounting, {
+    cost: {
+      currency: "USD",
+      pricingVersion: "anthropic-fixture-1",
+      source: "calculator",
+      usdNanos: 1_240_000,
     },
-    error: {
-      code: "openai_progress_only",
-      message:
-        "openai returned only progress control without usable content, Plan changes, or Tool calls",
-      retryable: false,
+    usage: {
+      cacheWriteTokens: 4,
+      cachedInputTokens: 20,
+      inputTokens: 104,
+      outputTokens: 20,
+      reasoningTokens: 7,
+      totalTokens: 124,
     },
-    status: "failed",
   });
-  assert.deepEqual(responsesSignals, [
+  assert.deepEqual(outcome.value, {
+    content: "I will read it.",
+    planUpdates: [planProposal],
+    toolCalls: [
+      { arguments: { path: "SPEC.md" }, id: "call-next", name: "read" },
+    ],
+  });
+  assert.equal(client.body?.max_tokens, 4096);
+  assert.deepEqual(client.body?.messages.map((message) => message.role), [
+    "user",
+    "assistant",
+    "user",
+  ]);
+  const resultMessage = client.body?.messages[2];
+  assert.ok(Array.isArray(resultMessage?.content));
+  assert.deepEqual(
+    resultMessage.content.map((block) => block.type),
+    ["tool_result", "tool_result"],
+  );
+  assert.ok(Array.isArray(client.body?.system));
+  assert.equal(client.body.system[0]?.text, "Use tools when useful.");
+  assert.match(client.body.system[1]?.text ?? "", /Current active Plan/);
+  assert.deepEqual(client.body.tools.map((tool) => tool.name), [
+    "read",
+    PLAN_CONTROL.name,
+    PROGRESS_CONTROL.name,
+  ]);
+  assert.equal(signals[0]?.type, "model.output_text.delta");
+  assert.equal(signals.at(-1)?.type, "model.progress");
+});
+
+test("JX-PROV-005 JX-MET-003 trusted OpenRouter usage.cost remains provider-reported", async () => {
+  const client = new FakeOpenAIChatClient([
     {
-      data: { message: "Preparing the final answer" },
-      kind: "signal",
-      threadId: "run-1",
-      type: "model.progress",
+      choices: [
+        { delta: { content: "priced" }, finish_reason: "stop", index: 0 },
+      ],
+    },
+    {
+      choices: [],
+      usage: {
+        completion_tokens: 5,
+        cost: 0.0042,
+        prompt_tokens: 15,
+      },
     },
   ]);
-
-  const chatSignals: Signal[] = [];
-  const chatClient: OpenChatCompletionsClient = {
-    create(): Promise<AsyncIterable<unknown>> {
-      return Promise.resolve({
-        async *[Symbol.asyncIterator]() {
-          yield {
-            choices: [
-              {
-                delta: {
-                  tool_calls: [
-                    {
-                      function: {
-                        arguments: progressArguments,
-                        name: PROGRESS_CONTROL.name,
-                      },
-                      id: "call-progress-only-chat",
-                      index: 0,
-                      type: "function",
-                    },
-                  ],
-                },
-                finish_reason: "tool_calls",
-                index: 0,
-              },
-            ],
-          };
-          yield {
-            choices: [],
-            usage: {
-              completion_tokens: 4,
-              prompt_tokens: 16,
-              total_tokens: 20,
-            },
-          };
-        },
-      });
-    },
-  };
-  const chatOutcome = await createOpenAICompatibleModelDriver({
-    apiFormat: "chat-completions",
-    baseURL: "https://chat.example/v1",
-    chatCompletionsClient: chatClient,
-    provider: "chat-provider",
-  }).generate(effect("chat-provider", "chat-model"), context(chatSignals));
-
-  assert.deepEqual(chatOutcome, {
-    accounting: {
-      cost: null,
-      usage: {
-        cacheWriteTokens: null,
-        cachedInputTokens: null,
-        inputTokens: 16,
-        outputTokens: 4,
-        reasoningTokens: null,
-        totalTokens: 20,
-      },
-    },
-    error: {
-      code: "chat-provider_progress_only",
-      message:
-        "chat-provider returned only progress control without usable content, Plan changes, or Tool calls",
-      retryable: false,
-    },
-    status: "failed",
-  });
-  assert.deepEqual(chatSignals.at(-1), {
-    data: { message: "Preparing the final answer" },
-    kind: "signal",
-    threadId: "run-1",
-    type: "model.progress",
-  });
-
-  const harness = createHarness({
-    agent: defineAgent({
-      instructions: "Answer directly.",
-      model: { model: "gpt-test", provider: "openai" },
-      tools: [],
-    }),
-    modelDrivers: {
-      openai: createOpenAIModelDriver({
-        client: new FakeResponsesClient([
-          {
-            response: response([
-              {
-                arguments: progressArguments,
-                call_id: "call-progress-only-durable",
-                name: PROGRESS_CONTROL.name,
-                status: "completed",
-                type: "function_call",
-              },
-            ]),
-            sequence_number: 1,
-            type: "response.completed",
-          },
-        ]),
-      }),
-    },
-  });
-  const thread = await harness.createThread();
-  const state = await thread.send("Answer the question");
-  const events = await thread.events();
-  const modelFailures = events.filter((event) => event.type === "model.failed");
-
-  assert.equal(state.status, "idle");
-  assert.equal(state.error?.code, "openai_progress_only");
-  assert.equal(
-    events.filter((event) => event.type === "model.completed").length,
-    0,
-  );
-  assert.equal(modelFailures.length, 1);
-  assert.deepEqual(modelFailures[0]?.payload.error, {
-    code: "openai_progress_only",
-    message:
-      "openai returned only progress control without usable content, Plan changes, or Tool calls",
-    retryable: false,
-  });
-});
-
-test("JX-AC-035 active Plan revisions preserve the provider prefix and use one Thread cache key", async () => {
-  const completed: ResponseStreamEvent = {
-    response: response([
-      {
-        content: [{ annotations: [], text: "done", type: "output_text" }],
-        id: "message-cache",
-        role: "assistant",
-        status: "completed",
-        type: "message",
-      },
-    ]),
-    sequence_number: 1,
-    type: "response.completed",
-  };
-  const responsesClient = new FakeResponsesClient([completed]);
-  const responsesDriver = createOpenAIModelDriver({ client: responsesClient });
-  const revisedPlan = { ...activePlan, revision: 2 } satisfies PlanSnapshot;
-
-  await responsesDriver.generate(effect("openai", "gpt-test", activePlan), context());
-  await responsesDriver.generate(effect("openai", "gpt-test", revisedPlan), context());
-
-  const [first, second] = responsesClient.bodies;
-  assert.equal(first?.instructions, "Use tools when useful.");
-  assert.equal(second?.instructions, first?.instructions);
-  assert.equal(first?.prompt_cache_key, "run-1");
-  assert.equal(second?.prompt_cache_key, first?.prompt_cache_key);
-  assert.deepEqual(second?.tools, first?.tools);
-  assert.ok(Array.isArray(first?.input));
-  assert.ok(Array.isArray(second?.input));
-  assert.deepEqual(second.input.slice(0, -1), first.input.slice(0, -1));
-  const firstPlanMessage = first.input.at(-1) as { readonly content?: unknown };
-  const secondPlanMessage = second.input.at(-1) as { readonly content?: unknown };
-  assert.match(String(firstPlanMessage.content), /"revision":1/);
-  assert.match(String(secondPlanMessage.content), /"revision":2/);
-
-  let chatBody: Record<string, unknown> = {};
-  const chatClient: OpenChatCompletionsClient = {
-    create(body): Promise<AsyncIterable<unknown>> {
-      chatBody = structuredClone(body) as unknown as Record<string, unknown>;
-      return Promise.resolve({
-        async *[Symbol.asyncIterator]() {
-          // Capturing the request is sufficient for this adapter contract.
-        },
-      });
-    },
-  };
-  await createOpenAICompatibleModelDriver({
-    apiFormat: "chat-completions",
+  const outcome = await createLLMModelDriver({
+    api: "openai-chat-completions",
     baseURL: "https://openrouter.ai/api/v1",
-    chatCompletionsClient: chatClient,
-  }).generate(effect("openrouter", "deepseek/test", activePlan), context());
-
-  assert.equal(chatBody.prompt_cache_key, "run-1");
-  assert.equal(
-    (chatBody.messages as Array<{ content: string; role: string }>).at(-1)?.role,
-    "system",
-  );
-  assert.match(JSON.stringify(chatBody.messages), /Current active Plan/);
-});
-
-test("JX-PROV-007 JX-AC-019 OpenRouter factory uses the stateless Responses endpoint with attribution headers", async () => {
-  let url = "";
-  let headers = new Headers();
-  let body: unknown;
-  const completed = {
-    response: response([
-      {
-        content: [{ annotations: [], text: "done", type: "output_text" }],
-        id: "message-1",
-        role: "assistant",
-        status: "completed",
-        type: "message",
-      },
-    ]),
-    sequence_number: 1,
-    type: "response.completed",
-  };
-  const fetchMock: typeof fetch = async (input, init) => {
-    url = input instanceof Request ? input.url : input.toString();
-    headers = new Headers(init?.headers);
-    body = JSON.parse(String(init?.body));
-    return new Response(
-      `data: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`,
-      { headers: { "content-type": "text/event-stream" }, status: 200 },
-    );
-  };
-  const driver = createOpenRouterModelDriver({
-    apiKey: "or-secret",
-    appName: "Jixu",
-    appUrl: "https://github.com/joe960913/Jixu",
-    fetch: fetchMock,
-  });
-  const outcome = await driver.generate(
-    effect("openrouter", "openai/gpt-test"),
-    context(),
-  );
+    openAIChatCompletionsClient: client,
+    provider: "openrouter",
+  }).generate(effect("openrouter", "fixture", null), context());
 
   assert.equal(outcome.status, "succeeded");
   assert.deepEqual(outcome.accounting?.cost, {
@@ -562,283 +478,376 @@ test("JX-PROV-007 JX-AC-019 OpenRouter factory uses the stateless Responses endp
     source: "provider_reported",
     usdNanos: 4_200_000,
   });
-  assert.equal(url, "https://openrouter.ai/api/v1/responses");
-  assert.equal(headers.get("authorization"), "Bearer or-secret");
-  assert.equal(headers.get("http-referer"), "https://github.com/joe960913/Jixu");
-  assert.equal(headers.get("x-openrouter-title"), "Jixu");
-  assert.equal((body as { store?: unknown }).store, false);
+  assert.equal(outcome.accounting?.usage?.totalTokens, 20);
 });
 
-test("JX-PROV-008 JX-AC-019 compatible Responses format uses the caller Base URL", async () => {
-  let url = "";
-  let body: Record<string, unknown> = {};
-  const completed = {
-    response: response([
-      {
-        content: [{ annotations: [], text: "compatible", type: "output_text" }],
-        id: "message-compatible",
-        role: "assistant",
-        status: "completed",
-        type: "message",
-      },
-    ]),
-    sequence_number: 1,
-    type: "response.completed",
-  };
-  const fetchMock: typeof fetch = async (input, init) => {
-    url = input instanceof Request ? input.url : input.toString();
-    body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    return new Response(
-      `data: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`,
-      { headers: { "content-type": "text/event-stream" }, status: 200 },
-    );
-  };
-  const outcome = await createOpenAICompatibleModelDriver({
-    apiFormat: "responses",
-    apiKey: "compatible-secret",
-    baseURL: "https://gateway.example/v1",
-    fetch: fetchMock,
-  }).generate(effect("openai-compatible"), context());
-
-  assert.equal(url, "https://gateway.example/v1/responses");
-  assert.equal("prompt_cache_key" in body, false);
-  assert.equal(outcome.status, "succeeded");
-  if (outcome.status === "succeeded") {
-    assert.equal(outcome.accounting?.cost, null);
-    assert.equal(outcome.accounting?.usage?.totalTokens, 100);
-    assert.equal(outcome.value.content, "compatible");
-  }
-});
-
-test("JX-PROV-008 JX-AC-002 JX-AC-019 JX-AC-034 Chat Completions maps controls and progress", async () => {
-  let url = "";
-  let body: Record<string, unknown> = {};
-  const chunks = [
-    {
-      choices: [
-        {
-          delta: { content: "Checking" },
-          finish_reason: null,
-          index: 0,
-        },
-      ],
-      created: 1,
-      id: "chatcmpl-test",
-      model: "chat-model",
-      object: "chat.completion.chunk",
-    },
+function progressOnlyChatClient(): FakeOpenAIChatClient {
+  return new FakeOpenAIChatClient([
     {
       choices: [
         {
           delta: {
             tool_calls: [
               {
-                function: { arguments: '{"path":', name: "read" },
-                id: "call-chat",
+                function: {
+                  arguments: JSON.stringify({ message: "Preparing the answer" }),
+                  name: PROGRESS_CONTROL.name,
+                },
+                id: "call-progress-only",
                 index: 0,
                 type: "function",
               },
-              {
-                function: {
-                  arguments: JSON.stringify(planProposal),
-                  name: PLAN_CONTROL.name,
-                },
-                id: "call-plan-chat",
-                index: 1,
-                type: "function",
-              },
-              {
-                function: {
-                  arguments: JSON.stringify({
-                    message: "Checking the current specification",
-                  }),
-                  name: PROGRESS_CONTROL.name,
-                },
-                id: "call-progress-chat",
-                index: 2,
-                type: "function",
-              },
-            ],
-          },
-          finish_reason: null,
-          index: 0,
-        },
-      ],
-      created: 1,
-      id: "chatcmpl-test",
-      model: "chat-model",
-      object: "chat.completion.chunk",
-    },
-    {
-      choices: [
-        {
-          delta: {
-            tool_calls: [
-              { function: { arguments: '"SPEC.md"}' }, index: 0 },
             ],
           },
           finish_reason: "tool_calls",
           index: 0,
         },
       ],
-      created: 1,
-      id: "chatcmpl-test",
-      model: "chat-model",
-      object: "chat.completion.chunk",
     },
     {
       choices: [],
-      created: 1,
-      id: "chatcmpl-test",
-      model: "chat-model",
-      object: "chat.completion.chunk",
-      usage: {
-        completion_tokens: 20,
-        completion_tokens_details: { reasoning_tokens: 6 },
-        cost: 0.0035,
-        prompt_tokens: 60,
-        prompt_tokens_details: { cached_tokens: 10 },
-        total_tokens: 80,
-      },
-    },
-  ];
-  const fetchMock: typeof fetch = async (input, init) => {
-    url = input instanceof Request ? input.url : input.toString();
-    body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    return new Response(
-      `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("")}data: [DONE]\n\n`,
-      { headers: { "content-type": "text/event-stream" }, status: 200 },
-    );
-  };
-  const signals: Signal[] = [];
-  const outcome = await createOpenAICompatibleModelDriver({
-    apiFormat: "chat-completions",
-    apiKey: "chat-secret",
-    baseURL: "https://chat.example/v1",
-    fetch: fetchMock,
-    providerReportsUsdCost: true,
-  }).generate(
-    effect("openai-compatible", "chat-model"),
-    context(signals),
-  );
-
-  assert.equal(url, "https://chat.example/v1/chat/completions");
-  assert.equal(body.model, "chat-model");
-  assert.equal(body.stream, true);
-  assert.deepEqual(body.stream_options, { include_usage: true });
-  assert.deepEqual(
-    (body.tools as Array<{ function: { name: string } }>).map(
-      (tool) => tool.function.name,
-    ),
-    ["read", PLAN_CONTROL.name, PROGRESS_CONTROL.name],
-  );
-  assert.deepEqual(body.messages, [
-    { content: "Use tools when useful.", role: "system" },
-    { content: "Read it", role: "user" },
-    {
-      content: null,
-      role: "assistant",
-      tool_calls: [
-        {
-          function: { arguments: '{"path":"README.md"}', name: "read" },
-          id: "call-read",
-          type: "function",
-        },
-      ],
-    },
-    {
-      content: '{"content":"hello"}',
-      role: "tool",
-      tool_call_id: "call-read",
+      usage: { completion_tokens: 4, prompt_tokens: 16, total_tokens: 20 },
     },
   ]);
-  assert.equal(signals[0]?.type, "model.output_text.delta");
-  assert.equal(signals[1]?.type, "model.tool_arguments.delta");
-  assert.deepEqual(signals.at(-1), {
-    data: { message: "Checking the current specification" },
-    kind: "signal",
-    threadId: "run-1",
-    type: "model.progress",
+}
+
+function progressOnlyAnthropicClient(): FakeAnthropicClient {
+  return new FakeAnthropicClient([
+    {
+      message: { usage: { input_tokens: 16, output_tokens: 1 } },
+      type: "message_start",
+    },
+    {
+      content_block: {
+        id: "call-progress-only",
+        input: { message: "Preparing the answer" },
+        name: PROGRESS_CONTROL.name,
+        type: "tool_use",
+      },
+      index: 0,
+      type: "content_block_start",
+    },
+    {
+      delta: { stop_reason: "tool_use" },
+      type: "message_delta",
+      usage: { output_tokens: 4 },
+    },
+    { type: "message_stop" },
+  ]);
+}
+
+test("JX-SIG-005 JX-AC-034 both protocols fail closed on progress-only output and persist model.failed", async () => {
+  for (const [api, driver] of [
+    [
+      "openai-chat-completions",
+      createLLMModelDriver({
+        api: "openai-chat-completions",
+        baseURL: "https://chat.example/v1",
+        openAIChatCompletionsClient: progressOnlyChatClient(),
+        provider: "chat",
+      }),
+    ],
+    [
+      "anthropic-messages",
+      createLLMModelDriver({
+        anthropicMessagesClient: progressOnlyAnthropicClient(),
+        api: "anthropic-messages",
+        baseURL: "https://anthropic.example",
+        provider: "anthropic",
+      }),
+    ],
+  ] as const) {
+    const outcome = await driver.generate(effect(api, "fixture", null), context());
+    assert.equal(outcome.status, "failed");
+    if (outcome.status === "failed") {
+      assert.match(outcome.error.code, /_progress_only$/);
+      assert.equal(outcome.error.retryable, false);
+    }
+  }
+
+  const harness = createHarness({
+    agent: defineAgent({
+      instructions: "Answer directly.",
+      model: { model: "fixture", provider: "chat" },
+      tools: [],
+    }),
+    modelDrivers: {
+      chat: createLLMModelDriver({
+        api: "openai-chat-completions",
+        baseURL: "https://chat.example/v1",
+        openAIChatCompletionsClient: progressOnlyChatClient(),
+        provider: "chat",
+      }),
+    },
   });
+  const thread = await harness.createThread();
+  const state = await thread.send("Answer the question");
+  const events = await thread.events();
+  assert.equal(state.status, "idle");
+  assert.equal(state.error?.code, "chat_progress_only");
+  assert.equal(events.filter((event) => event.type === "model.completed").length, 0);
+  assert.equal(events.filter((event) => event.type === "model.failed").length, 1);
+});
+
+function sse(events: readonly unknown[]): string {
+  return events
+    .map((event) => `event: ${String((event as { type: string }).type)}\ndata: ${JSON.stringify(event)}\n\n`)
+    .join("");
+}
+
+test("JX-PROV-003 JX-PROV-006 JX-AC-016 native Anthropic client targets /v1/messages with required headers and parses SSE", async () => {
+  let requestUrl = "";
+  let requestInit: RequestInit | undefined;
+  let calls = 0;
+  const fetchFixture: typeof fetch = async (input, init) => {
+    calls += 1;
+    requestUrl = input instanceof Request ? input.url : String(input);
+    requestInit = init;
+    return new Response(sse([
+      {
+        message: { usage: { input_tokens: 5, output_tokens: 1 } },
+        type: "message_start",
+      },
+      {
+        content_block: { text: "", type: "text" },
+        index: 0,
+        type: "content_block_start",
+      },
+      {
+        delta: { text: "hello", type: "text_delta" },
+        index: 0,
+        type: "content_block_delta",
+      },
+      {
+        delta: { stop_reason: "end_turn" },
+        type: "message_delta",
+        usage: { output_tokens: 2 },
+      },
+      { type: "message_stop" },
+    ]), {
+      headers: { "content-type": "text/event-stream" },
+      status: 200,
+    });
+  };
+  const outcome = await createLLMModelDriver({
+    api: "anthropic-messages",
+    apiKey: "anthropic-secret",
+    baseURL: "https://gateway.example/v1/",
+    fetch: fetchFixture,
+  }).generate(effect("anthropic", "claude-fixture", null), context());
+
   assert.equal(outcome.status, "succeeded");
-  if (outcome.status === "succeeded") {
-    assert.deepEqual(outcome.accounting, {
-      cost: {
-        currency: "USD",
-        pricingVersion: null,
-        source: "provider_reported",
-        usdNanos: 3_500_000,
-      },
-      usage: {
-        cacheWriteTokens: null,
-        cachedInputTokens: 10,
-        inputTokens: 60,
-        outputTokens: 20,
-        reasoningTokens: 6,
-        totalTokens: 80,
-      },
-    });
-    assert.deepEqual(outcome.value, {
-      content: "Checking",
-      planUpdates: [planProposal],
-      toolCalls: [
-        { arguments: { path: "SPEC.md" }, id: "call-chat", name: "read" },
-      ],
-    });
-  }
-});
-
-test("JX-PROV-006 unified LLM adapter registers both providers under one ModelDriver contract", () => {
-  const client = new FakeResponsesClient([]);
-  const adapter = createLLMAdapter({
-    openai: createOpenAIModelDriver({ client }),
-    openrouter: createOpenRouterModelDriver({ client }),
+  assert.equal(calls, 1);
+  assert.equal(requestUrl, "https://gateway.example/v1/messages");
+  assert.equal(requestInit?.method, "POST");
+  assert.deepEqual(requestInit?.headers, {
+    "anthropic-version": "2023-06-01",
+    "content-type": "application/json",
+    "x-api-key": "anthropic-secret",
   });
-
-  assert.deepEqual(Object.keys(adapter), ["openai", "openrouter"]);
-  assert.equal(typeof adapter.openai?.generate, "function");
-  assert.equal(typeof adapter.openrouter?.generate, "function");
-  assert.equal(Object.isFrozen(adapter), true);
-});
-
-test("JX-SEC-001 provider credentials are redacted from typed failures", async () => {
-  const client: OpenResponsesClient = {
-    create(): Promise<AsyncIterable<unknown>> {
-      return Promise.reject(
-        Object.assign(new Error("Rejected sk-private"), { status: 401 }),
-      );
-    },
-  };
-  const outcome = await createOpenAIModelDriver({
-    apiKey: "sk-private",
-    client,
-  }).generate(effect(), context());
-
-  assert.equal(outcome.status, "failed");
-  if (outcome.status === "failed") {
-    assert.equal(outcome.error.code, "openai_http_401");
-    assert.equal(outcome.error.message, "Rejected [REDACTED]");
+  if (outcome.status === "succeeded") {
+    assert.equal(outcome.value.content, "hello");
   }
 });
 
-test("JX-PROV-008 JX-SEC-001 Chat Completions credentials are redacted", async () => {
-  const client: OpenChatCompletionsClient = {
-    create(): Promise<AsyncIterable<unknown>> {
-      return Promise.reject(
-        Object.assign(new Error("Rejected chat-private"), { status: 401 }),
+test("JX-PROV-006 recognized OpenRouter Messages endpoint uses Bearer auth without duplicating the secret", async () => {
+  let headers: HeadersInit | undefined;
+  const fetchFixture: typeof fetch = async (_input, init) => {
+    headers = init?.headers;
+    return Response.json(
+      { error: { message: "fixture rejection" } },
+      { status: 401 },
+    );
+  };
+  await createLLMModelDriver({
+    api: "anthropic-messages",
+    apiKey: "openrouter-secret",
+    baseURL: "https://openrouter.ai/api/v1",
+    fetch: fetchFixture,
+  }).generate(effect("openrouter", "fixture", null), context());
+
+  assert.deepEqual(headers, {
+    "anthropic-version": "2023-06-01",
+    authorization: "Bearer openrouter-secret",
+    "content-type": "application/json",
+  });
+});
+
+test("JX-PROV-003 JX-SEC-001 JX-AC-016 provider clients dispatch once and redact credentials on HTTP failure", async () => {
+  for (const api of ["openai-chat-completions", "anthropic-messages"] as const) {
+    let calls = 0;
+    const secret = `${api}-secret`;
+    const fetchFixture: typeof fetch = async () => {
+      calls += 1;
+      return Response.json(
+        { error: { message: `credential ${secret} rejected` } },
+        { status: 500 },
       );
+    };
+    const outcome = await createLLMModelDriver({
+      api,
+      apiKey: secret,
+      baseURL: "https://failure.example/v1",
+      fetch: fetchFixture,
+      provider: api,
+    }).generate(effect(api, "fixture", null), context());
+
+    assert.equal(calls, 1, `${api} performed an internal retry`);
+    assert.equal(outcome.status, "failed");
+    if (outcome.status === "failed") {
+      assert.equal(outcome.error.code, `${api}_http_500`);
+      assert.equal(outcome.error.retryable, true);
+      assert.doesNotMatch(outcome.error.message, new RegExp(secret, "u"));
+    }
+  }
+});
+
+test("JX-PROV-002 JX-AC-016 mid-stream failures are typed without a fallback dispatch", async () => {
+  let chatDispatches = 0;
+  const chatClient: OpenAIChatCompletionsClient = {
+    create() {
+      chatDispatches += 1;
+      return Promise.resolve({
+        async *[Symbol.asyncIterator]() {
+          yield {
+            choices: [
+              { delta: { content: "partial" }, finish_reason: null, index: 0 },
+            ],
+          };
+          throw new Error("connection lost");
+        },
+      });
     },
   };
-  const outcome = await createOpenAICompatibleModelDriver({
-    apiFormat: "chat-completions",
-    apiKey: "chat-private",
+  const chatOutcome = await createLLMModelDriver({
+    api: "openai-chat-completions",
     baseURL: "https://chat.example/v1",
-    chatCompletionsClient: client,
-  }).generate(effect("openai-compatible"), context());
-
-  assert.equal(outcome.status, "failed");
-  if (outcome.status === "failed") {
-    assert.equal(outcome.error.code, "openai-compatible_http_401");
-    assert.equal(outcome.error.message, "Rejected [REDACTED]");
+    openAIChatCompletionsClient: chatClient,
+    provider: "chat",
+  }).generate(effect("chat", "fixture", null), context());
+  assert.equal(chatDispatches, 1);
+  assert.equal(chatOutcome.status, "indeterminate");
+  if (chatOutcome.status === "indeterminate") {
+    assert.equal(chatOutcome.error.code, "chat_request_error");
   }
+
+  let anthropicDispatches = 0;
+  const anthropicClient: AnthropicMessagesClient = {
+    create() {
+      anthropicDispatches += 1;
+      return Promise.resolve({
+        async *[Symbol.asyncIterator]() {
+          yield {
+            message: { usage: { input_tokens: 10, output_tokens: 1 } },
+            type: "message_start",
+          };
+          yield {
+            error: { message: "temporarily overloaded", type: "overloaded_error" },
+            type: "error",
+          };
+        },
+      });
+    },
+  };
+  const anthropicOutcome = await createLLMModelDriver({
+    anthropicMessagesClient: anthropicClient,
+    api: "anthropic-messages",
+    baseURL: "https://anthropic.example",
+    provider: "anthropic",
+  }).generate(effect("anthropic", "fixture", null), context());
+  assert.equal(anthropicDispatches, 1);
+  assert.equal(anthropicOutcome.status, "failed");
+  if (anthropicOutcome.status === "failed") {
+    assert.equal(anthropicOutcome.error.code, "overloaded_error");
+    assert.equal(anthropicOutcome.error.retryable, true);
+    assert.equal(anthropicOutcome.accounting?.usage?.totalTokens, 11);
+  }
+});
+
+test("JX-PROV-002 JX-AC-016 cancellation is a typed non-retryable failure for both protocols", async () => {
+  const cancellation = new AbortController();
+  cancellation.abort();
+  const abortingChat: OpenAIChatCompletionsClient = {
+    create() {
+      return Promise.reject(new DOMException("aborted", "AbortError"));
+    },
+  };
+  const abortingAnthropic: AnthropicMessagesClient = {
+    create() {
+      return Promise.reject(new DOMException("aborted", "AbortError"));
+    },
+  };
+  const drivers = [
+    createLLMModelDriver({
+      api: "openai-chat-completions",
+      baseURL: "https://chat.example/v1",
+      openAIChatCompletionsClient: abortingChat,
+      provider: "chat",
+    }),
+    createLLMModelDriver({
+      anthropicMessagesClient: abortingAnthropic,
+      api: "anthropic-messages",
+      baseURL: "https://anthropic.example",
+      provider: "anthropic",
+    }),
+  ];
+
+  for (const driver of drivers) {
+    const outcome = await driver.generate(
+      effect("fixture", "fixture", null),
+      context([], cancellation.signal),
+    );
+    assert.equal(outcome.status, "failed");
+    if (outcome.status === "failed") {
+      assert.match(outcome.error.code, /_cancelled$/);
+      assert.equal(outcome.error.retryable, false);
+    }
+  }
+});
+
+test("JX-PROV-001 JX-AC-016 published surface contains only the unified two-protocol factory", () => {
+  assert.equal(typeof createLLMModelDriver, "function");
+  assert.equal("createOpenAIModelDriver" in llm, false);
+  assert.equal("createOpenRouterModelDriver" in llm, false);
+  assert.equal("createOpenAICompatibleModelDriver" in llm, false);
+  assert.equal("OpenAIChatCompletionsModelDriver" in llm, false);
+  assert.equal("AnthropicMessagesModelDriver" in llm, false);
+  assert.throws(
+    () => createLLMModelDriver({
+      api: "anthropic-messages",
+      apiKey: "fixture",
+      baseURL: "https://anthropic.example",
+      maxOutputTokens: 0,
+    }),
+    /positive integer/,
+  );
+  assert.throws(
+    () => createLLMModelDriver({
+      api: "openai-chat-completions",
+      apiKey: "fixture",
+      baseURL: "https://user:password@example.com/v1",
+    }),
+    /must not contain credentials/,
+  );
+  assert.throws(
+    () => createLLMModelDriver({
+      api: "responses" as never,
+      apiKey: "fixture",
+      baseURL: "https://api.example/v1",
+    }),
+    /Unsupported LLM API responses/,
+  );
+});
+
+test("JX-PROV-002 JX-AC-019 LLM adapter registry is immutable and rejects invalid entries", () => {
+  const driver = createLLMModelDriver({
+    api: "openai-chat-completions",
+    baseURL: "https://chat.example/v1",
+    openAIChatCompletionsClient: new FakeOpenAIChatClient([]),
+  });
+  const adapter = createLLMAdapter({ fixture: driver });
+  assert.equal(adapter.fixture, driver);
+  assert.equal(Object.isFrozen(adapter), true);
+  assert.throws(() => createLLMAdapter({}), /at least one/);
+  assert.throws(() => createLLMAdapter({ "": driver }), /Invalid/);
 });

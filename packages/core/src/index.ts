@@ -58,6 +58,7 @@ export {
   RevisionConflictError,
   ThreadAlreadyExistsError,
   ThreadNotFoundError,
+  ToolExecutionError,
   SchemaValidationError,
   UnsupportedEventError,
 } from "./errors.ts";

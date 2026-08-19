@@ -374,12 +374,11 @@ at the meaningful no-Plan/active-Plan lifecycle boundary. A controlled cache
 miss at that boundary is preferable to making an invalid operation appear
 available or hiding dynamic Plan JSON inside a Tool description.
 
-Prompt caching itself belongs to the Driver boundary. OpenAI and OpenRouter
-adapters may route repeated requests with a stable Thread-derived cache key;
-other providers may use implicit prefix caching or omit the hint. These keys and
-provider breakpoints are correlation and cost optimizations only. They never
-become a Jixu Session, Thread authority, recovery dependency, or substitute for
-durable cache accounting.
+Prompt caching itself belongs to the Driver boundary. A compatible protocol
+adapter may attach stable cache metadata or rely on implicit prefix caching.
+These keys and provider breakpoints are correlation and cost optimizations only.
+They never become a Jixu Session, Thread authority, recovery dependency, or
+substitute for durable cache accounting.
 
 If a semantic transformation requires a model or provider compaction endpoint,
 it is an ordinary Effect. Its result becomes a durable, source-linked context
@@ -661,6 +660,24 @@ Security properties:
 - versioned Tool schemas and Skill sources; and
 - fail-closed behavior for unknown persisted schemas or capabilities.
 
+### Model protocol boundary
+
+`@jixu/llm` has one factory and a closed protocol selector. OpenAI-compatible
+Chat Completions and Anthropic Messages each translate the same Jixu messages,
+client-side Tools, controls, Signals, failures, and accounting without becoming
+Thread authority. The adapter never probes one protocol and falls back to the
+other. OpenAI SDK retries are disabled; the native Anthropic SSE client issues
+one request, so a second provider dispatch can exist only as another durable
+Effect attempt.
+
+Protocol-specific shapes stay at this boundary. Chat Completions preserves
+assistant/function/tool message order. Anthropic groups consecutive Tool
+outcomes into the immediately following user `tool_result` blocks and
+reconstructs streamed `input_json_delta` fragments before returning a Tool
+call. Standard Anthropic and recognized OpenRouter endpoints use their native
+authentication headers; credentials are redacted before any typed error can
+cross the Driver boundary.
+
 The Harness owns policy and bookkeeping. A sandbox owns command execution,
 filesystem changes, and isolation. Separating those responsibilities makes the
 sandbox replaceable and prevents its live state from becoming the control
@@ -721,9 +738,28 @@ timer, phase, or lifecycle to core State. The Composer column already owns a
 permanent two-row status footer beneath its compact input surface. During live
 work, the first row shows the current observable phase and the second projects
 Tool requests from durable Events, updating matching outcomes in place for the
-turn. Repeated or overflowing operations may be compacted while the Activity
-rail retains the full history. At idle the same rows show ordinary model, shell,
-and cost context. Live work changes content, never footer or input geometry.
+turn. Repeated or overflowing operations may be compacted while `/events`
+retains the durable ordered history. At idle the same rows show ordinary model,
+shell, and cost context. Live work changes content, never footer or input
+geometry.
+
+The wide reference workspace keeps one Attention Rail beside the transcript.
+It does not mirror the Event log. `NOW`, `PLAN`, `VERIFIED`, and `NEEDS YOU`
+form a user-centered, non-authoritative projection from the same State, Events,
+and Signals already held by the Thread controller. A no-Plan Thread explicitly
+shows direct execution; only an active Plan adds the bounded horizontal strip
+above the Composer. Raw Event IDs and chronology remain an explicit `/events`
+inspection surface. Compact terminals fold the four meanings into a stable
+strip rather than dropping them.
+
+Portable terminal glyphs give the Attention Rail and Tool receipts a stable
+scan gutter without creating a second graphic surface. Each marker is ordinary
+OpenTUI text: one glyph in a fixed two-column gutter beside complete text and
+semantic color. No custom Renderable, encoded image, Nerd Font, Kitty/Sixel
+capability, terminal pixel geometry, DPI, or scaling path participates. The
+marker is never required to understand the Thread. This presentation layer
+cannot write State, dispatch an Effect, infer hidden reasoning, or invent
+progress percentages.
 
 Telemetry MUST be redacted independently from durable data and may be sampled or
 dropped. OpenTelemetry semantic conventions are preferred over a proprietary
@@ -845,7 +881,7 @@ The accepted refinements are now release-blocking requirements:
 | Cache-stable request assembly | `JX-CTX-014`, `JX-CTX-015`, `JX-AGENT-001`, `JX-AGENT-002`, and `JX-AC-035` |
 | Continuity Handoff and compaction | `JX-CTX-005` through `JX-CTX-013`; `JX-AC-023` through `JX-AC-026` |
 | Active input | `JX-THREAD-002`, `JX-THREAD-003`, and `JX-THREAD-013`; `JX-AC-020` |
-| Live TUI continuity | `JX-TUI-019`, `JX-TUI-021`, and `JX-AC-036` |
+| Live TUI continuity | `JX-TUI-019`, `JX-TUI-021`—`JX-TUI-024`, `JX-AC-036`, and `JX-AC-037` |
 | Progressive Skills | `JX-SKILL-001` through `JX-SKILL-003` |
 | Artifact integrity | `JX-STORE-008` and `JX-AC-025` |
 

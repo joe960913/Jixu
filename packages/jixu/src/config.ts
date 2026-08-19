@@ -10,46 +10,31 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export type JixuApiFormat = "chat-completions" | "responses";
+export type JixuApi =
+  | "anthropic-messages"
+  | "openai-chat-completions";
 
 export interface JixuConnectionConfig {
-  readonly apiFormat: JixuApiFormat;
+  readonly api: JixuApi;
   readonly apiKey: string;
   readonly baseUrl: string;
   readonly model: string;
 }
 
 export interface JixuStoredConfiguration {
-  readonly apiFormat?: JixuApiFormat;
+  readonly api?: JixuApi;
   readonly apiKey?: string;
   readonly baseUrl?: string;
   readonly model?: string;
 }
 
-type LegacyProvider = "openai" | "openrouter";
-
-interface LegacySettingsFile {
-  readonly defaultProvider?: LegacyProvider;
-  readonly models: Partial<Readonly<Record<LegacyProvider, string>>>;
-  readonly version: 1;
-}
-
-interface LegacyAuthFile {
-  readonly providers: Partial<
-    Readonly<
-      Record<LegacyProvider, { readonly key: string; readonly type: "api_key" }>
-    >
-  >;
-  readonly version: 1;
-}
-
 interface SettingsFile {
   readonly connection: {
-    readonly apiFormat: JixuApiFormat;
+    readonly api: JixuApi;
     readonly baseUrl: string;
     readonly model: string;
   };
-  readonly version: 2;
+  readonly version: 3;
 }
 
 interface AuthFile {
@@ -57,28 +42,17 @@ interface AuthFile {
     readonly key: string;
     readonly type: "api_key";
   };
-  readonly version: 2;
+  readonly version: 3;
 }
-
-type ParsedSettings = LegacySettingsFile | SettingsFile;
-type ParsedAuth = AuthFile | LegacyAuthFile;
-
-const LEGACY_BASE_URLS: Readonly<Record<LegacyProvider, string>> = {
-  openai: "https://api.openai.com/v1",
-  openrouter: "https://openrouter.ai/api/v1",
-};
-const LEGACY_PROVIDERS = ["openai", "openrouter"] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isLegacyProvider(value: unknown): value is LegacyProvider {
-  return value === "openai" || value === "openrouter";
-}
-
-function isApiFormat(value: unknown): value is JixuApiFormat {
-  return value === "responses" || value === "chat-completions";
+function isApi(value: unknown): value is JixuApi {
+  return (
+    value === "openai-chat-completions" || value === "anthropic-messages"
+  );
 }
 
 function nonEmptyString(value: unknown): value is string {
@@ -112,83 +86,34 @@ export function normalizeJixuBaseUrl(value: string): string {
   return clean;
 }
 
-function parseLegacySettings(value: Record<string, unknown>): LegacySettingsFile {
-  if (!isRecord(value.models)) {
-    throw new TypeError("settings.json must use Jixu settings schema version 1");
-  }
-  if (value.defaultProvider !== undefined && !isLegacyProvider(value.defaultProvider)) {
-    throw new TypeError("settings.json defaultProvider is invalid");
-  }
-  const models: Partial<Record<LegacyProvider, string>> = {};
-  for (const provider of LEGACY_PROVIDERS) {
-    const model = value.models[provider];
-    if (model === undefined) continue;
-    if (!nonEmptyString(model)) {
-      throw new TypeError(`settings.json model for ${provider} is invalid`);
-    }
-    models[provider] = model;
-  }
-  return {
-    ...(value.defaultProvider === undefined
-      ? {}
-      : { defaultProvider: value.defaultProvider }),
-    models,
-    version: 1,
-  };
-}
-
-function parseSettings(value: unknown): ParsedSettings {
+function parseSettings(value: unknown): SettingsFile {
   if (!isRecord(value)) {
     throw new TypeError("settings.json must contain an object");
   }
-  if (value.version === 1) return parseLegacySettings(value);
-  if (value.version !== 2 || !isRecord(value.connection)) {
-    throw new TypeError("settings.json must use Jixu settings schema version 2");
+  if (value.version !== 3 || !isRecord(value.connection)) {
+    throw new TypeError("settings.json must use Jixu settings schema version 3");
   }
-  const { apiFormat, baseUrl, model } = value.connection;
-  if (!isApiFormat(apiFormat)) {
-    throw new TypeError("settings.json apiFormat is invalid");
+  const { api, baseUrl, model } = value.connection;
+  if (!isApi(api)) {
+    throw new TypeError("settings.json api is invalid");
   }
   if (!nonEmptyString(baseUrl) || !nonEmptyString(model)) {
     throw new TypeError("settings.json connection is incomplete");
   }
   return {
     connection: {
-      apiFormat,
+      api,
       baseUrl: normalizeJixuBaseUrl(baseUrl),
       model: model.trim(),
     },
-    version: 2,
+    version: 3,
   };
 }
 
-function parseLegacyAuth(value: Record<string, unknown>): LegacyAuthFile {
-  if (!isRecord(value.providers)) {
-    throw new TypeError("auth.json must use Jixu auth schema version 1");
-  }
-  const providers: Partial<
-    Record<LegacyProvider, { readonly key: string; readonly type: "api_key" }>
-  > = {};
-  for (const provider of LEGACY_PROVIDERS) {
-    const credential = value.providers[provider];
-    if (credential === undefined) continue;
-    if (
-      !isRecord(credential) ||
-      credential.type !== "api_key" ||
-      !nonEmptyString(credential.key)
-    ) {
-      throw new TypeError(`auth.json credential for ${provider} is invalid`);
-    }
-    providers[provider] = { key: credential.key, type: "api_key" };
-  }
-  return { providers, version: 1 };
-}
-
-function parseAuth(value: unknown): ParsedAuth {
+function parseAuth(value: unknown): AuthFile {
   if (!isRecord(value)) throw new TypeError("auth.json must contain an object");
-  if (value.version === 1) return parseLegacyAuth(value);
-  if (value.version !== 2 || !isRecord(value.connection)) {
-    throw new TypeError("auth.json must use Jixu auth schema version 2");
+  if (value.version !== 3 || !isRecord(value.connection)) {
+    throw new TypeError("auth.json must use Jixu auth schema version 3");
   }
   if (
     value.connection.type !== "api_key" ||
@@ -198,7 +123,7 @@ function parseAuth(value: unknown): ParsedAuth {
   }
   return {
     connection: { key: value.connection.key, type: "api_key" },
-    version: 2,
+    version: 3,
   };
 }
 
@@ -245,39 +170,18 @@ async function atomicJsonWrite(
 }
 
 function normalizeConfiguration(
-  settings: ParsedSettings | null,
-  auth: ParsedAuth | null,
+  settings: SettingsFile | null,
+  auth: AuthFile | null,
 ): JixuStoredConfiguration {
-  if (settings !== null && auth !== null && settings.version !== auth.version) {
-    throw new TypeError("settings.json and auth.json schema versions do not match");
-  }
-
-  if (settings?.version === 2 || auth?.version === 2) {
-    const currentSettings = settings?.version === 2 ? settings : null;
-    const currentAuth = auth?.version === 2 ? auth : null;
-    return {
-      ...(currentSettings === null
-        ? {}
-        : {
-            apiFormat: currentSettings.connection.apiFormat,
-            baseUrl: currentSettings.connection.baseUrl,
-            model: currentSettings.connection.model,
-          }),
-      ...(currentAuth === null ? {} : { apiKey: currentAuth.connection.key }),
-    };
-  }
-
-  const legacySettings = settings?.version === 1 ? settings : null;
-  const legacyAuth = auth?.version === 1 ? auth : null;
-  const provider = legacySettings?.defaultProvider;
-  if (provider === undefined || legacySettings === null) return {};
-  const model = legacySettings.models[provider];
-  const apiKey = legacyAuth?.providers[provider]?.key;
   return {
-    apiFormat: "responses",
-    baseUrl: LEGACY_BASE_URLS[provider],
-    ...(apiKey === undefined ? {} : { apiKey }),
-    ...(model === undefined ? {} : { model }),
+    ...(settings === null
+      ? {}
+      : {
+          api: settings.connection.api,
+          baseUrl: settings.connection.baseUrl,
+          model: settings.connection.model,
+        }),
+    ...(auth === null ? {} : { apiKey: auth.connection.key }),
   };
 }
 
@@ -311,6 +215,7 @@ export class JixuConfigStore {
   }
 
   async saveConnection(config: JixuConnectionConfig): Promise<void> {
+    if (!isApi(config.api)) throw new TypeError("LLM API is invalid");
     const apiKey = config.apiKey.trim();
     const baseUrl = normalizeJixuBaseUrl(config.baseUrl);
     const model = config.model.trim();
@@ -321,11 +226,11 @@ export class JixuConfigStore {
       await this.#secureDirectory();
       await atomicJsonWrite(this.directory, this.authPath, {
         connection: { key: apiKey, type: "api_key" },
-        version: 2,
+        version: 3,
       } satisfies AuthFile, 0o600);
       await atomicJsonWrite(this.directory, this.settingsPath, {
-        connection: { apiFormat: config.apiFormat, baseUrl, model },
-        version: 2,
+        connection: { api: config.api, baseUrl, model },
+        version: 3,
       } satisfies SettingsFile, 0o600);
     });
     this.#writeTail = operation.then(

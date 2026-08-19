@@ -8,6 +8,16 @@ export class JixuError extends Error {
   }
 }
 
+export class ToolExecutionError extends JixuError {
+  readonly retryable: boolean;
+
+  constructor(code: string, message: string, retryable = false) {
+    super(code, message);
+    this.name = "ToolExecutionError";
+    this.retryable = retryable;
+  }
+}
+
 export class ThreadAlreadyExistsError extends JixuError {
   constructor(threadId: string) {
     super("thread_already_exists", `Thread ${threadId} already exists`);

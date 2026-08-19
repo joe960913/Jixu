@@ -22,6 +22,7 @@ import {
   cloneJson,
   defineSchema,
   defineTool,
+  ToolExecutionError,
 } from "@jixu/core";
 import type {
   ExecutableTool,
@@ -61,6 +62,7 @@ type BashOutput = {
 
 export interface NodeToolsConfig {
   readonly bashTimeoutMs?: number;
+  readonly filesystemScope?: "process" | "workspace";
   readonly maxBashTimeoutMs?: number;
   readonly maxOutputBytes?: number;
   readonly maxReadBytes?: number;
@@ -317,14 +319,17 @@ function within(root: string, candidate: string): boolean {
 }
 
 function displayPath(root: string, absolute: string): string {
+  if (!within(root, absolute)) return absolute;
   return (relative(root, absolute) || ".").split(sep).join("/");
 }
 
 class WorkspacePaths {
   readonly root: string;
+  readonly #scope: "process" | "workspace";
 
-  constructor(root: string) {
+  constructor(root: string, scope: "process" | "workspace") {
     this.root = realpathSync(resolve(root));
+    this.#scope = scope;
     if (!statSync(this.root).isDirectory()) {
       throw new TypeError(`Node Tools root is not a directory: ${this.root}`);
     }
@@ -332,9 +337,23 @@ class WorkspacePaths {
 
   async existing(path: string): Promise<{ absolute: string; path: string }> {
     const candidate = this.#lexical(path);
-    const resolved = await realpath(candidate);
+    let resolved: string;
+    try {
+      resolved = await realpath(candidate);
+    } catch (error) {
+      if (recordErrorCode(error) === "ENOENT") {
+        throw new ToolExecutionError(
+          "tool_path_not_found",
+          `Path does not exist: ${path}`,
+        );
+      }
+      throw new ToolExecutionError(
+        "tool_path_unavailable",
+        `Path is not accessible: ${path}`,
+      );
+    }
     this.#assertWithin(resolved, path);
-    return { absolute: resolved, path: displayPath(this.root, resolved) };
+    return { absolute: candidate, path: displayPath(this.root, candidate) };
   }
 
   async writable(path: string): Promise<{ absolute: string; path: string }> {
@@ -349,7 +368,10 @@ class WorkspacePaths {
 
     try {
       await lstat(candidate);
-      throw new TypeError(`Refusing to write through an unresolved link: ${path}`);
+      throw new ToolExecutionError(
+        "tool_path_unresolved_link",
+        `Refusing to write through an unresolved link: ${path}`,
+      );
     } catch (error) {
       if (recordErrorCode(error) !== "ENOENT") throw error;
     }
@@ -362,15 +384,24 @@ class WorkspacePaths {
   }
 
   #lexical(path: string): string {
-    if (path.length === 0) throw new TypeError("Tool path must not be empty");
+    if (path.length === 0) {
+      throw new ToolExecutionError(
+        "tool_path_invalid",
+        "Tool path must not be empty",
+      );
+    }
     const candidate = resolve(this.root, path);
     this.#assertWithin(candidate, path);
     return candidate;
   }
 
   #assertWithin(candidate: string, input: string): void {
+    if (this.#scope === "process") return;
     if (!within(this.root, candidate)) {
-      throw new TypeError(`Path escapes the workspace root: ${input}`);
+      throw new ToolExecutionError(
+        "tool_path_outside_scope",
+        `Path escapes the workspace scope: ${input}`,
+      );
     }
   }
 
@@ -384,7 +415,12 @@ class WorkspacePaths {
         if (recordErrorCode(error) !== "ENOENT") throw error;
       }
       const parent = dirname(candidate);
-      if (parent === candidate) throw new TypeError(`No writable ancestor for ${input}`);
+      if (parent === candidate) {
+        throw new ToolExecutionError(
+          "tool_path_unavailable",
+          `No writable ancestor for ${input}`,
+        );
+      }
       candidate = parent;
     }
   }
@@ -510,7 +546,11 @@ function runShell(
 }
 
 export function createNodeTools(config: NodeToolsConfig): NodeTools {
-  const paths = new WorkspacePaths(config.root);
+  const filesystemScope = config.filesystemScope ?? "workspace";
+  if (filesystemScope !== "workspace" && filesystemScope !== "process") {
+    throw new TypeError(`Unknown Node Tools filesystem scope: ${filesystemScope}`);
+  }
+  const paths = new WorkspacePaths(config.root, filesystemScope);
   const maxReadBytes = config.maxReadBytes ?? 1_000_000;
   const maxOutputBytes = config.maxOutputBytes ?? 1_000_000;
   const bashTimeoutMs = config.bashTimeoutMs ?? 30_000;
@@ -528,7 +568,10 @@ export function createNodeTools(config: NodeToolsConfig): NodeTools {
   }
 
   const read = defineTool({
-    description: "Read a UTF-8 file inside the workspace root.",
+    description:
+      filesystemScope === "workspace"
+        ? "Read a bounded UTF-8 file inside the workspace root."
+        : "Read a bounded UTF-8 file with the Jixu process permissions.",
     execute: async (input) => {
       const target = await paths.existing(input.path);
       return { ...target, ...(await readBounded(target.absolute, maxReadBytes)) };
@@ -540,7 +583,10 @@ export function createNodeTools(config: NodeToolsConfig): NodeTools {
   });
 
   const write = defineTool({
-    description: "Write UTF-8 content to a file inside the workspace root.",
+    description:
+      filesystemScope === "workspace"
+        ? "Write UTF-8 content to a file inside the workspace root."
+        : "Write UTF-8 content to a file with the Jixu process permissions.",
     execute: async (input) => {
       const target = await paths.writable(input.path);
       await writeFile(target.absolute, input.content, "utf8");
@@ -553,14 +599,25 @@ export function createNodeTools(config: NodeToolsConfig): NodeTools {
   });
 
   const edit = defineTool({
-    description: "Replace one exact text occurrence in a UTF-8 workspace file.",
+    description:
+      filesystemScope === "workspace"
+        ? "Replace one exact text occurrence in a UTF-8 workspace file."
+        : "Replace one exact text occurrence in a UTF-8 file with the Jixu process permissions.",
     execute: async (input) => {
       const target = await paths.existing(input.path);
       const content = await readFile(target.absolute, "utf8");
       const replacements = countOccurrences(content, input.oldText);
-      if (replacements === 0) throw new TypeError("edit oldText was not found");
+      if (replacements === 0) {
+        throw new ToolExecutionError(
+          "tool_edit_no_match",
+          "edit oldText was not found",
+        );
+      }
       if (replacements > 1 && input.replaceAll !== true) {
-        throw new TypeError("edit oldText is ambiguous; set replaceAll to true");
+        throw new ToolExecutionError(
+          "tool_edit_ambiguous",
+          "edit oldText is ambiguous; set replaceAll to true",
+        );
       }
       const updated =
         input.replaceAll === true
@@ -583,7 +640,10 @@ export function createNodeTools(config: NodeToolsConfig): NodeTools {
     execute: async (input, context) => {
       const timeoutMs = input.timeoutMs ?? bashTimeoutMs;
       if (timeoutMs > maxBashTimeoutMs) {
-        throw new TypeError(`bash timeoutMs exceeds ${maxBashTimeoutMs}`);
+        throw new ToolExecutionError(
+          "tool_timeout_invalid",
+          `bash timeoutMs exceeds ${maxBashTimeoutMs}`,
+        );
       }
       return runShell(input, {
         cancellation: context.cancellation,

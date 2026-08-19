@@ -1,63 +1,11 @@
 import type { PlanStepStatus } from "@jixu/core";
 
 import { jixuTheme } from "./theme.ts";
-import { JixuWordmark } from "./tui-motion.tsx";
-import type {
-  JixuTone,
-  ThreadControllerSnapshot,
-  ToolOperation,
-  ToolOperationStatus,
-  WorkStatus,
-} from "./tui-model.ts";
-
-const PLAN_MAX_HEIGHT = 8;
-
-interface ToolOperationGroup {
-  readonly count: number;
-  readonly name: string;
-  readonly status: ToolOperationStatus;
-}
-
-function toneColor(tone: JixuTone): string {
-  return jixuTheme[tone];
-}
+import type { ThreadControllerSnapshot } from "./tui-model.ts";
 
 function truncate(value: string, maximum: number): string {
   if (value.length <= maximum) return value;
   return maximum <= 1 ? "…" : `${value.slice(0, maximum - 1)}…`;
-}
-
-function groupToolOperations(
-  operations: readonly ToolOperation[],
-): readonly ToolOperationGroup[] {
-  const groups: ToolOperationGroup[] = [];
-  for (const operation of operations) {
-    const existingIndex = groups.findIndex(
-      (group) =>
-        group.name === operation.name && group.status === operation.status,
-    );
-    const existing = groups[existingIndex];
-    if (existing === undefined) {
-      groups.push({ count: 1, name: operation.name, status: operation.status });
-    } else {
-      groups[existingIndex] = { ...existing, count: existing.count + 1 };
-    }
-  }
-  return groups;
-}
-
-function operationPresentation(status: ToolOperationStatus): {
-  readonly color: string;
-  readonly symbol: string;
-} {
-  switch (status) {
-    case "failed":
-      return { color: jixuTheme.danger, symbol: "×" };
-    case "running":
-      return { color: jixuTheme.warning, symbol: "→" };
-    case "succeeded":
-      return { color: jixuTheme.success, symbol: "✓" };
-  }
 }
 
 function stepPresentation(status: PlanStepStatus): {
@@ -78,79 +26,7 @@ function stepPresentation(status: PlanStepStatus): {
   }
 }
 
-export function WorkStatusLine({
-  motion,
-  status,
-}: {
-  readonly motion: boolean;
-  readonly status: WorkStatus | null;
-}) {
-  if (status === null) return null;
-  return (
-    <box
-      id="work-status-line"
-      style={{ flexDirection: "row", flexShrink: 1, overflow: "hidden" }}
-    >
-      <JixuWordmark
-        enabled={motion}
-        phase={status.phase}
-        tone={status.tone}
-      />
-      <text fg={toneColor(status.tone)}>
-        <strong>{status.label}</strong>
-      </text>
-      {status.detail === undefined ? null : (
-        <text fg={jixuTheme.secondary}> · {status.detail}</text>
-      )}
-    </box>
-  );
-}
-
-export function ToolOperationTrail({
-  toolOperations,
-  width,
-}: {
-  readonly toolOperations: readonly ToolOperation[];
-  readonly width: number;
-}) {
-  const groups = groupToolOperations(toolOperations);
-  if (groups.length === 0) return null;
-  const maximumGroups = width < 64 ? 1 : width < 96 ? 2 : 3;
-  const visibleGroups = groups.slice(-maximumGroups);
-  const hiddenCount = groups
-    .slice(0, -maximumGroups)
-    .reduce((count, group) => count + group.count, 0);
-  return (
-    <box
-      id="tool-operation-trail"
-      style={{
-        flexDirection: "row",
-        flexShrink: 1,
-        overflow: "hidden",
-      }}
-    >
-      <text fg={jixuTheme.secondary}>
-        <strong>TOOLS</strong>
-      </text>
-      <text>  </text>
-      {hiddenCount === 0 ? null : (
-        <text fg={jixuTheme.secondary}>+{hiddenCount} · </text>
-      )}
-      {visibleGroups.map((group, index) => {
-        const presentation = operationPresentation(group.status);
-        return (
-          <text fg={presentation.color} key={`${group.status}:${group.name}`}>
-            {index === 0 ? "" : " · "}
-            {presentation.symbol} {group.name}
-            {group.count === 1 ? "" : ` ×${group.count}`}
-          </text>
-        );
-      })}
-    </box>
-  );
-}
-
-function PlanDock({
+function PlanStrip({
   snapshot,
   width,
 }: {
@@ -159,50 +35,80 @@ function PlanDock({
 }) {
   const plan = snapshot.activePlan;
   if (plan === null) return null;
-  const contentWidth = Math.max(12, width - 6);
-  const compacted = plan.steps.length > PLAN_MAX_HEIGHT - 3;
-  const visibleSteps = plan.steps.slice(
-    0,
-    compacted ? PLAN_MAX_HEIGHT - 4 : PLAN_MAX_HEIGHT - 3,
-  );
+  const maximumSteps = width < 72 ? 2 : width < 112 ? 3 : 4;
+  const visibleSteps = plan.steps.slice(0, maximumSteps);
   const hiddenSteps = plan.steps.length - visibleSteps.length;
-  const height = 3 + visibleSteps.length + (compacted ? 1 : 0);
+  const labelWidth = width < 72 ? 12 : 16;
+  const stepWidth = Math.max(
+    14,
+    Math.floor((width - labelWidth) / Math.max(1, visibleSteps.length)),
+  );
   return (
     <box
-      backgroundColor={jixuTheme.surface}
-      border={["left"]}
+      border={["top", "bottom"]}
       borderColor={jixuTheme.warning}
+      id="plan-strip"
       style={{
-        flexDirection: "column",
+        flexDirection: "row",
         flexShrink: 0,
-        height,
-        paddingLeft: 1,
-        paddingRight: 1,
+        height: 4,
         width: "100%",
       }}
     >
-      <text fg={jixuTheme.brand}>
-        <strong>PLAN</strong>
-        <span fg={jixuTheme.secondary}> · r{plan.revision}</span>
-      </text>
-      <text fg={jixuTheme.text}>{truncate(plan.objective, contentWidth)}</text>
+      <box
+        style={{
+          flexDirection: "column",
+          flexShrink: 0,
+          paddingLeft: 1,
+          width: labelWidth,
+        }}
+      >
+        <box style={{ flexDirection: "row", height: 1 }}>
+          <text fg={jixuTheme.warning}>
+            <strong>PLAN</strong>
+            <span fg={jixuTheme.secondary}> r{plan.revision}</span>
+          </text>
+        </box>
+        <text fg={jixuTheme.secondary}>{truncate(plan.objective, labelWidth - 2)}</text>
+      </box>
       {visibleSteps.map((step) => {
         const presentation = stepPresentation(step.status);
         return (
-          <box key={step.id} style={{ flexDirection: "row", width: "100%" }}>
-            <text fg={presentation.color}>{presentation.symbol} </text>
-            <text fg={jixuTheme.text}>
-              {truncate(step.description, contentWidth - 2)}
+          <box
+            border={["left"]}
+            borderColor={
+              step.status === "in_progress" ? jixuTheme.warning : jixuTheme.divider
+            }
+            key={step.id}
+            style={{
+              flexDirection: "column",
+              flexGrow: 1,
+              minWidth: stepWidth,
+              overflow: "hidden",
+              paddingLeft: 1,
+            }}
+          >
+            <text fg={presentation.color} wrapMode="none">
+              {presentation.symbol} {truncate(step.description, stepWidth - 6)}
+            </text>
+            <text fg={jixuTheme.secondary} wrapMode="none">
+              {step.status === "in_progress"
+                ? "In progress"
+                : step.status.charAt(0).toUpperCase() + step.status.slice(1)}
             </text>
           </box>
         );
       })}
-      {compacted ? (
-        <text fg={jixuTheme.secondary}>  + {hiddenSteps} more steps</text>
+      {hiddenSteps > 0 ? (
+        <box
+          border={["left"]}
+          borderColor={jixuTheme.divider}
+          style={{ flexDirection: "column", paddingLeft: 1, width: 12 }}
+        >
+          <text fg={jixuTheme.secondary}>+{hiddenSteps}</text>
+          <text fg={jixuTheme.secondary}>more steps</text>
+        </box>
       ) : null}
-      <text fg={jixuTheme.secondary}>
-        Next · <span fg={jixuTheme.info}>{truncate(plan.nextAction ?? "—", contentWidth - 7)}</span>
-      </text>
     </box>
   );
 }
@@ -217,7 +123,7 @@ export function ExecutionDock({
   if (snapshot.activePlan === null) return null;
   return (
     <box style={{ flexDirection: "column", flexShrink: 0, width }}>
-      <PlanDock snapshot={snapshot} width={width} />
+      <PlanStrip snapshot={snapshot} width={width} />
     </box>
   );
 }

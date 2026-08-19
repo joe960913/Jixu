@@ -6,39 +6,39 @@ import { test } from "node:test";
 
 import { JixuConfigStore } from "../src/config.ts";
 
-test("JX-TUI-002C JX-TUI-002D compatible settings and credentials persist separately", async () => {
+test("JX-PROV-001 JX-TUI-002C JX-TUI-002D protocol settings and credentials persist separately in schema v3", async () => {
   const parent = await mkdtemp(join(tmpdir(), "jixu-config-"));
   const directory = join(parent, ".jixu");
   const store = new JixuConfigStore(directory);
   try {
     assert.deepEqual(await store.load(), {});
     await store.saveConnection({
-      apiFormat: "responses",
+      api: "openai-chat-completions",
       apiKey: "first-secret-fixture",
       baseUrl: "https://api.first.example/v1/",
       model: "first-model",
     });
     await store.saveConnection({
-      apiFormat: "chat-completions",
+      api: "anthropic-messages",
       apiKey: "active-secret-fixture",
-      baseUrl: "https://router.example/api/v1",
-      model: "vendor/model-example",
+      baseUrl: "https://api.anthropic.example",
+      model: "claude-model",
     });
 
     assert.deepEqual(await store.load(), {
-      apiFormat: "chat-completions",
+      api: "anthropic-messages",
       apiKey: "active-secret-fixture",
-      baseUrl: "https://router.example/api/v1",
-      model: "vendor/model-example",
+      baseUrl: "https://api.anthropic.example",
+      model: "claude-model",
     });
 
     const settings = await readFile(store.settingsPath, "utf8");
     const auth = await readFile(store.authPath, "utf8");
     assert.doesNotMatch(settings, /secret-fixture/);
-    assert.match(settings, /chat-completions/);
-    assert.match(settings, /https:\/\/router\.example\/api\/v1/);
-    assert.match(settings, /vendor\/model-example/);
+    assert.match(settings, /anthropic-messages/);
+    assert.match(settings, /"version": 3/);
     assert.match(auth, /active-secret-fixture/);
+    assert.match(auth, /"version": 3/);
     assert.doesNotMatch(auth, /first-secret-fixture/);
     assert.deepEqual(
       (await readdir(directory)).sort(),
@@ -54,31 +54,31 @@ test("JX-TUI-002C JX-TUI-002D compatible settings and credentials persist separa
   }
 });
 
-test("JX-TUI-002C legacy provider-indexed configuration loads as Responses format", async () => {
-  const parent = await mkdtemp(join(tmpdir(), "jixu-config-legacy-"));
-  const store = new JixuConfigStore(join(parent, ".jixu"));
-  try {
-    await store.load();
-    await writeFile(store.settingsPath, JSON.stringify({
-      defaultProvider: "openrouter",
-      models: { openrouter: "vendor/legacy-model" },
-      version: 1,
-    }), "utf8");
-    await writeFile(store.authPath, JSON.stringify({
-      providers: {
-        openrouter: { key: "legacy-secret-fixture", type: "api_key" },
-      },
-      version: 1,
-    }), "utf8");
-
-    assert.deepEqual(await store.load(), {
-      apiFormat: "responses",
-      apiKey: "legacy-secret-fixture",
-      baseUrl: "https://openrouter.ai/api/v1",
-      model: "vendor/legacy-model",
-    });
-  } finally {
-    await rm(parent, { force: true, recursive: true });
+test("JX-PROV-001 JX-TUI-002C pre-release configuration schemas v1 and v2 fail closed", async () => {
+  for (const version of [1, 2]) {
+    const parent = await mkdtemp(join(tmpdir(), `jixu-config-v${version}-`));
+    const store = new JixuConfigStore(join(parent, ".jixu"));
+    try {
+      await store.load();
+      await writeFile(
+        store.settingsPath,
+        JSON.stringify({
+          connection: {
+            apiFormat: "chat-completions",
+            baseUrl: "https://api.example/v1",
+            model: "legacy-model",
+          },
+          version,
+        }),
+        "utf8",
+      );
+      await assert.rejects(
+        store.load(),
+        /settings\.json must use Jixu settings schema version 3/,
+      );
+    } finally {
+      await rm(parent, { force: true, recursive: true });
+    }
   }
 });
 
@@ -102,21 +102,33 @@ test("JX-TUI-002D malformed auth fails closed without leaking its contents", asy
   }
 });
 
-test("JX-TUI-002C mixed configuration schema versions fail closed", async () => {
-  const parent = await mkdtemp(join(tmpdir(), "jixu-config-mixed-"));
+test("JX-PROV-001 JX-TUI-002C unknown protocol fails closed", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "jixu-config-api-"));
   const store = new JixuConfigStore(join(parent, ".jixu"));
   try {
     await store.load();
-    await writeFile(store.settingsPath, JSON.stringify({
-      connection: {
-        apiFormat: "responses",
+    await assert.rejects(
+      store.saveConnection({
+        api: "responses" as never,
+        apiKey: "fixture",
         baseUrl: "https://api.example/v1",
         model: "model",
-      },
-      version: 2,
-    }), "utf8");
-    await writeFile(store.authPath, JSON.stringify({ providers: {}, version: 1 }), "utf8");
-    await assert.rejects(store.load(), /schema versions do not match/);
+      }),
+      /LLM API is invalid/,
+    );
+    await writeFile(
+      store.settingsPath,
+      JSON.stringify({
+        connection: {
+          api: "responses",
+          baseUrl: "https://api.example/v1",
+          model: "model",
+        },
+        version: 3,
+      }),
+      "utf8",
+    );
+    await assert.rejects(store.load(), /settings\.json api is invalid/);
   } finally {
     await rm(parent, { force: true, recursive: true });
   }

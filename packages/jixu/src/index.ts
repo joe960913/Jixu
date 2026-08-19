@@ -1,6 +1,6 @@
 export { JixuConfigStore, normalizeJixuBaseUrl } from "./config.ts";
 export type {
-  JixuApiFormat,
+  JixuApi,
   JixuConnectionConfig,
   JixuStoredConfiguration,
 } from "./config.ts";
@@ -14,7 +14,10 @@ export type {
   ThreadControllerSnapshot,
   ThreadInspection,
   ThreadSummary,
+  ToolOperation,
   TranscriptEntry,
+  TranscriptMessageEntry,
+  TranscriptToolReceiptEntry,
 } from "./tui-model.ts";
 export { jixuTheme } from "./theme.ts";
 export type { JixuTheme } from "./theme.ts";

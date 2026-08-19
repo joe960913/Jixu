@@ -585,6 +585,7 @@ export class ThreadController {
     const entry = Object.freeze({
       content,
       id: this.#nextId++,
+      kind: "message" as const,
       label,
       role,
       tone,

@@ -3,8 +3,6 @@ import { useEffect, useState } from "react";
 import { jixuTheme } from "./theme.ts";
 import type { JixuTone, WorkPhase } from "./tui-model.ts";
 
-const LETTERS = Object.freeze(["J", "I", "X", "U"] as const);
-const SWEEP = Object.freeze([0, 1, 2, 3, 2, 1] as const);
 const PHASE_CADENCE: Readonly<Record<WorkPhase, number>> = Object.freeze({
   planning: 210,
   responding: 1_000,
@@ -16,6 +14,82 @@ function toneColor(tone: JixuTone): string {
   return jixuTheme[tone];
 }
 
+function sweepFor(length: number): readonly number[] {
+  const forward = Array.from({ length }, (_, index) => index);
+  const backward = Array.from(
+    { length: Math.max(0, length - 2) },
+    (_, index) => length - index - 2,
+  );
+  return Object.freeze([...forward, ...backward]);
+}
+
+export function JixuMotionText({
+  enabled,
+  id,
+  label,
+  phase,
+  staticTone,
+  tone,
+}: {
+  readonly enabled: boolean;
+  readonly id?: string;
+  readonly label: string;
+  readonly phase: WorkPhase;
+  readonly staticTone: JixuTone;
+  readonly tone: JixuTone;
+}) {
+  const animated = enabled && phase !== "responding";
+  const [frameIndex, setFrameIndex] = useState(0);
+  const characters = [...label];
+  const sweep = sweepFor(characters.length);
+
+  useEffect(() => {
+    if (!animated || sweep.length === 0) return;
+    const timer = setTimeout(() => {
+      setFrameIndex((index) => (index + 1) % sweep.length);
+    }, PHASE_CADENCE[phase]);
+    return () => clearTimeout(timer);
+  }, [animated, frameIndex, phase, sweep.length]);
+
+  if (!animated) {
+    return (
+      <box
+        {...(id === undefined ? {} : { id })}
+        style={{ flexDirection: "row", flexShrink: 0, height: 1, width: characters.length }}
+      >
+        <text fg={toneColor(staticTone)} selectable={false}>
+          <strong>{label}</strong>
+        </text>
+      </box>
+    );
+  }
+
+  const activeIndex = sweep[frameIndex] ?? 0;
+  const echoIndex = frameIndex === 0 ? null : sweep[frameIndex - 1] ?? null;
+  return (
+    <box
+      {...(id === undefined ? {} : { id })}
+      style={{ flexDirection: "row", flexShrink: 0, height: 1, width: characters.length }}
+    >
+      {characters.map((letter, index) => (
+        <text
+          fg={
+            index === activeIndex
+              ? toneColor(tone)
+              : index === echoIndex
+                ? jixuTheme.brand
+                : jixuTheme.secondary
+          }
+          key={`${index}:${letter}`}
+          selectable={false}
+        >
+          {index === activeIndex ? <strong>{letter}</strong> : letter}
+        </text>
+      ))}
+    </box>
+  );
+}
+
 export function JixuWordmark({
   enabled,
   phase,
@@ -25,47 +99,15 @@ export function JixuWordmark({
   readonly phase: WorkPhase;
   readonly tone: JixuTone;
 }) {
-  const animated = enabled && phase !== "responding";
-  const [frameIndex, setFrameIndex] = useState(0);
-
-  useEffect(() => {
-    if (!animated) return;
-    const timer = setTimeout(() => {
-      setFrameIndex((index) => (index + 1) % SWEEP.length);
-    }, PHASE_CADENCE[phase]);
-    return () => clearTimeout(timer);
-  }, [animated, frameIndex, phase]);
-
-  if (!animated) {
-    return (
-      <box style={{ flexDirection: "row", flexShrink: 0, height: 1, width: 6 }}>
-        <text fg={jixuTheme.brand} selectable={false}>
-          <strong>JIXU</strong>
-        </text>
-        <text>  </text>
-      </box>
-    );
-  }
-
-  const activeIndex = SWEEP[frameIndex] ?? 0;
-  const echoIndex = frameIndex === 0 ? null : SWEEP[frameIndex - 1] ?? null;
   return (
     <box style={{ flexDirection: "row", flexShrink: 0, height: 1, width: 6 }}>
-      {LETTERS.map((letter, index) => (
-        <text
-          fg={
-            index === activeIndex
-              ? toneColor(tone)
-              : index === echoIndex
-                ? jixuTheme.brand
-                : jixuTheme.secondary
-          }
-          key={letter}
-          selectable={false}
-        >
-          {index === activeIndex ? <strong>{letter}</strong> : letter}
-        </text>
-      ))}
+      <JixuMotionText
+        enabled={enabled}
+        label="JIXU"
+        phase={phase}
+        staticTone="brand"
+        tone={tone}
+      />
       <text>  </text>
     </box>
   );

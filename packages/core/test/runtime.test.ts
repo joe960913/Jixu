@@ -7,6 +7,7 @@ import {
   defineSchema,
   defineTool,
   InMemoryEventStore,
+  ToolExecutionError,
 } from "../src/index.ts";
 import type {
   AgentConfig,
@@ -133,6 +134,53 @@ test("JX-AC-001 JX-AC-002 JX-AC-014 Tool use and later send continue one Thread"
       "model.completed",
     ],
   );
+});
+
+test("JX-AC-039 typed Tool rejection stays failed while unknown exceptions stay indeterminate", async () => {
+  const typed = defineTool({
+    description: "Reject outside scope",
+    execute: () => {
+      throw new ToolExecutionError(
+        "tool_path_outside_scope",
+        "Path escapes the configured scope",
+      );
+    },
+    input: objectSchema,
+    name: "typed",
+    output: stringSchema,
+  });
+  const unknown = defineTool({
+    description: "Throw an unknown exception",
+    execute: () => {
+      throw new Error("Unknown execution state");
+    },
+    input: objectSchema,
+    name: "unknown",
+    output: stringSchema,
+  });
+
+  for (const [tool, name, disposition, code] of [
+    [typed, "typed", "failed", "tool_path_outside_scope"],
+    [unknown, "unknown", "indeterminate", "tool_driver_exception"],
+  ] as const) {
+    const model = new SequenceModelDriver([
+      succeed({
+        content: "",
+        toolCalls: [{ arguments: {}, id: `${name}-1`, name }],
+      }),
+    ]);
+    const thread = await createHarness({
+      agent: agentWith([tool]),
+      modelDrivers: { mock: model },
+    }).createThread();
+
+    await thread.send(`Call ${name}`);
+    const failure = (await thread.events()).findLast(
+      (event) => event.type === "tool.failed",
+    );
+    assert.equal(failure?.payload.disposition, disposition);
+    assert.equal(failure?.payload.error.code, code);
+  }
 });
 
 test("JX-AC-028 Thread metrics durably project tokens, USD cost, and Tool efficiency", async () => {

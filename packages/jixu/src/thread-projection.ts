@@ -4,6 +4,7 @@ import { toolOperationForRequest } from "./work-status.ts";
 import type {
   ActivityEntry,
   ToolOperation,
+  ToolOperationStatus,
   TranscriptEntry,
 } from "./tui-model.ts";
 
@@ -149,6 +150,7 @@ export function projectThread(
       transcript.push({
         content: event.payload.content,
         id: nextId++,
+        kind: "message",
         label: "YOU",
         role: "user",
         tone: "brand",
@@ -158,17 +160,54 @@ export function projectThread(
     activity.push({ ...eventActivity(event), id: nextId++ });
 
     if (event.type === "tool.requested") {
-      toolOperations.push(toolOperationForRequest(event));
+      const operation = toolOperationForRequest(event);
+      toolOperations.push(operation);
+      const previous = transcript.at(-1);
+      if (previous?.kind === "tool-receipts") {
+        transcript[transcript.length - 1] = {
+          ...previous,
+          operations: Object.freeze([...previous.operations, operation]),
+        };
+      } else {
+        transcript.push({
+          id: nextId++,
+          kind: "tool-receipts",
+          operations: Object.freeze([operation]),
+        });
+      }
     }
     if (event.type === "tool.completed" || event.type === "tool.failed") {
+      const terminalStatus: ToolOperationStatus =
+        event.type === "tool.completed" ? "succeeded" : "failed";
       const operationIndex = toolOperations.findIndex(
         (operation) => operation.effectId === event.payload.effectId,
       );
       const operation = toolOperations[operationIndex];
       if (operation !== undefined) {
-        toolOperations[operationIndex] = {
+        const updated = {
           ...operation,
-          status: event.type === "tool.completed" ? "succeeded" : "failed",
+          status: terminalStatus,
+        } as const;
+        toolOperations[operationIndex] = updated;
+      }
+      const receiptIndex = transcript.findLastIndex(
+        (entry) =>
+          entry.kind === "tool-receipts" &&
+          entry.operations.some(
+            (receipt) => receipt.effectId === event.payload.effectId,
+          ),
+      );
+      const receipt = transcript[receiptIndex];
+      if (receipt?.kind === "tool-receipts") {
+        transcript[receiptIndex] = {
+          ...receipt,
+          operations: Object.freeze(
+            receipt.operations.map((candidate) =>
+              candidate.effectId === event.payload.effectId
+                ? { ...candidate, status: terminalStatus }
+                : candidate,
+            ),
+          ),
         };
       }
     }
@@ -181,6 +220,7 @@ export function projectThread(
       transcript.push({
         content: content || "(reply without text)",
         id: nextId++,
+        kind: "message",
         label: "JIXU",
         role: "assistant",
         tone: "text",
