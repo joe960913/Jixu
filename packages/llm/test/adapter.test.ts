@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { PLAN_CONTROL, PROGRESS_CONTROL } from "@jixu/core";
+import {
+  createHarness,
+  defineAgent,
+  PLAN_CONTROL,
+  PROGRESS_CONTROL,
+} from "@jixu/core";
 import type {
   ModelDriverContext,
   ModelGenerateEffect,
@@ -282,6 +287,174 @@ test("JX-PROV-005 JX-AC-002 JX-AC-034 Responses maps model controls and emits pr
     kind: "signal",
     threadId: "run-1",
     type: "model.progress",
+  });
+});
+
+test("JX-SIG-005 JX-AC-034 Responses and Chat Completions fail closed on progress-only output", async () => {
+  const progressArguments = JSON.stringify({ message: "Preparing the final answer" });
+  const responsesSignals: Signal[] = [];
+  const responsesOutcome = await createOpenAIModelDriver({
+    client: new FakeResponsesClient([
+      {
+        response: response([
+          {
+            arguments: progressArguments,
+            call_id: "call-progress-only",
+            name: PROGRESS_CONTROL.name,
+            status: "completed",
+            type: "function_call",
+          },
+        ]),
+        sequence_number: 1,
+        type: "response.completed",
+      },
+    ]),
+  }).generate(effect(), context(responsesSignals));
+
+  assert.deepEqual(responsesOutcome, {
+    accounting: {
+      cost: null,
+      usage: {
+        cacheWriteTokens: 4,
+        cachedInputTokens: 20,
+        inputTokens: 80,
+        outputTokens: 20,
+        reasoningTokens: 8,
+        totalTokens: 100,
+      },
+    },
+    error: {
+      code: "openai_progress_only",
+      message:
+        "openai returned only progress control without usable content, Plan changes, or Tool calls",
+      retryable: false,
+    },
+    status: "failed",
+  });
+  assert.deepEqual(responsesSignals, [
+    {
+      data: { message: "Preparing the final answer" },
+      kind: "signal",
+      threadId: "run-1",
+      type: "model.progress",
+    },
+  ]);
+
+  const chatSignals: Signal[] = [];
+  const chatClient: OpenChatCompletionsClient = {
+    create(): Promise<AsyncIterable<unknown>> {
+      return Promise.resolve({
+        async *[Symbol.asyncIterator]() {
+          yield {
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      function: {
+                        arguments: progressArguments,
+                        name: PROGRESS_CONTROL.name,
+                      },
+                      id: "call-progress-only-chat",
+                      index: 0,
+                      type: "function",
+                    },
+                  ],
+                },
+                finish_reason: "tool_calls",
+                index: 0,
+              },
+            ],
+          };
+          yield {
+            choices: [],
+            usage: {
+              completion_tokens: 4,
+              prompt_tokens: 16,
+              total_tokens: 20,
+            },
+          };
+        },
+      });
+    },
+  };
+  const chatOutcome = await createOpenAICompatibleModelDriver({
+    apiFormat: "chat-completions",
+    baseURL: "https://chat.example/v1",
+    chatCompletionsClient: chatClient,
+    provider: "chat-provider",
+  }).generate(effect("chat-provider", "chat-model"), context(chatSignals));
+
+  assert.deepEqual(chatOutcome, {
+    accounting: {
+      cost: null,
+      usage: {
+        cacheWriteTokens: null,
+        cachedInputTokens: null,
+        inputTokens: 16,
+        outputTokens: 4,
+        reasoningTokens: null,
+        totalTokens: 20,
+      },
+    },
+    error: {
+      code: "chat-provider_progress_only",
+      message:
+        "chat-provider returned only progress control without usable content, Plan changes, or Tool calls",
+      retryable: false,
+    },
+    status: "failed",
+  });
+  assert.deepEqual(chatSignals.at(-1), {
+    data: { message: "Preparing the final answer" },
+    kind: "signal",
+    threadId: "run-1",
+    type: "model.progress",
+  });
+
+  const harness = createHarness({
+    agent: defineAgent({
+      instructions: "Answer directly.",
+      model: { model: "gpt-test", provider: "openai" },
+      tools: [],
+    }),
+    modelDrivers: {
+      openai: createOpenAIModelDriver({
+        client: new FakeResponsesClient([
+          {
+            response: response([
+              {
+                arguments: progressArguments,
+                call_id: "call-progress-only-durable",
+                name: PROGRESS_CONTROL.name,
+                status: "completed",
+                type: "function_call",
+              },
+            ]),
+            sequence_number: 1,
+            type: "response.completed",
+          },
+        ]),
+      }),
+    },
+  });
+  const thread = await harness.createThread();
+  const state = await thread.send("Answer the question");
+  const events = await thread.events();
+  const modelFailures = events.filter((event) => event.type === "model.failed");
+
+  assert.equal(state.status, "idle");
+  assert.equal(state.error?.code, "openai_progress_only");
+  assert.equal(
+    events.filter((event) => event.type === "model.completed").length,
+    0,
+  );
+  assert.equal(modelFailures.length, 1);
+  assert.deepEqual(modelFailures[0]?.payload.error, {
+    code: "openai_progress_only",
+    message:
+      "openai returned only progress control without usable content, Plan changes, or Tool calls",
+    retryable: false,
   });
 });
 

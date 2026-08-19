@@ -701,8 +701,12 @@ Every model request includes one reserved `jixu_progress_update` control. A
 cooperating model may use it once to describe the next observable action in the
 user's language. The adapter validates the bounded phrase and emits
 `model.progress` without creating another model request, Tool call, Event, or
-State field; malformed or absent output is cosmetic failure and is ignored.
-The surface carries a valid phrase through the following Tool action while the
+State field. Malformed or absent output is cosmetic failure and is ignored when
+the same response still contains usable public content, a valid Plan change, or
+an ordinary Tool call. If progress control is the response's only output, the
+adapter fails closed with a typed, non-retryable model failure; it neither
+commits an empty successful reply nor hides a follow-up model request. The
+surface carries a valid phrase through the following Tool action while the
 durable Tool Event supplies the factual operation and target.
 High-frequency output Signals may be coalesced into bounded presentation frames
 as long as text order is preserved and the committed Event atomically replaces

@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.0
+**Version:** 0.4.1
 **Status:** normative, pre-release
 **Last updated:** 2026-08-19
 
@@ -294,7 +294,11 @@ The v0.4 families are:
   existing model request. A valid control call MUST emit a bounded, single-line
   `model.progress` Signal and MUST NOT become a Tool call, Event, State field, or
   additional model request. Invalid or missing progress output MUST be ignored
-  without changing the model outcome or suppressing ordinary Tool calls.
+  without changing an otherwise usable model outcome or suppressing ordinary
+  Tool calls. A provider response that contains a progress-control call but no
+  non-whitespace public content, valid Plan change, or ordinary Tool call MUST
+  fail closed as a typed, non-retryable model failure. It MUST NOT be recorded as
+  an empty successful reply or trigger a hidden follow-up model request.
 
 ## 8. Effects and Drivers
 
@@ -858,7 +862,10 @@ frameworks, and UI frameworks.
   from model Tool calls and durable Events, and carried by the TUI through the
   following observable Tool action. A malformed or absent update falls back to
   Event-derived status without failing otherwise valid content, Plan changes, or
-  Tool calls and without dispatching another model request.
+  Tool calls and without dispatching another model request. A response containing
+  only progress control output records a typed, non-retryable `model.failed`
+  outcome instead of an empty `model.completed`, and dispatches no continuation
+  request.
 - **JX-AC-035 — Accurate Agent contract and cache-stable context.** The
   reference Agent receives one versioned, immutable instruction prefix that
   accurately describes its current Harness, Tools, Plan, progress, safety,
@@ -925,6 +932,11 @@ Pre-release Plan control no longer asks the model for a separate `complete`
 operation. New revisions derive completion from their step statuses. Proposals
 that still use `complete` are invalid; semantic Plan errors are retained as
 `plan.rejected` facts without invalidating the surrounding model result.
+
+Version 0.4.1 clarifies that progress control is presentation-only and cannot be
+the sole successful result of a model request. Progress-only provider output now
+fails closed without changing Event schema version 5 or requiring Store
+migration.
 
 ## 19. Implementation order
 

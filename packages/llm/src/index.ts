@@ -241,13 +241,14 @@ function toChatTool(
 function toModelResponse(
   response: Response,
   onProgress: (message: string) => void,
-): ModelResponse {
+): { readonly response: ModelResponse; readonly sawProgressControl: boolean } {
   if (!Array.isArray(response.output)) {
     throw new TypeError("OpenResponses response.output must be an array");
   }
   const content: string[] = [];
   const planUpdates: PlanUpdateProposal[] = [];
   const toolCalls: ModelResponse["toolCalls"][number][] = [];
+  let sawProgressControl = false;
 
   for (const item of response.output) {
     if (item.type === "message") {
@@ -257,6 +258,7 @@ function toModelResponse(
       continue;
     }
     if (item.type !== "function_call") continue;
+    if (item.name === PROGRESS_CONTROL_NAME) sawProgressControl = true;
 
     let parsed: unknown;
     try {
@@ -294,7 +296,10 @@ function toModelResponse(
     }
   }
 
-  return { content: content.join(""), planUpdates, toolCalls };
+  return {
+    response: { content: content.join(""), planUpdates, toolCalls },
+    sawProgressControl,
+  };
 }
 
 function emitModelProgress(
@@ -337,6 +342,32 @@ function failed(
   accounting: ModelAccounting = EMPTY_MODEL_ACCOUNTING,
 ): ModelOutcome {
   return { accounting, error, status: "failed" };
+}
+
+function progressOnlyFailure(
+  provider: string,
+  accounting: ModelAccounting,
+): ModelOutcome {
+  return failed(
+    {
+      code: `${provider}_progress_only`,
+      message: `${provider} returned only progress control without usable content, Plan changes, or Tool calls`,
+      retryable: false,
+    },
+    accounting,
+  );
+}
+
+function isProgressOnly(
+  response: ModelResponse,
+  sawProgressControl: boolean,
+): boolean {
+  return (
+    sawProgressControl &&
+    response.content.trim().length === 0 &&
+    (response.planUpdates?.length ?? 0) === 0 &&
+    response.toolCalls.length === 0
+  );
 }
 
 function providerHeaders(config: OpenRouterModelDriverConfig): Record<string, string> {
@@ -476,12 +507,16 @@ export class OpenResponsesModelDriver implements ModelDriver {
               },
             );
             try {
+              const parsed = toModelResponse(event.response, (message) => {
+                emitModelProgress(effect, context, message);
+              });
+              if (isProgressOnly(parsed.response, parsed.sawProgressControl)) {
+                return progressOnlyFailure(this.#provider, accounting);
+              }
               return {
                 accounting,
                 status: "succeeded",
-                value: toModelResponse(event.response, (message) => {
-                  emitModelProgress(effect, context, message);
-                }),
+                value: parsed.response,
               };
             } catch (error) {
               return this.#invalidEvent(
@@ -765,12 +800,14 @@ export class OpenChatCompletionsModelDriver implements ModelDriver {
 
     const toolCalls: ModelResponse["toolCalls"][number][] = [];
     const planUpdates: PlanUpdateProposal[] = [];
+    let sawProgressControl = false;
     for (const [index, pending] of [...pendingTools].sort(
       ([left], [right]) => left - right,
     )) {
       if (pending.id === undefined || pending.name === undefined) {
         return this.#invalidEvent(`Tool call ${index} is incomplete`, accounting);
       }
+      if (pending.name === PROGRESS_CONTROL_NAME) sawProgressControl = true;
       let parsed: unknown;
       try {
         parsed = JSON.parse(pending.arguments) as unknown;
@@ -810,10 +847,14 @@ export class OpenChatCompletionsModelDriver implements ModelDriver {
         });
       }
     }
+    const response = { content, planUpdates, toolCalls };
+    if (isProgressOnly(response, sawProgressControl)) {
+      return progressOnlyFailure(this.#provider, accounting);
+    }
     return {
       accounting,
       status: "succeeded",
-      value: { content, planUpdates, toolCalls },
+      value: response,
     };
   }
 
