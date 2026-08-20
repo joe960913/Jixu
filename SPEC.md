@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.32
+**Version:** 0.4.33
 **Status:** normative, pre-release
 **Last updated:** 2026-08-21
 
@@ -1801,9 +1801,15 @@ published exact native and Framework dependency set when only package
 documentation or packaging changes. This avoids rebuilding unchanged native
 bytes while keeping native releases fail-closed: any native, target, or
 launcher-compatibility change still requires a complete target-tested platform
-set. `jixu-ai@0.1.0-beta.1` therefore adds its missing npm README while
+set. `jixu-ai@0.1.0-beta.1` added its missing README to the tarball while
 depending exactly on the published `0.1.0-beta.0` packages. No runtime API,
 Thread data, Event schema, or native executable changes.
+
+Version 0.4.33 publishes `jixu-ai@0.1.0-beta.2` directly to the npm `latest`
+channel before aligning `beta`, because npm did not refresh its top-level
+README projection when `beta.1` was first published only under `beta` and the
+tag was moved afterward. The tarball content and exact `0.1.0-beta.0`
+dependency set are otherwise unchanged.
 
 ## 19. Implementation order
 
