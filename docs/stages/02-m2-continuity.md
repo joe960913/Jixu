@@ -158,7 +158,7 @@ Event log 仍是唯一权威。
 Store 是可替换 adapter。如果 JSONL 和 SQLite 对 revision、Fork 原子性或 Event ID
 唯一性的解释不同，上层 Runtime 就不再有稳定语义。
 
-`@jixu/testkit/store-contract` 对每个 Store 运行同一组合同：
+`jixu-testkit/store-contract` 对每个 Store 运行同一组合同：
 
 - create / duplicate create；
 - immutable read；
@@ -199,12 +199,12 @@ version、Reducer version 或 State validation。
 ### 3.2 依赖方向
 
 ```text
-@jixu/store-jsonl ----+
-                      +--> @jixu/core ports/types
-@jixu/store-sqlite ---+
+jixu-store-jsonl ----+
+                      +--> jixu-core ports/types
+jixu-store-sqlite ---+
 
-@jixu/testkit --------> @jixu/core
-@jixu/core -----------> only local core modules
+jixu-testkit --------> jixu-core
+jixu-core -----------> only local core modules
 ```
 
 SQLite 和 filesystem API 不进入 core。Runtime 不知道 Store 的物理格式。

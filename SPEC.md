@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.29
+**Version:** 0.4.30
 **Status:** normative, pre-release
 **Last updated:** 2026-08-21
 
@@ -375,7 +375,7 @@ invoice.
 
 ### 8.2 Model provider protocols
 
-The first-party `@jixu/llm` boundary deliberately supports two wire protocols:
+The first-party `jixu-llm` boundary deliberately supports two wire protocols:
 OpenAI Chat Completions and Anthropic Messages. A configured endpoint selects
 exactly one protocol; provider brands and model catalogs are not a second
 routing authority.
@@ -1098,17 +1098,17 @@ permissions and never records secrets in Thread data.
 
 | Package | Responsibility |
 | --- | --- |
-| `@jixu/core` | Agent definition, deterministic kernel, ports, Harness, and Thread API. |
-| `@jixu/llm` | Model Driver adapters. |
-| `@jixu/store-jsonl` | Inspectable local JSONL Store. |
-| `@jixu/store-sqlite` | Local SQLite Store. |
-| `@jixu/tools-node` | Opt-in Node file and shell Tools. |
-| `@jixu/tools-jina` | Opt-in Jina-backed Web Search Tool. |
-| `@jixu/testkit` | Store and Driver contract suites. |
+| `jixu-core` | Agent definition, deterministic kernel, ports, Harness, and Thread API. |
+| `jixu-llm` | Model Driver adapters. |
+| `jixu-store-jsonl` | Inspectable local JSONL Store. |
+| `jixu-store-sqlite` | Local SQLite Store. |
+| `jixu-tools-node` | Opt-in Node file and shell Tools. |
+| `jixu-tools-jina` | Opt-in Jina-backed Web Search Tool. |
+| `jixu-testkit` | Store and Driver contract suites. |
 | `jixu` | Public facade, CLI, configuration, and reference TUI. |
-| `@jixu/cli-darwin-arm64` | Native reference CLI executable for macOS arm64. |
-| `@jixu/cli-darwin-x64` | Native reference CLI executable for macOS x64. |
-| `@jixu/cli-linux-x64` | Native reference CLI executable for Linux x64 with glibc. |
+| `jixu-cli-darwin-arm64` | Native reference CLI executable for macOS arm64. |
+| `jixu-cli-darwin-x64` | Native reference CLI executable for macOS x64. |
+| `jixu-cli-linux-x64` | Native reference CLI executable for Linux x64 with glibc. |
 
 Core MUST remain free of provider SDKs, MCP SDKs, database drivers, web
 frameworks, and UI frameworks.
@@ -1572,7 +1572,7 @@ existing command menu remains authoritative. This is presentation-only and
 changes no Event, State, configuration, or Thread data.
 
 Version 0.4.8 aligns local file access with the reference TUI's already
-disclosed unsandboxed shell. `@jixu/tools-node` keeps `workspace` as its secure
+disclosed unsandboxed shell. `jixu-tools-node` keeps `workspace` as its secure
 default and adds an explicit `process` scope; the reference TUI selects that
 scope so an absolute user-requested path does not succeed through `bash` and
 then fail through `edit`. Known path-policy rejection is now a typed failed Tool
@@ -1769,6 +1769,14 @@ without claiming Developer ID, notarization, or Gatekeeper trust; stable and
 directly distributed macOS artifacts retain those requirements. This changes
 release metadata only and adds no Thread, Event, State, configuration, or
 stored-data migration.
+
+Version 0.4.30 moves every independently installable framework and native CLI
+package to an unscoped `jixu-*` name because the unrelated `@jixu` npm scope is
+not controlled by this project. The facade package and terminal command remain
+`jixu`. This is the first public package release, so there is no published
+package-name compatibility or migration path to preserve. The change affects
+package identifiers, dependency metadata, and import specifiers only; it adds no
+Thread, Event, State, configuration, or stored-data migration.
 
 ## 19. Implementation order
 

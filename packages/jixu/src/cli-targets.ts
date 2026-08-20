@@ -16,9 +16,9 @@ export interface JixuCliTarget {
     | "cli-darwin-x64"
     | "cli-linux-x64";
   readonly packageName:
-    | "@jixu/cli-darwin-arm64"
-    | "@jixu/cli-darwin-x64"
-    | "@jixu/cli-linux-x64";
+    | "jixu-cli-darwin-arm64"
+    | "jixu-cli-darwin-x64"
+    | "jixu-cli-linux-x64";
   readonly platform: JixuCliPlatform;
 }
 
@@ -35,7 +35,7 @@ export const JIXU_CLI_TARGETS = Object.freeze([
     executable: "jixu",
     id: "darwin-arm64",
     packageDirectory: "cli-darwin-arm64",
-    packageName: "@jixu/cli-darwin-arm64",
+    packageName: "jixu-cli-darwin-arm64",
     platform: "darwin",
   },
   {
@@ -44,7 +44,7 @@ export const JIXU_CLI_TARGETS = Object.freeze([
     executable: "jixu",
     id: "darwin-x64",
     packageDirectory: "cli-darwin-x64",
-    packageName: "@jixu/cli-darwin-x64",
+    packageName: "jixu-cli-darwin-x64",
     platform: "darwin",
   },
   {
@@ -54,7 +54,7 @@ export const JIXU_CLI_TARGETS = Object.freeze([
     id: "linux-x64",
     libc: "glibc",
     packageDirectory: "cli-linux-x64",
-    packageName: "@jixu/cli-linux-x64",
+    packageName: "jixu-cli-linux-x64",
     platform: "linux",
   },
 ] as const satisfies readonly JixuCliTarget[]);

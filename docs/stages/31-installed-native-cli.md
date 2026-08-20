@@ -101,7 +101,7 @@ global install / dlx
 jixu argv
   -> Node bin launcher
   -> detect runtime
-  -> resolve @jixu/cli-<target>/package.json
+  -> resolve jixu-cli-<target>/package.json
   -> spawn bin/jixu with inherited stdio and environment
   -> OpenTUI reference CLI
   -> ordinary Harness path

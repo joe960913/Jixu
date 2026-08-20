@@ -19,12 +19,12 @@ import {
   RevisionConflictError,
   ThreadAlreadyExistsError,
   ThreadNotFoundError,
-} from "@jixu/core";
+} from "jixu-core";
 import type {
   AnyThreadEvent,
   Checkpoint,
   EventStore,
-} from "@jixu/core";
+} from "jixu-core";
 
 function errorCode(error: unknown): string | undefined {
   if (error !== null && typeof error === "object" && "code" in error) {

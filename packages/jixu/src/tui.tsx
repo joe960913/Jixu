@@ -1,7 +1,7 @@
 import { useKeyboard } from "@opentui/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { ExecutableTool } from "@jixu/core";
+import type { ExecutableTool } from "jixu-core";
 
 import {
   DEFAULT_JIXU_TOOL_SETTINGS,

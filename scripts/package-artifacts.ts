@@ -303,7 +303,7 @@ async function inspectTarball(
     }
   }
 
-  if (manifest.name.startsWith("@jixu/cli-")) {
+  if (manifest.name.startsWith("jixu-cli-")) {
     const binaryPath = manifest.files?.[0];
     assert.ok(binaryPath, `${manifest.name} misses its executable file declaration`);
     assert.deepEqual([...files.keys()].sort(), [

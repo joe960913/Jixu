@@ -9,14 +9,14 @@ import {
   defineAgent,
   InMemoryEventStore,
   MODEL_PROGRESS_SIGNAL_TYPE,
-} from "@jixu/core";
+} from "jixu-core";
 import type {
   ModelDriver,
   ModelDriverContext,
   ModelGenerateEffect,
   ModelOutcome,
-} from "@jixu/core";
-import { createNodeTools } from "@jixu/tools-node";
+} from "jixu-core";
+import { createNodeTools } from "jixu-tools-node";
 
 import { createThreadController } from "../src/thread-controller.ts";
 import type { ThreadControllerSnapshot } from "../src/tui-model.ts";

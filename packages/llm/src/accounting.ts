@@ -1,9 +1,9 @@
-import { EMPTY_MODEL_ACCOUNTING } from "@jixu/core";
+import { EMPTY_MODEL_ACCOUNTING } from "jixu-core";
 import type {
   ModelAccounting,
   ModelCost,
   ModelTokenUsage,
-} from "@jixu/core";
+} from "jixu-core";
 
 type AccountingApi = "anthropic-messages" | "openai-chat-completions";
 

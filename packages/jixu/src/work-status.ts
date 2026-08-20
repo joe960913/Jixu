@@ -1,5 +1,5 @@
-import { isJsonObject } from "@jixu/core";
-import type { AnyThreadEvent } from "@jixu/core";
+import { isJsonObject } from "jixu-core";
+import type { AnyThreadEvent } from "jixu-core";
 
 import type {
   ToolOperation,

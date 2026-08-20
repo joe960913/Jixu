@@ -25,7 +25,7 @@ Bun 在四个隔离 consumer 中安装完全相同的文件，完成类型检查
 - 为 7 个当前 package 建立 TypeScript composite build graph，生成 ESM JavaScript 和 `.d.ts`；
 - package export 只指向 `dist/*.js` 和对应 `dist/*.d.ts`；
 - source workspace 保留 `workspace:*`，packed manifest 自动转换为普通 exact version；
-- JSONL、SQLite、testkit 通过正式 `@jixu/core` package boundary 导入；
+- JSONL、SQLite、testkit 通过正式 `jixu-core` package boundary 导入；
 - 同一 tarball 集依次进入 npm、pnpm、Yarn 4.18 和 Bun 临时 consumer；
 - 每个 consumer 都检查 installed manifest、TypeScript public API，并完成 deterministic
   Harness/Thread smoke；
@@ -62,7 +62,7 @@ workspace 的相对 source 路径不会出现在独立 tarball 中。因此验�
 ### 未发布多包图需要 fixture resolver 映射
 
 packed package 的内部依赖必须是普通 semver，例如
-`@jixu/llm -> @jixu/core@0.0.0`。因为 `@jixu/core@0.0.0` 尚未发布，严格 resolver 会正确地去
+`jixu-llm -> jixu-core@0.0.0`。因为 `jixu-core@0.0.0` 尚未发布，严格 resolver 会正确地去
 公共 registry 查询并得到 404。
 
 为了只验证本地 tarball 安装能力，临时 consumer 将这些 semver 精确映射回本轮 tarball：
@@ -190,8 +190,8 @@ git diff --check
 
 ### pnpm 不会用顶层 file dependency 自动替代 transitive semver
 
-npm 能把顶层 `@jixu/core` tarball 复用于同版本内部依赖；pnpm 11 会严格解析 transitive
-`@jixu/core@0.0.0` 并访问 registry。第一轮因此得到预期 404。pnpm 11 还明确不再读取
+npm 能把顶层 `jixu-core` tarball 复用于同版本内部依赖；pnpm 11 会严格解析 transitive
+`jixu-core@0.0.0` 并访问 registry。第一轮因此得到预期 404。pnpm 11 还明确不再读取
 `package.json#pnpm.overrides`，所以 fixture 的 override 必须放在临时 `pnpm-workspace.yaml`。
 
 这说明 package-manager portability 不能只测顶层安装成功，也必须覆盖内部 package graph。

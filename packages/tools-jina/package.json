@@ -1,5 +1,5 @@
 {
-  "name": "@jixu/tools-jina",
+  "name": "jixu-tools-jina",
   "version": "0.1.0-beta.0",
   "description": "Opt-in Jina-backed Web Search Tool for Jixu.",
   "type": "module",
@@ -28,6 +28,6 @@
     "access": "public"
   },
   "dependencies": {
-    "@jixu/core": "workspace:*"
+    "jixu-core": "workspace:*"
   }
 }

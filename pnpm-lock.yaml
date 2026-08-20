@@ -37,28 +37,28 @@ importers:
 
   packages/jixu:
     dependencies:
-      '@jixu/core':
+      jixu-core:
         specifier: workspace:*
         version: link:../core
     devDependencies:
-      '@jixu/llm':
-        specifier: workspace:*
-        version: link:../llm
-      '@jixu/store-jsonl':
-        specifier: workspace:*
-        version: link:../store-jsonl
-      '@jixu/tools-jina':
-        specifier: workspace:*
-        version: link:../tools-jina
-      '@jixu/tools-node':
-        specifier: workspace:*
-        version: link:../tools-node
       '@opentui/core':
         specifier: 0.5.4
         version: 0.5.4(typescript@6.0.3)(web-tree-sitter@0.25.10)
       '@opentui/react':
         specifier: 0.5.4
         version: 0.5.4(react-devtools-core@7.0.1)(react@19.2.8)(typescript@6.0.3)(web-tree-sitter@0.25.10)(ws@8.21.3)
+      jixu-llm:
+        specifier: workspace:*
+        version: link:../llm
+      jixu-store-jsonl:
+        specifier: workspace:*
+        version: link:../store-jsonl
+      jixu-tools-jina:
+        specifier: workspace:*
+        version: link:../tools-jina
+      jixu-tools-node:
+        specifier: workspace:*
+        version: link:../tools-node
       react:
         specifier: 19.2.8
         version: 19.2.8
@@ -69,18 +69,19 @@ importers:
         specifier: 8.21.3
         version: 8.21.3
     optionalDependencies:
-      '@jixu/cli-darwin-arm64':
+      jixu-cli-darwin-arm64:
         specifier: workspace:*
         version: link:../cli-darwin-arm64
-      '@jixu/cli-darwin-x64':
+      jixu-cli-darwin-x64:
         specifier: workspace:*
         version: link:../cli-darwin-x64
-      '@jixu/cli-linux-x64':
+      jixu-cli-linux-x64:
         specifier: workspace:*
         version: link:../cli-linux-x64
+
   packages/llm:
     dependencies:
-      '@jixu/core':
+      jixu-core:
         specifier: workspace:*
         version: link:../core
       openai:
@@ -89,31 +90,31 @@ importers:
 
   packages/store-jsonl:
     dependencies:
-      '@jixu/core':
+      jixu-core:
         specifier: workspace:*
         version: link:../core
 
   packages/store-sqlite:
     dependencies:
-      '@jixu/core':
+      jixu-core:
         specifier: workspace:*
         version: link:../core
 
   packages/testkit:
     dependencies:
-      '@jixu/core':
+      jixu-core:
         specifier: workspace:*
         version: link:../core
 
   packages/tools-jina:
     dependencies:
-      '@jixu/core':
+      jixu-core:
         specifier: workspace:*
         version: link:../core
 
   packages/tools-node:
     dependencies:
-      '@jixu/core':
+      jixu-core:
         specifier: workspace:*
         version: link:../core
 

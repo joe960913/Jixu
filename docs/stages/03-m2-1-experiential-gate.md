@@ -24,8 +24,8 @@ M2.1 的目标是建立最窄但真实的 vertical slice：用户在终端里配
 ### 本阶段完成
 
 - 为 `RunHandle` 增加 Event catch-up + live Event/Signal 的统一 stream；
-- 建立 `@jixu/llm` 统一 adapter，显式支持 Responses 和 Chat Completions wire format；
-- 建立 `@jixu/tools-node`，提供名称固定的 `read`、`write`、`edit`、`bash`；
+- 建立 `jixu-llm` 统一 adapter，显式支持 Responses 和 Chat Completions wire format；
+- 建立 `jixu-tools-node`，提供名称固定的 `read`、`write`、`edit`、`bash`；
 - 建立 `jixu` OpenTUI 应用，使用一个普通不可变 `Agent`；
 - 在 TUI 内完成 API format、Base URL、API Key、自由文本 model ID 配置；
 - 将 API Key 持久化到全局 `~/.jixu/auth.json`，普通设置放到
@@ -160,8 +160,8 @@ OpenTUI
   |
   `-- JixuSession --> ordinary Agent --> Runtime --> durable Run
                                           |
-                                          +-- Model Effect --> @jixu/llm --> compatible endpoint
-                                          `-- Tool Effect  --> @jixu/tools-node
+                                          +-- Model Effect --> jixu-llm --> compatible endpoint
+                                          `-- Tool Effect  --> jixu-tools-node
 
 Run.stream()
   +-- durable Event catch-up
@@ -199,13 +199,13 @@ launch
 
 ## 4. 实现方式
 
-### `@jixu/core`
+### `jixu-core`
 
 `RunHandle.stream({ signal })` 先读取 selected durable Event prefix，再订阅 live sink。实现对
 sequence 去重，保证 catch-up 与 live 交界处不会重复同一 Event。`AbortSignal` 终止 consumer
 等待，不改变 Run authority。
 
-### `@jixu/llm`
+### `jixu-llm`
 
 统一 factory 按显式配置把 canonical model input 映射到 Responses 或 Chat Completions API，
 并把两种 streaming text/tool-call delta 转换成 `model.output_text.delta` 等 Signal。Chat
@@ -215,7 +215,7 @@ Tool calls 通过 typed outcome 返回，仍由 Runtime 追加 durable outcome E
 adapter 的 typed error 会做 credential redaction，测试覆盖 API Key 不进入 errors 或
 Signals。
 
-### `@jixu/tools-node`
+### `jixu-tools-node`
 
 - `read`：读取 workspace 内文件，返回 path、content、truncated；
 - `write`：创建或覆盖 workspace 内文件；

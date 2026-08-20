@@ -1,5 +1,5 @@
 {
-  "name": "@jixu/store-jsonl",
+  "name": "jixu-store-jsonl",
   "version": "0.1.0-beta.0",
   "description": "Inspectable JSONL Event Store for Jixu.",
   "type": "module",
@@ -28,6 +28,6 @@
     "access": "public"
   },
   "dependencies": {
-    "@jixu/core": "workspace:*"
+    "jixu-core": "workspace:*"
   }
 }

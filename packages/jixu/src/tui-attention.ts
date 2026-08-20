@@ -1,4 +1,4 @@
-import type { PlanStepStatus } from "@jixu/core";
+import type { PlanStepStatus } from "jixu-core";
 
 import { iconForTool, type JixuIconName } from "./tui-icons.tsx";
 import type {

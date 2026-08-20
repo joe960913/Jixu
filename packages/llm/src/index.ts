@@ -14,7 +14,7 @@ import {
   parseProgressUpdate,
   PLAN_CONTROL_NAME,
   PROGRESS_CONTROL_NAME,
-} from "@jixu/core";
+} from "jixu-core";
 import type {
   DriverError,
   JsonObject,
@@ -30,7 +30,7 @@ import type {
   PlanUpdateProposal,
   ProgressControlDescriptor,
   ToolDescriptor,
-} from "@jixu/core";
+} from "jixu-core";
 
 import { modelAccounting } from "./accounting.ts";
 import type { ModelCostCalculator } from "./accounting.ts";

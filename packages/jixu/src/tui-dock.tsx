@@ -1,4 +1,4 @@
-import type { PlanStepStatus } from "@jixu/core";
+import type { PlanStepStatus } from "jixu-core";
 
 import { jixuTheme } from "./theme.ts";
 import type { ThreadControllerSnapshot } from "./tui-model.ts";

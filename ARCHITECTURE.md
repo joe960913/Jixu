@@ -662,7 +662,7 @@ Security properties:
 
 ### Model protocol boundary
 
-`@jixu/llm` has one factory and a closed protocol selector. OpenAI-compatible
+`jixu-llm` has one factory and a closed protocol selector. OpenAI-compatible
 Chat Completions and Anthropic Messages each translate the same Jixu messages,
 client-side Tools, controls, Signals, failures, and accounting without becoming
 Thread authority. The adapter never probes one protocol and falls back to the
