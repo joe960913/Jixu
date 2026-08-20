@@ -71,7 +71,7 @@ import { SequenceModelDriver } from "jixu-testkit";
 import { defineStoreContract } from "jixu-testkit/store-contract";
 import { createJinaWebSearchTool } from "jixu-tools-jina";
 import { createNodeTools } from "jixu-tools-node";
-import { JixuConfigStore } from "jixu";
+import { JixuConfigStore } from "jixu-ai";
 
 assert.equal(process.version, "v${nodeFloorVersion}");
 const root = await mkdtemp(join(tmpdir(), "jixu-installed-smoke-"));
@@ -121,7 +121,7 @@ import { SequenceModelDriver } from "jixu-testkit";
 import { defineStoreContract } from "jixu-testkit/store-contract";
 import { createJinaWebSearchTool } from "jixu-tools-jina";
 import { createNodeTools } from "jixu-tools-node";
-import { JixuConfigStore } from "jixu";
+import { JixuConfigStore } from "jixu-ai";
 
 const fixture: ModelDriver = new SequenceModelDriver([]);
 const agent = defineAgent({
@@ -297,15 +297,15 @@ async function verifyInstalledCli(
   candidates: readonly PackageArtifactCandidate[],
   environment: Readonly<NodeJS.ProcessEnv>,
 ): Promise<void> {
-  const jixu = candidates.find((candidate) => candidate.manifest.name === "jixu");
-  assert.ok(jixu, "release candidates miss jixu");
+  const facade = candidates.find((candidate) => candidate.manifest.name === "jixu-ai");
+  assert.ok(facade, "release candidates miss jixu-ai");
 
   const executable = join(root, "node_modules", ".bin", "jixu");
   const version = await runCommand(executable, ["--version"], {
     cwd: root,
     env: environment,
   });
-  assert.equal(version.stdout, jixu.manifest.version);
+  assert.equal(version.stdout, facade.manifest.version);
   const help = await runCommand(executable, ["--help"], {
     cwd: root,
     env: environment,
@@ -326,7 +326,7 @@ async function verifyInstalledCli(
     cwd: root,
     env: environment,
   });
-  assert.equal(executed.stdout, jixu.manifest.version);
+  assert.equal(executed.stdout, facade.manifest.version);
 }
 
 async function verifyManager(

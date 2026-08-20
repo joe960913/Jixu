@@ -288,9 +288,9 @@ async function inspectTarball(
     assert.equal(path.endsWith(".tsbuildinfo"), false, `${manifest.name} packed ${path}`);
   }
 
-  if (manifest.name === "jixu") {
+  if (manifest.name === "jixu-ai") {
     assert.equal(manifest.bin?.jixu, "./dist/cli-bin.js");
-    assert.ok(files.has("dist/cli-bin.js"), "jixu tarball misses its command launcher");
+    assert.ok(files.has("dist/cli-bin.js"), "jixu-ai tarball misses its command launcher");
     for (const path of [
       "dist/tree-sitter-assets/bash/LICENSE",
       "dist/tree-sitter-assets/bash/highlights.scm",
@@ -401,12 +401,12 @@ export async function buildPackageArtifacts(
     1,
     "all Jixu library and CLI packages must share one exact version",
   );
-  const facade = sourceManifests.get("jixu");
-  assert.ok(facade, "source manifests miss jixu");
+  const facade = sourceManifests.get("jixu-ai");
+  assert.ok(facade, "source manifests miss jixu-ai");
   assert.deepEqual(
     Object.keys(facade.optionalDependencies ?? {}).sort(),
     JIXU_CLI_TARGETS.map((target) => target.packageName).sort(),
-    "jixu optionalDependencies drifted from the CLI target catalogue",
+    "jixu-ai optionalDependencies drifted from the CLI target catalogue",
   );
   for (const target of JIXU_CLI_TARGETS) {
     const manifest = sourceManifests.get(target.packageName);

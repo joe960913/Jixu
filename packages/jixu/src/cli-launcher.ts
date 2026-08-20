@@ -30,7 +30,7 @@ export function resolveJixuCliBinary(
   } catch (error) {
     const cause = error instanceof Error ? ` (${error.message})` : "";
     throw new Error(
-      `Jixu could not find ${target.packageName}. Reinstall jixu with optional dependencies enabled${cause}`,
+      `Jixu could not find ${target.packageName}. Reinstall jixu-ai with optional dependencies enabled${cause}`,
       { cause: error },
     );
   }

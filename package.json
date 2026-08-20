@@ -15,10 +15,10 @@
     "dev": "pnpm run build:packages && bun run packages/jixu/src/cli.tsx",
     "typecheck": "pnpm run build:packages && tsc --noEmit",
     "test": "pnpm run build:packages && node --test",
-    "test:tui": "pnpm run build:packages && pnpm --filter jixu test:tui",
+    "test:tui": "pnpm run build:packages && pnpm --filter jixu-ai test:tui",
     "test:packages": "node scripts/verify-package-portability.ts",
     "lint": "node scripts/lint.ts",
-    "check": "pnpm run build:packages && tsc --noEmit && pnpm run lint && node --test && pnpm --filter jixu test:tui",
+    "check": "pnpm run build:packages && tsc --noEmit && pnpm run lint && node --test && pnpm --filter jixu-ai test:tui",
     "check:release": "pnpm run check && pnpm run test:packages"
   },
   "devDependencies": {

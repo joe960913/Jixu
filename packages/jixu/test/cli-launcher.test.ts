@@ -102,7 +102,7 @@ test("JX-AC-050 missing and unsupported native packages fail actionably", () => 
       resolveJixuCliBinary(target, () => {
         throw new Error("module not found");
       }),
-    /Reinstall jixu with optional dependencies enabled/u,
+    /Reinstall jixu-ai with optional dependencies enabled/u,
   );
   assert.throws(
     () =>
