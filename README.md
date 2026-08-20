@@ -93,10 +93,6 @@ Event -> Reducer -> Effect -> Driver -> Event
 See [SPEC.md](./SPEC.md) for the full product contract and
 [CONTRIBUTING.md](./CONTRIBUTING.md) for development guidance.
 
-## License
-
-MIT
-
 ## Core status
 
 - [x] **Durable Threads** — multi-turn Agent work survives process restarts,
@@ -110,11 +106,12 @@ MIT
 - [x] **The reference TUI and CLI path** — credential-free startup, local BYOK
   configuration, durable Thread inspection, and a standalone macOS arm64
   release candidate verified through npm, pnpm, Yarn, and Bun consumers.
-- [ ] **The public package release** — publish to npm, complete target-native
-  macOS x64 and Linux x64 builds, and finish production macOS signing and
-  notarization.
 - [ ] **Long-context continuity** — add adaptive compaction and immutable,
   source-linked continuity snapshots for the same Agent.
 - [ ] **First-class Skills and MCP Tools** — extend the same Agent through the
   existing Tool, Effect, and durable Thread model, without Agent routing or
   orchestration.
+
+## License
+
+MIT
