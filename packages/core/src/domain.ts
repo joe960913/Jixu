@@ -160,6 +160,7 @@ export interface PendingPlanRejection {
   readonly effectId: string;
   readonly error: DriverError;
   readonly proposals: readonly PlanUpdateProposal[];
+  readonly repairAttempt?: number;
 }
 
 export interface ThreadState {
@@ -172,6 +173,7 @@ export interface ThreadState {
   readonly metrics: ThreadMetrics;
   readonly pauseRequested: boolean;
   readonly pendingEffects: Readonly<Record<string, EffectRequest>>;
+  readonly planRepairAttempts: number;
   readonly pendingPlanRejections: readonly PendingPlanRejection[];
   readonly pendingPlanUpdates: readonly PendingPlanUpdate[];
   readonly readyEffects: readonly EffectRequest[];
@@ -204,6 +206,7 @@ export function createInitialThreadState(threadId: string): ThreadState {
     metrics: createInitialThreadMetrics(),
     pauseRequested: false,
     pendingEffects: {},
+    planRepairAttempts: 0,
     pendingPlanRejections: [],
     pendingPlanUpdates: [],
     readyEffects: [],

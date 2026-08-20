@@ -1,5 +1,6 @@
 import type { AgentDefinition } from "./agent.ts";
 import { decodeThreadEvent } from "./codec.ts";
+import { copyModelContextForFork } from "./context.ts";
 import { createInitialThreadState } from "./domain.ts";
 import type { ThreadState } from "./domain.ts";
 import { EffectDispatcher } from "./effect-dispatcher.ts";
@@ -290,6 +291,13 @@ export class Harness {
           ...effect,
           id,
           idempotencyKey: id,
+          input:
+            effect.type === "model.generate"
+              ? copyModelContextForFork(
+                  effect.input,
+                  (eventId) => eventIds.get(eventId) ?? eventId,
+                )
+              : effect.input,
           requestedByEventId:
             eventIds.get(effect.requestedByEventId) ?? effect.requestedByEventId,
           threadId: childThreadId,

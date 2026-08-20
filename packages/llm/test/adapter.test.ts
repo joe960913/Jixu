@@ -98,7 +98,25 @@ function effect(
       planControl: PLAN_CONTROL,
       ...(rejectionFeedback === undefined
         ? {}
-        : { planRejectionFeedback: rejectionFeedback }),
+        : {
+            planRejectionFeedback: rejectionFeedback,
+            runtimeContext: {
+              continuation: {
+                causedByEventId: "event-plan-rejected",
+                reason: "plan_rejected",
+                receipt: {
+                  errorCode: "plan_update_invalid",
+                  errorMessage: rejectionFeedback,
+                  eventId: "event-plan-rejected",
+                  type: "plan.rejected",
+                },
+              },
+              obligations: ["repair_plan_control", "respond_or_act"],
+              planRepair: { attempt: 1, limit: 1 },
+              prohibitions: ["repeat_rejected_plan_change"],
+              schemaVersion: 1,
+            },
+          }),
       progressControl: PROGRESS_CONTROL,
       tools: [
         {
@@ -385,6 +403,22 @@ test("JX-PROV-002 JX-PROV-003 JX-AC-016 OpenAI Chat Completions normalizes contr
     JSON.stringify(client.body?.messages.at(-1)?.content),
     /call-invalid\.steps\[0\] must be a JSON object/,
   );
+  assert.match(
+    JSON.stringify(client.body?.messages.at(-1)?.content),
+    /Continuation reason: plan_rejected/,
+  );
+  assert.match(
+    JSON.stringify(client.body?.messages.at(-1)?.content),
+    /Remaining obligations: repair_plan_control, respond_or_act/,
+  );
+  assert.match(
+    JSON.stringify(client.body?.messages.at(-1)?.content),
+    /Do not repeat: repeat_rejected_plan_change/,
+  );
+  assert.match(
+    JSON.stringify(client.body?.messages.at(-1)?.content),
+    /Plan repair budget: attempt 1 of 1/,
+  );
   assert.deepEqual(
     (
       client.body?.tools as
@@ -574,6 +608,18 @@ test("JX-PROV-002 JX-PROV-004 JX-PROV-005 JX-AC-016 Anthropic Messages groups To
   assert.ok(Array.isArray(client.body?.system));
   assert.equal(client.body.system[0]?.text, "Use tools when useful.");
   assert.match(client.body.system[1]?.text ?? "", /Current active Plan/);
+  assert.match(
+    client.body.system[1]?.text ?? "",
+    /Continuation reason: plan_rejected/,
+  );
+  assert.match(
+    client.body.system[1]?.text ?? "",
+    /Remaining obligations: repair_plan_control, respond_or_act/,
+  );
+  assert.match(
+    client.body.system[1]?.text ?? "",
+    /Plan repair budget: attempt 1 of 1/,
+  );
   assert.match(
     client.body.system[1]?.text ?? "",
     /call-invalid\.steps\[0\] must be a JSON object/,

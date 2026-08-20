@@ -1,4 +1,5 @@
 import { decodeCheckpoint, decodeThreadEvent } from "./codec.ts";
+import { MAX_PLAN_REPAIR_ATTEMPTS } from "./context.ts";
 import type {
   AgentSnapshot,
   Checkpoint,
@@ -21,6 +22,7 @@ import type {
   ThreadEventType,
 } from "./events.ts";
 import { cloneJson, jsonDigest } from "./json.ts";
+import { EMPTY_MODEL_ACCOUNTING } from "./metrics.ts";
 import type { ObservationBroker } from "./observation.ts";
 import type {
   Clock,
@@ -351,6 +353,25 @@ export class ThreadExecution implements Thread {
 
       const pending = Object.values(state.pendingEffects);
       if (pending.length > 0) {
+        const exhaustedPlanRepair = pending.find(
+          (effect) =>
+            effect.type === "model.generate" &&
+            state.planRepairAttempts > MAX_PLAN_REPAIR_ATTEMPTS,
+        );
+        if (exhaustedPlanRepair !== undefined) {
+          await this.#commit("model.failed", {
+            accounting: EMPTY_MODEL_ACCOUNTING,
+            disposition: "failed",
+            effectId: exhaustedPlanRepair.id,
+            error: {
+              code: "plan_repair_exhausted",
+              message:
+                "Historical Plan repair limit was exceeded; the pending model request was not redispatched",
+              retryable: false,
+            },
+          });
+          continue;
+        }
         const unsafe = pending.find(
           (effect) =>
             effect.type === "tool.execute" &&

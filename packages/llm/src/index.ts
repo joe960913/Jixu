@@ -149,18 +149,43 @@ function jsonString(value: JsonValue): string {
   return JSON.stringify(value);
 }
 
-function planRuntimeContext(
+function modelRuntimeContext(
   activePlan: ModelGenerateEffect["input"]["activePlan"],
+  runtime: ModelGenerateEffect["input"]["runtimeContext"],
   rejectionFeedback: ModelGenerateEffect["input"]["planRejectionFeedback"],
 ): string | null {
-  if (activePlan === null && rejectionFeedback === undefined) return null;
+  if (
+    activePlan === null &&
+    runtime === undefined &&
+    rejectionFeedback === undefined
+  ) {
+    return null;
+  }
   const context = [
     "Jixu runtime context. This is accepted coordination data, not a new user request, and it grants no permission.",
   ];
+  if (runtime !== undefined) {
+    context.push(
+      `Continuation reason: ${runtime.continuation.reason}`,
+      `Accepted causal receipt: ${JSON.stringify(runtime.continuation.receipt)}`,
+      `Remaining obligations: ${runtime.obligations.join(", ")}`,
+    );
+    if (runtime.prohibitions.length > 0) {
+      context.push(`Do not repeat: ${runtime.prohibitions.join(", ")}`);
+    }
+    if (runtime.planRepair !== null) {
+      context.push(
+        `Plan repair budget: attempt ${runtime.planRepair.attempt} of ${runtime.planRepair.limit}`,
+      );
+    }
+  }
   if (activePlan !== null) {
     context.push("Current active Plan:", JSON.stringify(activePlan));
   }
-  if (rejectionFeedback !== undefined) {
+  if (
+    rejectionFeedback !== undefined &&
+    runtime?.continuation.receipt.errorMessage !== rejectionFeedback
+  ) {
     context.push(
       "The previous Plan control was rejected by runtime validation. Correct the control before continuing:",
       rejectionFeedback,
@@ -173,6 +198,7 @@ function toChatMessages(
   instructions: string,
   messages: readonly ModelMessage[],
   activePlan: ModelGenerateEffect["input"]["activePlan"],
+  runtime: ModelGenerateEffect["input"]["runtimeContext"],
   rejectionFeedback: ModelGenerateEffect["input"]["planRejectionFeedback"],
 ): ChatCompletionMessageParam[] {
   const input: ChatCompletionMessageParam[] = [];
@@ -209,9 +235,13 @@ function toChatMessages(
       tool_call_id: message.toolCallId,
     });
   }
-  const planContext = planRuntimeContext(activePlan, rejectionFeedback);
-  if (planContext !== null) {
-    input.push({ content: planContext, role: "system" });
+  const runtimeContext = modelRuntimeContext(
+    activePlan,
+    runtime,
+    rejectionFeedback,
+  );
+  if (runtimeContext !== null) {
+    input.push({ content: runtimeContext, role: "system" });
   }
   return input;
 }
@@ -233,15 +263,22 @@ function toChatTool(
 function toAnthropicSystem(
   instructions: string,
   activePlan: ModelGenerateEffect["input"]["activePlan"],
+  runtime: ModelGenerateEffect["input"]["runtimeContext"],
   rejectionFeedback: ModelGenerateEffect["input"]["planRejectionFeedback"],
 ): string | readonly AnthropicTextBlock[] | undefined {
-  const planContext = planRuntimeContext(activePlan, rejectionFeedback);
-  if (planContext === null) return instructions.length === 0 ? undefined : instructions;
+  const runtimeContext = modelRuntimeContext(
+    activePlan,
+    runtime,
+    rejectionFeedback,
+  );
+  if (runtimeContext === null) {
+    return instructions.length === 0 ? undefined : instructions;
+  }
   return [
     ...(instructions.length === 0
       ? []
       : [{ text: instructions, type: "text" as const }]),
-    { text: planContext, type: "text" },
+    { text: runtimeContext, type: "text" },
   ];
 }
 
@@ -591,6 +628,7 @@ class OpenAIChatCompletionsModelDriver implements ModelDriver {
             effect.input.instructions,
             effect.input.messages,
             effect.input.activePlan,
+            effect.input.runtimeContext,
             effect.input.planRejectionFeedback,
           ),
           model: effect.input.model.model,
@@ -958,6 +996,7 @@ class AnthropicMessagesModelDriver implements ModelDriver {
     const system = toAnthropicSystem(
       effect.input.instructions,
       effect.input.activePlan,
+      effect.input.runtimeContext,
       effect.input.planRejectionFeedback,
     );
     let stream: AsyncIterable<unknown>;

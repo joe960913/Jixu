@@ -60,8 +60,14 @@ export function eventActivity(
       return {
         ...base,
         kind: "runtime",
-        label: "Model response committed",
-        tone: "success",
+        label:
+          event.payload.response.content.trim().length > 0
+            ? "Model response committed"
+            : "Model action committed",
+        tone:
+          event.payload.response.content.trim().length > 0
+            ? "success"
+            : "info",
       };
     case "model.failed":
       return {

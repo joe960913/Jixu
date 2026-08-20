@@ -142,7 +142,7 @@ export function createPlanControl(
   return cloneFrozenJson({
     description: creating
       ? "Create an optional execution Plan only when work has dependent stages, material uncertainty, a long recovery horizon, or explicit verification boundaries. Do not create a ceremonial Plan for a short answer or one known action. A Plan coordinates work but never authorizes or performs it. This control is not a user-facing response; also provide concise public text or continue through ordinary Tools."
-      : "Update the accepted active Plan. Use revise to reflect progress or new evidence; when every step is completed or skipped, revise it with those terminal statuses and Jixu will complete it automatically. Use supersede only for a materially different objective. To stop the objective, send only {\"operation\":\"abandon\"}; Jixu derives the terminal revision from the active Plan. Never create a second Plan while one is active. A Plan coordinates work but never authorizes or performs it. This control is not a user-facing response; also provide concise public text or continue through ordinary Tools.",
+      : "Update the accepted active Plan. Use revise to reflect progress or new evidence; when every step is completed or skipped, revise it with those terminal statuses and Jixu will complete it automatically. Use one supersede call only for a materially different objective: its body describes the replacement Plan, and Jixu preserves the old Plan as superseded before creating the replacement. To stop the objective, send only {\"operation\":\"abandon\"}; Jixu derives the terminal revision from the active Plan. Never create a second Plan while one is active. A Plan coordinates work but never authorizes or performs it. This control is not a user-facing response; also provide concise public text or continue through ordinary Tools.",
     inputSchema: planControlSchema(
       creating ? ["create"] : ["revise", "supersede", "abandon"],
       creating,
@@ -390,18 +390,24 @@ export function materializePlanUpdates(
   current: PlanSnapshot | null,
   values: readonly PlanUpdateProposal[],
   identitySeed: string,
+  options: { readonly expandAtomicSupersede?: boolean } = {},
 ): readonly PlanSnapshot[] {
-  if (values.length > 2) fail("Plan updates", "must contain at most two changes");
+  const expanded =
+    options.expandAtomicSupersede === false
+      ? values
+      : expandPlanUpdateProposals(current, values);
+  if (expanded.length > 2) fail("Plan updates", "must contain at most two changes");
   if (
-    values.length === 2 &&
-    (values[0]?.operation !== "supersede" || values[1]?.operation !== "create")
+    expanded.length === 2 &&
+    (expanded[0]?.operation !== "supersede" ||
+      expanded[1]?.operation !== "create")
   ) {
     fail("Plan updates", "may only pair supersede followed by create");
   }
 
   let active = current;
   const snapshots: PlanSnapshot[] = [];
-  values.forEach((rawProposal, index) => {
+  expanded.forEach((rawProposal, index) => {
     const proposal = parsePlanUpdateProposal(rawProposal, `Plan updates[${index}]`);
     if (proposal.operation === "create") {
       if (active !== null) fail("Plan update", "cannot create while another Plan is active");
@@ -445,6 +451,38 @@ export function materializePlanUpdates(
     active = snapshot.status === "active" ? snapshot : null;
   });
   return snapshots;
+}
+
+export function expandPlanUpdateProposals(
+  current: PlanSnapshot | null,
+  values: readonly PlanUpdateProposal[],
+): readonly PlanUpdateProposal[] {
+  const proposals = values.map((value, index) =>
+    parsePlanUpdateProposal(value, `Plan updates[${index}]`),
+  );
+  const replacement = proposals.length === 1 ? proposals[0] : undefined;
+  if (
+    current === null ||
+    replacement?.operation !== "supersede" ||
+    replacement.objective === current.objective
+  ) {
+    return proposals;
+  }
+  return [
+    {
+      acceptanceCriteria: current.acceptanceCriteria,
+      assumptions: current.assumptions,
+      blockers: current.blockers,
+      nextAction: null,
+      objective: current.objective,
+      operation: "supersede",
+      steps: current.steps.map((step) => ({
+        ...step,
+        status: step.status === "in_progress" ? "skipped" : step.status,
+      })),
+    },
+    { ...replacement, operation: "create" },
+  ];
 }
 
 export function assertPlanUpdateTransition(

@@ -62,6 +62,7 @@ export interface ThreadEventPayloads {
     readonly effectId: string;
     readonly error: DriverError;
     readonly proposals: readonly PlanUpdateProposal[];
+    readonly repairAttempt?: number;
   };
   readonly "plan.updated": { readonly plan: PlanSnapshot };
   readonly "thread.created": { readonly agent: AgentSnapshot };

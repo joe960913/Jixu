@@ -1,10 +1,20 @@
 import type { Checkpoint } from "./domain.ts";
 import { parseModelResponse } from "./domain.ts";
+import {
+  CONTEXT_COMPILER_VERSION,
+  MAX_PLAN_REPAIR_ATTEMPTS,
+  MODEL_CONTEXT_SCHEMA_VERSION,
+} from "./context.ts";
 import type { EffectRequest } from "./effects.ts";
 import { SchemaValidationError, UnsupportedEventError } from "./errors.ts";
 import { isSupportedEventSchemaVersion } from "./events.ts";
 import type { AnyThreadEvent, ThreadEventType } from "./events.ts";
-import { cloneJson, isJsonObject } from "./json.ts";
+import {
+  cloneJson,
+  isJsonObject,
+  jsonDigest,
+  jsonEquals,
+} from "./json.ts";
 import type { JsonObject, JsonValue } from "./json.ts";
 import { parseModelAccounting, parseThreadMetrics } from "./metrics.ts";
 import {
@@ -147,6 +157,315 @@ function assertPlanRejection(
   array(item.proposals, `${label}.proposals`).forEach((proposal, index) =>
     parsePlanUpdateProposal(proposal, `${label}.proposals[${index}]`),
   );
+  if (item.repairAttempt !== undefined) {
+    const repairAttempt = integer(item.repairAttempt, `${label}.repairAttempt`);
+    if (repairAttempt < 1) {
+      throw new SchemaValidationError(`${label}.repairAttempt must be positive`);
+    }
+  }
+}
+
+function assertModelRuntimeContext(
+  value: JsonValue | undefined,
+  label: string,
+): void {
+  const runtime = object(value, label);
+  if (runtime.schemaVersion !== MODEL_CONTEXT_SCHEMA_VERSION) {
+    throw new SchemaValidationError(`${label}.schemaVersion is unsupported`);
+  }
+  const continuation = object(runtime.continuation, `${label}.continuation`);
+  string(continuation.causedByEventId, `${label}.continuation.causedByEventId`);
+  const reason = string(continuation.reason, `${label}.continuation.reason`);
+  if (
+    reason !== "input_received" &&
+    reason !== "plan_rejected" &&
+    reason !== "plan_updated" &&
+    reason !== "tool_completed"
+  ) {
+    throw new SchemaValidationError(`${label}.continuation.reason is unsupported`);
+  }
+  const receipt = object(
+    continuation.receipt,
+    `${label}.continuation.receipt`,
+  );
+  string(receipt.eventId, `${label}.continuation.receipt.eventId`);
+  const receiptType = string(
+    receipt.type,
+    `${label}.continuation.receipt.type`,
+  );
+  if (
+    receiptType !== "input.received" &&
+    receiptType !== "plan.rejected" &&
+    receiptType !== "plan.updated" &&
+    receiptType !== "tool.completed"
+  ) {
+    throw new SchemaValidationError(
+      `${label}.continuation.receipt.type is unsupported`,
+    );
+  }
+  const expectedReceiptType = {
+    input_received: "input.received",
+    plan_rejected: "plan.rejected",
+    plan_updated: "plan.updated",
+    tool_completed: "tool.completed",
+  }[reason];
+  if (receiptType !== expectedReceiptType) {
+    throw new SchemaValidationError(
+      `${label}.continuation.receipt.type does not match continuation reason`,
+    );
+  }
+  if (receipt.eventId !== continuation.causedByEventId) {
+    throw new SchemaValidationError(
+      `${label}.continuation.receipt.eventId does not match causedByEventId`,
+    );
+  }
+  optionalString(receipt.errorCode, `${label}.continuation.receipt.errorCode`);
+  optionalString(
+    receipt.errorMessage,
+    `${label}.continuation.receipt.errorMessage`,
+  );
+  optionalString(receipt.planId, `${label}.continuation.receipt.planId`);
+  if (receipt.planRevision !== undefined) {
+    const revision = integer(
+      receipt.planRevision,
+      `${label}.continuation.receipt.planRevision`,
+    );
+    if (revision < 1) {
+      throw new SchemaValidationError(
+        `${label}.continuation.receipt.planRevision must be positive`,
+      );
+    }
+  }
+  optionalString(receipt.planStatus, `${label}.continuation.receipt.planStatus`);
+  if (
+    receipt.planStatus !== undefined &&
+    receipt.planStatus !== "abandoned" &&
+    receipt.planStatus !== "active" &&
+    receipt.planStatus !== "completed" &&
+    receipt.planStatus !== "superseded"
+  ) {
+    throw new SchemaValidationError(
+      `${label}.continuation.receipt.planStatus is unsupported`,
+    );
+  }
+  optionalString(receipt.toolCallId, `${label}.continuation.receipt.toolCallId`);
+  optionalString(receipt.toolName, `${label}.continuation.receipt.toolName`);
+  array(runtime.obligations, `${label}.obligations`).forEach((value, index) => {
+    if (value !== "repair_plan_control" && value !== "respond_or_act") {
+      throw new SchemaValidationError(`${label}.obligations[${index}] is unsupported`);
+    }
+  });
+  array(runtime.prohibitions, `${label}.prohibitions`).forEach((value, index) => {
+    if (
+      value !== "repeat_accepted_plan_change" &&
+      value !== "repeat_rejected_plan_change"
+    ) {
+      throw new SchemaValidationError(
+        `${label}.prohibitions[${index}] is unsupported`,
+      );
+    }
+  });
+  if (runtime.planRepair !== null) {
+    const repair = object(runtime.planRepair, `${label}.planRepair`);
+    const attempt = integer(repair.attempt, `${label}.planRepair.attempt`);
+    const limit = integer(repair.limit, `${label}.planRepair.limit`);
+    if (attempt < 1 || limit !== MAX_PLAN_REPAIR_ATTEMPTS) {
+      throw new SchemaValidationError(`${label}.planRepair is invalid`);
+    }
+  }
+  const expectedObligations =
+    reason === "plan_rejected"
+      ? ["repair_plan_control", "respond_or_act"]
+      : ["respond_or_act"];
+  const expectedProhibitions =
+    reason === "plan_rejected"
+      ? ["repeat_rejected_plan_change"]
+      : reason === "plan_updated"
+        ? ["repeat_accepted_plan_change"]
+        : [];
+  if (
+    !jsonEquals(runtime.obligations, expectedObligations) ||
+    !jsonEquals(runtime.prohibitions, expectedProhibitions)
+  ) {
+    throw new SchemaValidationError(
+      `${label} obligations or prohibitions do not match continuation reason`,
+    );
+  }
+  if (
+    reason === "plan_rejected" &&
+    (receipt.errorCode === undefined ||
+      receipt.errorMessage === undefined ||
+      runtime.planRepair === null)
+  ) {
+    throw new SchemaValidationError(
+      `${label} rejected Plan continuation is incomplete`,
+    );
+  }
+  if (
+    reason === "plan_updated" &&
+    (receipt.planId === undefined ||
+      receipt.planRevision === undefined ||
+      receipt.planStatus === undefined)
+  ) {
+    throw new SchemaValidationError(
+      `${label} updated Plan continuation is incomplete`,
+    );
+  }
+  if (
+    reason === "tool_completed" &&
+    (receipt.toolCallId === undefined || receipt.toolName === undefined)
+  ) {
+    throw new SchemaValidationError(
+      `${label} completed Tool continuation is incomplete`,
+    );
+  }
+}
+
+function assertContextManifest(
+  value: JsonValue | undefined,
+  label: string,
+): void {
+  const manifest = object(value, label);
+  if (manifest.schemaVersion !== MODEL_CONTEXT_SCHEMA_VERSION) {
+    throw new SchemaValidationError(`${label}.schemaVersion is unsupported`);
+  }
+  if (manifest.compilerVersion !== CONTEXT_COMPILER_VERSION) {
+    throw new SchemaValidationError(`${label}.compilerVersion is unsupported`);
+  }
+  string(manifest.logicalRequestDigest, `${label}.logicalRequestDigest`);
+  if (manifest.activePlanRevision !== null) {
+    const revision = integer(
+      manifest.activePlanRevision,
+      `${label}.activePlanRevision`,
+    );
+    if (revision < 1) {
+      throw new SchemaValidationError(`${label}.activePlanRevision must be positive`);
+    }
+  }
+  array(manifest.sources, `${label}.sources`).forEach((value, index) => {
+    const source = object(value, `${label}.sources[${index}]`);
+    string(source.id, `${label}.sources[${index}].id`);
+    const kind = string(source.kind, `${label}.sources[${index}].kind`);
+    if (
+      kind !== "active_plan" &&
+      kind !== "agent" &&
+      kind !== "messages" &&
+      kind !== "runtime" &&
+      kind !== "tools"
+    ) {
+      throw new SchemaValidationError(
+        `${label}.sources[${index}].kind is unsupported`,
+      );
+    }
+    string(source.reason, `${label}.sources[${index}].reason`);
+    if (source.digest !== null) {
+      string(source.digest, `${label}.sources[${index}].digest`);
+    }
+    if (source.digest === undefined) {
+      throw new SchemaValidationError(
+        `${label}.sources[${index}].digest is required`,
+      );
+    }
+    if (source.disposition !== "included" && source.disposition !== "excluded") {
+      throw new SchemaValidationError(
+        `${label}.sources[${index}].disposition is unsupported`,
+      );
+    }
+    if (source.sensitivity !== "internal" && source.sensitivity !== "private") {
+      throw new SchemaValidationError(
+        `${label}.sources[${index}].sensitivity is unsupported`,
+      );
+    }
+    if (source.trust !== "accepted") {
+      throw new SchemaValidationError(`${label}.sources[${index}].trust is unsupported`);
+    }
+  });
+}
+
+function assertContextManifestMatchesInput(
+  input: JsonObject,
+  label: string,
+): void {
+  const manifest = object(input.contextManifest, `${label}.contextManifest`);
+  const activePlan =
+    input.activePlan === null
+      ? null
+      : object(input.activePlan, `${label}.activePlan`);
+  const activePlanRevision = activePlan?.revision ?? null;
+  if (manifest.activePlanRevision !== activePlanRevision) {
+    throw new SchemaValidationError(
+      `${label}.contextManifest.activePlanRevision does not match input`,
+    );
+  }
+  const agentDigest = jsonDigest({
+    instructions: input.instructions,
+    model: input.model,
+    tools: input.tools,
+  });
+  const messagesDigest = jsonDigest(input.messages);
+  const toolsDigest = jsonDigest(input.tools);
+  const runtimeDigest = jsonDigest(input.runtimeContext);
+  const expected = [
+    {
+      digest: agentDigest,
+      disposition: "included",
+      id: `agent:${agentDigest}`,
+      kind: "agent",
+    },
+    {
+      digest: messagesDigest,
+      disposition: "included",
+      id: `messages:${messagesDigest}`,
+      kind: "messages",
+    },
+    activePlan === null
+      ? {
+          digest: null,
+          disposition: "excluded",
+          id: "active-plan:none",
+          kind: "active_plan",
+        }
+      : {
+          digest: jsonDigest(activePlan),
+          disposition: "included",
+          id: `plan:${String(activePlan.id)}:r${String(activePlan.revision)}`,
+          kind: "active_plan",
+        },
+    {
+      digest: toolsDigest,
+      disposition: "included",
+      id: `tools:${toolsDigest}`,
+      kind: "tools",
+    },
+    {
+      digest: runtimeDigest,
+      disposition: "included",
+      id: `runtime:${runtimeDigest}`,
+      kind: "runtime",
+    },
+  ] as const;
+  const sources = array(manifest.sources, `${label}.contextManifest.sources`);
+  if (sources.length !== expected.length) {
+    throw new SchemaValidationError(
+      `${label}.contextManifest.sources must account for every source`,
+    );
+  }
+  expected.forEach((expectedSource, index) => {
+    const source = object(
+      sources[index],
+      `${label}.contextManifest.sources[${index}]`,
+    );
+    if (
+      source.kind !== expectedSource.kind ||
+      source.id !== expectedSource.id ||
+      source.digest !== expectedSource.digest ||
+      source.disposition !== expectedSource.disposition
+    ) {
+      throw new SchemaValidationError(
+        `${label}.contextManifest.sources[${index}] does not match input`,
+      );
+    }
+  });
 }
 
 function assertThreadState(
@@ -233,6 +552,17 @@ function assertThreadState(
     assertModelMessage(message, `${label}.messages[${index}]`),
   );
   parseThreadMetrics(state.metrics, `${label}.metrics`);
+  if (state.planRepairAttempts !== undefined) {
+    const attempts = integer(
+      state.planRepairAttempts,
+      `${label}.planRepairAttempts`,
+    );
+    if (attempts < 0) {
+      throw new SchemaValidationError(
+        `${label}.planRepairAttempts must not be negative`,
+      );
+    }
+  }
   const pauseRequested = boolean(
     state.pauseRequested,
     `${label}.pauseRequested`,
@@ -427,6 +757,23 @@ function parseEffect(
         );
       }
     }
+    const hasRuntimeContext = input.runtimeContext !== undefined;
+    const hasContextManifest = input.contextManifest !== undefined;
+    if (hasRuntimeContext !== hasContextManifest) {
+      throw new SchemaValidationError(
+        `${label}.input runtimeContext and contextManifest must appear together`,
+      );
+    }
+    if (hasRuntimeContext) {
+      assertModelRuntimeContext(
+        input.runtimeContext,
+        `${label}.input.runtimeContext`,
+      );
+      assertContextManifest(
+        input.contextManifest,
+        `${label}.input.contextManifest`,
+      );
+    }
     const model = object(input.model, `${label}.input.model`);
     string(model.model, `${label}.input.model.model`);
     string(model.provider, `${label}.input.model.provider`);
@@ -467,6 +814,29 @@ function parseEffect(
     array(input.tools, `${label}.input.tools`).forEach((tool, index) =>
       assertToolDescriptor(tool, `${label}.input.tools[${index}]`),
     );
+    if (hasRuntimeContext) {
+      const manifest = object(
+        input.contextManifest,
+        `${label}.input.contextManifest`,
+      );
+      const expectedDigest = jsonDigest({
+        activePlan: input.activePlan,
+        instructions: input.instructions,
+        messages: input.messages,
+        model: input.model,
+        planControl: input.planControl,
+        planRejectionFeedback: input.planRejectionFeedback ?? null,
+        progressControl: input.progressControl,
+        runtime: input.runtimeContext,
+        tools: input.tools,
+      });
+      if (manifest.logicalRequestDigest !== expectedDigest) {
+        throw new SchemaValidationError(
+          `${label}.input.contextManifest.logicalRequestDigest does not match input`,
+        );
+      }
+      assertContextManifestMatchesInput(input, `${label}.input`);
+    }
     return cloneJson(item) as unknown as EffectRequest;
   }
 

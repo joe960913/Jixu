@@ -22,6 +22,23 @@ export {
   createInitialThreadState,
   parseModelResponse,
 } from "./domain.ts";
+export {
+  compileModelContext,
+  CONTEXT_COMPILER_VERSION,
+  MAX_PLAN_REPAIR_ATTEMPTS,
+  MODEL_CONTEXT_SCHEMA_VERSION,
+} from "./context.ts";
+export type {
+  ModelContextManifest,
+  ModelContextObligation,
+  ModelContextProhibition,
+  ModelContextReceipt,
+  ModelContextSourceKind,
+  ModelContextSourceManifest,
+  ModelContinuation,
+  ModelContinuationReason,
+  ModelRuntimeContext,
+} from "./context.ts";
 export type {
   AgentSnapshot,
   AssistantMessage,
@@ -111,6 +128,7 @@ export type {
   TokenMetrics,
 } from "./metrics.ts";
 export {
+  expandPlanUpdateProposals,
   materializePlanUpdates,
   parsePlanControlUpdate,
   parsePlanSnapshot,

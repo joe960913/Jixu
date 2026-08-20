@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.26
+**Version:** 0.4.27
 **Status:** normative, pre-release
 **Last updated:** 2026-08-20
 
@@ -485,9 +485,15 @@ Mode, which is a surface policy outside the core specification.
   State. It MUST offer `create` only when no active Plan exists, and MUST NOT
   offer `create` while a Plan is active. Revising, superseding, or abandoning
   an active Plan updates that Plan's history; Plan control MUST NOT create a
-  second active Plan. `abandon` MUST require only its operation discriminator;
-  the terminal revision MUST be derived from the accepted active Plan rather
-  than requiring the model to reproduce that Plan's fields and steps.
+  second active Plan. A `supersede` proposal MUST describe the replacement
+  Plan. The Kernel MUST atomically materialize that one proposal as a terminal
+  `superseded` revision of the previously active Plan followed by revision 1 of
+  the replacement Plan, preserving the previous Plan's identity, objective,
+  and history instead of rewriting them. `abandon` MUST require only its
+  operation discriminator; the terminal revision MUST be derived from the
+  accepted active Plan rather than requiring the model to reproduce that
+  Plan's fields and steps. Historical `supersede`-then-`create` proposal pairs
+  remain replayable, but new model-facing descriptors use the atomic form.
 - **JX-PLAN-009.** An invalid model-proposed Plan change MUST be durably recorded
   as `plan.rejected` before any ordinary Effects from the same model output are
   dispatched. This includes structurally malformed reserved Plan-control
@@ -498,14 +504,22 @@ Mode, which is a surface policy outside the core specification.
   only usable content, the empty assistant result MUST NOT settle the turn:
   after `plan.rejected`, the ordinary Agent loop MUST request the model again
   with bounded rejection feedback in request-varying runtime context. The
-  feedback MUST NOT mutate the stable Plan-control descriptor.
+  feedback MUST NOT mutate the stable Plan-control descriptor. At most one
+  automatic Plan-repair request may follow the same accepted input. A second
+  control-only rejection MUST preserve the last valid Plan, settle the Thread
+  to `idle` with typed `plan_repair_exhausted` State, and MUST NOT dispatch
+  another model request.
 - **JX-PLAN-010.** A successful model outcome containing one or more valid Plan
   changes but neither public text nor ordinary Tool calls MUST NOT settle the
   turn. The Plan changes MUST first commit as `plan.updated`; the ordinary Agent
   loop MUST then request the model again with the accepted Plan in context so
   the model can produce public text or act through an ordinary Tool. The
   control-only outcome MUST NOT append an empty assistant message to model
-  context, and a surface MUST NOT synthesize assistant prose in its place.
+  context, and a surface MUST NOT synthesize assistant prose in its place. The
+  follow-up request MUST carry an Event-derived accepted-Plan receipt and the
+  remaining obligation to respond or act, so the model can distinguish the
+  committed Plan change from an unhandled user request and does not repeat the
+  same Plan control without new evidence.
 
 ### 10.2 Context compilation and manifest
 
@@ -543,6 +557,16 @@ through an Effect.
   or provider-owned Thread authority, and MUST NOT affect Event reduction,
   replay, recovery, or model semantics. Unsupported providers MUST be able to
   omit them. Reported cache reads and writes remain durable accounting facts.
+- **JX-CTX-016.** Every model request created by the ordinary Agent loop MUST
+  contain a typed, provider-neutral Model Runtime Context compiled from Thread
+  State and its causing Event. It MUST identify why the model is being invoked,
+  the accepted causal receipt, remaining obligations, actions that must not be
+  repeated without new evidence, and any bounded repair budget. The Runtime
+  Context MUST be persisted inside `model.requested`, represented in the
+  request's redacted Context Manifest, and compile identically during Replay
+  and recovery. It is request context, not another Event history, lifecycle,
+  or source of authority. Provider adapters may format it but MUST NOT infer or
+  alter its semantics.
 
 ### 10.3 Adaptive compaction and Continuity Handoff
 
@@ -1184,15 +1208,19 @@ frameworks, and UI frameworks.
   scrolling and reports only observable high-level work phases. If the model
   instead returns only a valid Plan change, Replay observes `model.completed`,
   then `plan.updated`, then a new `model.requested` whose input contains the
-  accepted Plan and no synthetic empty assistant message. Only the later
+  accepted Plan, an accepted-Plan receipt, the remaining respond-or-act
+  obligation, and no synthetic empty assistant message. Only the later
   model-generated public text enters the transcript and settles the turn. A
   structurally or semantically invalid Plan-only control similarly produces
   `model.completed`, then `plan.rejected`, then a new `model.requested` whose
   request-varying runtime context contains bounded rejection feedback while its
   Plan-control descriptor remains stable; it does not produce `model.failed` or
-  retain an empty assistant message. Abandoning an active Plan requires only
-  the `abandon` operation and derives the terminal snapshot from that active
-  Plan.
+  retain an empty assistant message. A second invalid Plan-only response for
+  the same input produces no third model request and settles with
+  `plan_repair_exhausted`. A single atomic `supersede` proposal produces the
+  previous Plan's terminal revision followed by a new active Plan with a new
+  identity. Abandoning an active Plan requires only the `abandon` operation and
+  derives the terminal snapshot from that active Plan.
 - **JX-AC-032 — Transcript rendering stability.** A wide Markdown table renders
   complete left and right boundaries inside the transcript viewport. A burst of
   ordered output deltas is presented as coalesced text rather than one surface
@@ -1366,6 +1394,17 @@ frameworks, and UI frameworks.
   Harness path records one durable `web_search` receipt, Replay dispatches no
   request, and the Tool Center presents the network boundary without changing
   the current Thread's Agent snapshot.
+- **JX-AC-049 — Causally complete model continuation.** Deterministic fixtures
+  for input acceptance, accepted Plan control, rejected Plan control, and Tool
+  completion produce `model.requested` Effects with typed continuation reasons,
+  causal receipts, remaining obligations, do-not-repeat constraints, and the
+  applicable Plan-repair budget. Their redacted Context Manifests identify the
+  included Agent, message, Plan, Tool, and runtime sources with stable digests
+  and produce the same logical request digest during Replay and recovery.
+  OpenAI Chat Completions and Anthropic Messages format the same Runtime Context
+  semantics without changing the immutable Agent instructions. A historical
+  pending model request created by the former unbounded Plan-repair loop is
+  settled with typed `plan_repair_exhausted` instead of being redispatched.
 
 The minimum validation for a code change is targeted tests, typecheck, lint, and
 `git diff --check`. Release work also runs the complete acceptance suite and
@@ -1637,6 +1676,19 @@ configuration failure; configured network failures retain typed retryability.
 The Tool descriptor is independent of the credential value, and edited
 settings apply to a newly constructed Harness and Thread rather than mutating
 an existing Agent. Event and Reducer schema versions remain unchanged.
+
+Version 0.4.27 adds a typed provider-neutral Model Runtime Context and redacted
+Context Manifest to newly created model Effects. Accepted Plan-only controls,
+rejected Plan controls, input acceptance, and Tool completion carry explicit
+causal receipts and remaining obligations; provider adapters only format these
+State-derived semantics. A replacement `supersede` becomes one atomic model
+control while historical supersede/create pairs remain replayable. One
+automatic Plan repair is allowed per accepted input; a second control-only
+rejection settles with `plan_repair_exhausted`. Existing schema version 5 Events
+without Runtime Context, Manifest, or repair-attempt metadata remain replayable,
+and historical pending requests produced by the former unbounded loop settle
+before redispatch. Reducer version 12 invalidates disposable Checkpoints; no
+stored Thread migration or rewrite is required.
 
 ## 19. Implementation order
 
