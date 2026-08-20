@@ -4,18 +4,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { ToolExecutionError } from "@jixu/core";
-import type { ToolExecutionContext } from "@jixu/core";
+import {
+  parseToolOutputDelta,
+  TOOL_OUTPUT_SIGNAL_TYPE,
+  ToolExecutionError,
+} from "@jixu/core";
+import type { Signal, ToolExecutionContext } from "@jixu/core";
 
 import { createNodeTools } from "../src/index.ts";
 
-function context(cancellation = new AbortController().signal): ToolExecutionContext {
+function context(
+  cancellation = new AbortController().signal,
+  signals: ToolExecutionContext["signals"] = { emit() {} },
+): ToolExecutionContext {
   return {
     cancellation,
     effectId: "effect-1",
     idempotencyKey: "effect-1",
     threadId: "run-1",
-    signals: { emit() {} },
+    signals,
   };
 }
 
@@ -155,7 +162,7 @@ test("JX-AC-039 process scope gives file Tools the disclosed shell boundary", as
   }
 });
 
-test("JX-AC-039 JX-SEC-005 bash is bounded but remains explicitly unsandboxed", async () => {
+test("JX-AC-039 JX-AC-041 JX-SEC-005 bash output and live Signals share one bound", async () => {
   const fixture = await workspace();
   try {
     const tools = createNodeTools({
@@ -166,8 +173,16 @@ test("JX-AC-039 JX-SEC-005 bash is bounded but remains explicitly unsandboxed", 
     const input = tools.bash.parseInput({
       command: "printf '123456'; printf 'err' >&2; exit 3",
     });
+    const signals: Signal[] = [];
     const output = tools.bash.parseOutput(
-      await tools.bash.execute(input, context()),
+      await tools.bash.execute(
+        input,
+        context(new AbortController().signal, {
+          emit(signal) {
+            signals.push(signal);
+          },
+        }),
+      ),
     );
 
     assert.equal(output.exitCode, 3);
@@ -175,6 +190,18 @@ test("JX-AC-039 JX-SEC-005 bash is bounded but remains explicitly unsandboxed", 
     assert.equal(output.stderr, "");
     assert.equal(output.truncated, true);
     assert.equal(output.timedOut, false);
+    assert.ok(signals.length > 0);
+    assert.ok(signals.every((signal) => signal.type === TOOL_OUTPUT_SIGNAL_TYPE));
+    const deltas = signals.map((signal) => parseToolOutputDelta(signal.data));
+    assert.equal(deltas.map((delta) => delta.delta).join(""), "1234");
+    assert.ok(
+      deltas.every(
+        (delta) =>
+          delta.effectId === "effect-1" &&
+          delta.name === "bash" &&
+          delta.stream === "stdout",
+      ),
+    );
   } finally {
     await fixture.cleanup();
   }

@@ -121,6 +121,19 @@ async function inspectTarball(tarballPath, sourceManifest, sourceManifests) {
     assert.equal(path.endsWith(".tsbuildinfo"), false, `${manifest.name} packed ${path}`);
   }
 
+  if (manifest.name === "jixu") {
+    for (const path of [
+      "dist/tree-sitter-assets/bash/LICENSE",
+      "dist/tree-sitter-assets/bash/highlights.scm",
+      "dist/tree-sitter-assets/bash/tree-sitter-bash.wasm",
+      "dist/tree-sitter-assets/python/LICENSE",
+      "dist/tree-sitter-assets/python/highlights.scm",
+      "dist/tree-sitter-assets/python/tree-sitter-python.wasm",
+    ]) {
+      assert.ok(files.has(path), `${manifest.name} tarball misses ${path}`);
+    }
+  }
+
   const sha256 = digest("sha256", bytes, "hex");
   return {
     files: [...files.keys()].sort(),

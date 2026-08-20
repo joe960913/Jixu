@@ -44,19 +44,46 @@ export interface WorkStatus {
   readonly tone: JixuTone;
 }
 
-export type ToolOperationStatus = "failed" | "running" | "succeeded";
+export type ToolOperationStatus =
+  | "failed"
+  | "indeterminate"
+  | "running"
+  | "succeeded";
+
+export type ToolRequestDetail =
+  | {
+      readonly content: string;
+      readonly kind: "text";
+      readonly label: "ARGUMENTS" | "COMMAND" | "CONTENT" | "PATH";
+    }
+  | {
+      readonly after: string;
+      readonly before: string;
+      readonly kind: "replacement-diff";
+      readonly replaceAll: boolean;
+    };
 
 export interface ToolOperation {
   readonly detail?: string;
   readonly effectId: string;
   readonly name: string;
+  readonly outcome?: string;
+  readonly outcomeTone?: "success" | "warning";
+  readonly preview?: string;
+  readonly requestDetail: ToolRequestDetail;
   readonly status: ToolOperationStatus;
+}
+
+export interface ToolLiveOutput {
+  readonly text: string;
+  readonly truncated: boolean;
 }
 
 export interface TranscriptToolReceiptEntry {
   readonly id: number;
   readonly kind: "tool-receipts";
   readonly operations: readonly ToolOperation[];
+  readonly requestEventId: string;
 }
 
 export type TranscriptEntry =
@@ -82,6 +109,7 @@ export interface ThreadControllerSnapshot {
   readonly threadPickerOpen: boolean;
   readonly threads: readonly ThreadSummary[];
   readonly threadStatus: ThreadStatus | "none";
+  readonly toolLiveOutput: Readonly<Record<string, ToolLiveOutput>>;
   readonly toolOperations: readonly ToolOperation[];
   readonly transcript: readonly TranscriptEntry[];
   readonly workStatus: WorkStatus | null;
