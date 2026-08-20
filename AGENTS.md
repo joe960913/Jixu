@@ -114,6 +114,20 @@ churn without implementation evidence or a concrete user requirement.
 
 Before implementation, classify the change:
 
+### Scoped UI change
+
+A localized UI bug fix, interaction correction, copy/spacing/color polish, or
+component-level presentation change does not require a `SPEC.md` update or new
+stable `JX-*` requirement when it preserves public semantics, canonical
+concepts, architecture, persisted data, package APIs, and milestone scope.
+Treat these changes as implementation work even when the visible behavior is
+intentionally corrected.
+
+Update `SPEC.md` first only when UI work is a redesign or refactor-level change,
+changes the UI architecture or cross-screen interaction model, or materially
+changes a public promise or acceptance boundary. Do not create normative spec
+churn for routine UI iteration.
+
 ### Behavior or architecture change
 
 1. Update `SPEC.md` first.
@@ -139,6 +153,9 @@ At the start of substantive work, state:
 - files or packages expected to change;
 - important non-goals; and
 - validation commands.
+
+For a scoped UI change exempted by §5, requirement and acceptance IDs are
+optional when no existing ID directly governs the behavior.
 
 If evidence contradicts the spec, follow the evolution process in §5. Continue
 through the spec update and implementation when the correction stays within the
@@ -288,6 +305,11 @@ Use the local template in that directory and record:
 - technologies and language/runtime features used;
 - validation evidence, failures encountered, and lessons learned;
 - known limitations, deferred work, and the next stage boundary.
+
+Routine UI bug fixes, interaction details, and visual polish do not require a
+stage record. Create one for UI work only when it is a redesign or
+refactor-level change, or when it is part of a broader implementation milestone
+that independently requires a retrospective.
 
 These records are repository documentation and MAY be tracked, committed, and
 published with the rest of the project. They are explanatory rather than
