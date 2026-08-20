@@ -117,7 +117,16 @@ function runInPty(
         rejectPromise(new Error("Jixu executable did not quit within 15 seconds"));
         return;
       }
-      if (code !== 0) {
+      // Git for Windows winpty can assert while resizing its already-closed
+      // console. Accept only that exact adapter cleanup after Jixu emitted its
+      // normal exit wordmark; every child or startup failure still fails.
+      const winptyCleanupAfterJixuExit =
+        process.platform === "win32" &&
+        code === 3 &&
+        signal === null &&
+        output.includes("╚█████╔╝██║██╔╝ ██╗╚██████╔╝") &&
+        /Assertion failed:.*src\/libwinpty\/winpty\.cc/u.test(output);
+      if (code !== 0 && !winptyCleanupAfterJixuExit) {
         rejectPromise(
           new Error(
             `Jixu executable PTY smoke failed with code ${String(code)} signal ${String(signal)}\n${output}`,
