@@ -14,7 +14,10 @@ import type {
   WorkStatus,
 } from "./tui-model.ts";
 import { jixuTheme } from "./theme.ts";
-import { JixuCreationMark } from "./tui-creation-mark.tsx";
+import {
+  JixuCreationMark,
+  type JixuCreationMarkVariant,
+} from "./tui-creation-mark.tsx";
 import { iconForTool, JixuIcon } from "./tui-icons.tsx";
 import { createJixuMarkdownNodeRenderer } from "./tui-markdown.ts";
 import { JixuWordmark, ThinkingMotionText } from "./tui-motion.tsx";
@@ -511,11 +514,11 @@ function EphemeralAgentStatus({
 
 function EmptyState({
   configured,
-  showCreationMark,
+  creationMarkVariant,
   top,
 }: {
   configured: boolean;
-  showCreationMark: boolean;
+  creationMarkVariant: JixuCreationMarkVariant | null;
   top: number;
 }) {
   return (
@@ -526,9 +529,11 @@ function EmptyState({
         marginTop: top,
       }}
     >
-      {showCreationMark ? <JixuCreationMark /> : null}
+      {creationMarkVariant === null ? null : (
+        <JixuCreationMark variant={creationMarkVariant} />
+      )}
       <text fg={jixuTheme.brand}><strong>JIXU</strong></text>
-      <text fg={jixuTheme.text}>Agents that continue.</text>
+      <text fg={jixuTheme.text}>Pick up where you left off.</text>
       <text fg={jixuTheme.secondary}>
         {configured
           ? "Ask Jixu to work in this directory."
@@ -544,9 +549,9 @@ function EmptyState({
 
 export function Transcript({
   configured,
+  creationMarkVariant,
   emptyTop,
   motion,
-  showCreationMark,
   snapshot,
   expandedToolEffectIds,
   onToggleToolDetail,
@@ -554,9 +559,9 @@ export function Transcript({
   showAllToolOperations,
 }: {
   readonly configured: boolean;
+  readonly creationMarkVariant: JixuCreationMarkVariant | null;
   readonly emptyTop: number;
   readonly motion: boolean;
-  readonly showCreationMark: boolean;
   readonly snapshot: ThreadControllerSnapshot;
   readonly expandedToolEffectIds: ReadonlySet<string>;
   readonly onToggleToolDetail: (effectId: string) => void;
@@ -602,7 +607,7 @@ export function Transcript({
       {empty ? (
         <EmptyState
           configured={configured}
-          showCreationMark={showCreationMark}
+          creationMarkVariant={creationMarkVariant}
           top={emptyTop}
         />
       ) : null}

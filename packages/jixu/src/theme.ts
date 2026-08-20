@@ -13,4 +13,9 @@ export const jixuTheme = Object.freeze({
   warning: "#D8A34A",
 });
 
+export const jixuNipponColors = Object.freeze({
+  gofun: "#FFFFFB",
+  mizuasagi: "#66BAB7",
+});
+
 export type JixuTheme = typeof jixuTheme;

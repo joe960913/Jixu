@@ -9,6 +9,8 @@ import type {
 import { JixuIcon, type JixuIconName } from "./tui-icons.tsx";
 import type { JixuTone } from "./tui-model.ts";
 
+export const ATTENTION_STRIP_HEIGHT = 3;
+
 function truncate(value: string, maximum: number): string {
   if (value.length <= maximum) return value;
   return maximum <= 1 ? "…" : `${value.slice(0, maximum - 1)}…`;
@@ -207,7 +209,12 @@ export function AttentionStrip({
       border={["top"]}
       borderColor={jixuTheme.divider}
       id="attention-strip"
-      style={{ flexDirection: "column", flexShrink: 0, height: 3, width }}
+      style={{
+        flexDirection: "column",
+        flexShrink: 0,
+        height: ATTENTION_STRIP_HEIGHT,
+        width,
+      }}
     >
       <box style={{ flexDirection: "row", height: 1, overflow: "hidden", width }}>
         <text fg={jixuTheme.brand}> NOW </text>
