@@ -26,6 +26,10 @@ test("JX-AC-050 selects only the published OS, CPU, and libc targets", () => {
     "@jixu/cli-linux-x64",
   );
   assert.equal(
+    selectJixuCliTarget({ architecture: "x64", platform: "win32" })?.packageName,
+    "@jixu/cli-win32-x64",
+  );
+  assert.equal(
     selectJixuCliTarget({
       architecture: "x64",
       libc: "musl",
@@ -95,6 +99,31 @@ test("JX-AC-050 resolves and dispatches the compatible optional package", () => 
   );
   assert.equal(invocation?.options.shell, false);
   assert.equal(invocation?.options.stdio, "inherit");
+
+  const windowsTarget = selectJixuCliTarget({ architecture: "x64", platform: "win32" });
+  assert.ok(windowsTarget);
+  assert.equal(
+    resolveJixuCliBinary(
+      windowsTarget,
+      () => "/installed/node_modules/@jixu/cli-win32-x64/package.json",
+    ),
+    "/installed/node_modules/@jixu/cli-win32-x64/bin/jixu.exe",
+  );
+  assert.equal(
+    launchJixuCli({
+      args: ["--version"],
+      resolvePackage: () =>
+        "/installed/node_modules/@jixu/cli-win32-x64/package.json",
+      runtime: { architecture: "x64", platform: "win32" },
+      spawn,
+    }),
+    0,
+  );
+  assert.equal(
+    invocation?.command,
+    "/installed/node_modules/@jixu/cli-win32-x64/bin/jixu.exe",
+  );
+  assert.equal(invocation?.options.shell, false);
 });
 
 test("JX-AC-050 missing and unsupported native packages fail actionably", () => {
@@ -112,6 +141,6 @@ test("JX-AC-050 missing and unsupported native packages fail actionably", () => 
       launchJixuCli({
         runtime: { architecture: "arm64", platform: "win32" },
       }),
-    /Supported targets: darwin\/arm64, darwin\/x64, linux\/x64\/glibc/u,
+    /Supported targets: darwin\/arm64, darwin\/x64, linux\/x64\/glibc, win32\/x64/u,
   );
 });

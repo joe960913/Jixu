@@ -42,8 +42,8 @@ npx jixu
 # bunx jixu
 ```
 
-The initial native TUI targets are macOS arm64, macOS x64, and Linux x64
-with glibc. Bun is not required at runtime.
+The initial native TUI targets are macOS arm64, macOS x64, Linux x64 with
+glibc, and Windows x64. Bun is not required at runtime.
 
 After publication, install the Agent Framework packages separately when
 building an application:

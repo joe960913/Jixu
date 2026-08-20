@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import {
   currentJixuCliRuntime,
   describeJixuCliRuntime,
+  describeSupportedJixuCliTargets,
   selectJixuCliTarget,
   type JixuCliRuntime,
   type JixuCliTarget,
@@ -45,7 +46,7 @@ export function launchJixuCli({
   const target = selectJixuCliTarget(runtime);
   if (target === undefined) {
     throw new Error(
-      `Jixu does not publish a native executable for ${describeJixuCliRuntime(runtime)}. Supported targets: darwin/arm64, darwin/x64, linux/x64/glibc.`,
+      `Jixu does not publish a native executable for ${describeJixuCliRuntime(runtime)}. Supported targets: ${describeSupportedJixuCliTargets()}.`,
     );
   }
 

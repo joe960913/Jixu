@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { pack } from "@publint/pack";
 
-import { JIXU_CLI_TARGETS } from "../packages/jixu/src/cli-targets.ts";
+import {
+  currentJixuCliRuntime,
+  JIXU_CLI_TARGETS,
+  selectJixuCliTarget,
+} from "../packages/jixu/src/cli-targets.ts";
 import { runCommand } from "./lib/command.ts";
 import {
   buildPackageArtifacts,
@@ -20,6 +24,18 @@ const managers: readonly PackageManager[] = ["npm", "pnpm", "yarn", "bun"];
 const nodeFloorVersion = "22.19.0";
 const yarnVersion = "4.18.0";
 const typescriptCli = join(repositoryRoot, "node_modules", "typescript", "bin", "tsc");
+
+function consumerCandidates(
+  candidates: readonly PackageArtifactCandidate[],
+): readonly PackageArtifactCandidate[] {
+  const target = selectJixuCliTarget(currentJixuCliRuntime());
+  assert.ok(target, "package portability requires a supported host target");
+  return candidates.filter(
+    (candidate) =>
+      !candidate.manifest.name.startsWith("@jixu/cli-") ||
+      candidate.manifest.name === target.packageName,
+  );
+}
 
 async function resolveNodeFloor(): Promise<string> {
   const result = await runCommand(
@@ -138,6 +154,12 @@ async function writeConsumerFiles(
       pathToFileURL(candidate.tarballPath).href,
     ]),
   );
+  const installTarballs = Object.fromEntries(
+    consumerCandidates(candidates).map((candidate) => [
+      candidate.manifest.name,
+      pathToFileURL(candidate.tarballPath).href,
+    ]),
+  );
   const platformFixtureTarballs = join(
     root,
     ".platform-resolutions",
@@ -200,7 +222,7 @@ async function writeConsumerFiles(
         private: true,
         type: "module",
         ...(manager === "yarn" ? { packageManager: `yarn@${yarnVersion}` } : {}),
-        dependencies: tarballs,
+        dependencies: installTarballs,
         ...localResolution,
       },
       null,
@@ -284,15 +306,17 @@ async function verifyInstalledCli(
     ".bin",
     process.platform === "win32" ? "jixu.cmd" : "jixu",
   );
-  const version = await runCommand(executable, ["--version"], {
-    cwd: root,
-    env: environment,
-  });
+  const runInstalledCli = (args: readonly string[]) =>
+    process.platform === "win32"
+      ? runCommand(
+          process.env.ComSpec ?? "cmd.exe",
+          ["/d", "/s", "/c", "call", executable, ...args],
+          { cwd: root, env: environment },
+        )
+      : runCommand(executable, args, { cwd: root, env: environment });
+  const version = await runInstalledCli(["--version"]);
   assert.equal(version.stdout, jixu.manifest.version);
-  const help = await runCommand(executable, ["--help"], {
-    cwd: root,
-    env: environment,
-  });
+  const help = await runInstalledCli(["--help"]);
   assert.match(help.stdout, /Jixu — Continue durable Agent work/u);
   assert.doesNotMatch(help.stdout, /pnpm dev/u);
 
@@ -349,6 +373,7 @@ async function verifyManager(
         "    - current",
         "    - darwin",
         "    - linux",
+        "    - win32",
         "  cpu:",
         "    - current",
         "    - arm64",
@@ -372,7 +397,7 @@ async function verifyManager(
   };
   const [command, args] = installs[manager];
   await runCommand(command, args, { cwd: fixtureRoot, env: environment });
-  await verifyInstalledPackages(fixtureRoot, candidates);
+  await verifyInstalledPackages(fixtureRoot, consumerCandidates(candidates));
   await verifyInstalledCli(manager, fixtureRoot, candidates, environment);
   await runCommand(process.execPath, [typescriptCli, "--project", "tsconfig.json"], {
     cwd: fixtureRoot,
@@ -398,7 +423,18 @@ async function main(): Promise<void> {
   try {
     console.log("JX-AC-017 package-manager portability");
     console.log("Building and linting one authoritative tarball set...");
-    const candidates = await buildPackageArtifacts(tarballRoot);
+    const nativeRootIndex = process.argv.indexOf("--native-root");
+    const nativeArtifactsRoot =
+      nativeRootIndex === -1 ? undefined : process.argv[nativeRootIndex + 1];
+    if (nativeRootIndex !== -1) {
+      assert.ok(nativeArtifactsRoot, "--native-root requires a directory");
+    }
+    const candidates = await buildPackageArtifacts(
+      tarballRoot,
+      nativeArtifactsRoot === undefined
+        ? {}
+        : { nativeArtifactsRoot: resolve(repositoryRoot, nativeArtifactsRoot) },
+    );
     for (const candidate of candidates) {
       console.log(
         `  ✓ ${candidate.manifest.name}@${candidate.manifest.version} ${candidate.sha256.slice(0, 12)}`,
