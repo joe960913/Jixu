@@ -561,10 +561,6 @@ export function Setup({
                 label="SETTINGS"
                 value={wideChrome ? "~/.jixu/settings.json" : "settings.json"}
               />
-              <LabeledValue
-                label="API KEY"
-                value={wideChrome ? "~/.jixu/auth.json" : "auth.json"}
-              />
             </box>
           )}
           {wideChrome && <text selectable={false}>  </text>}
@@ -675,7 +671,7 @@ export function Setup({
 
         <SetupField
           active={focus === 3}
-          hint="SAVED SEPARATELY"
+          hint="SAVED IN SETTINGS.JSON"
           inputRef={apiKeyInput}
           label="API KEY"
           maxLength={8192}

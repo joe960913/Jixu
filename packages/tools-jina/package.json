@@ -1,0 +1,33 @@
+{
+  "name": "@jixu/tools-jina",
+  "version": "0.0.0",
+  "description": "Opt-in Jina-backed Web Search Tool for Jixu.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joe960913/Jixu.git",
+    "directory": "packages/tools-jina"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@jixu/core": "workspace:*"
+  }
+}

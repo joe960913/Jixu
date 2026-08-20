@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.25
+**Version:** 0.4.26
 **Status:** normative, pre-release
 **Last updated:** 2026-08-20
 
@@ -625,6 +625,17 @@ continue safely without treating the compacted text as Thread authority.
   `deny` denies the call, otherwise any `ask` asks, otherwise the call is
   allowed. The resolver MUST be pure, deterministic, and independent of UI or
   Driver I/O.
+- **JX-TOOL-010.** The first-party `web_search` Tool MUST use the Jina Search
+  API through one typed, idempotent Tool definition. It MUST accept one bounded
+  query plus optional result-count and site constraints, request JSON from the
+  official Jina Search endpoint, and normalize each result to a title, URL,
+  description, bounded page content, and truncation fact. The Tool MUST bound
+  upstream response bytes, per-result content, total durable output, result
+  count, and execution time before its output enters an Event or model request.
+  A missing Jina Key MUST fail deterministically before network dispatch and
+  identify `~/.jixu/settings.json` as the configuration surface. Credentials,
+  Authorization headers, and unbounded upstream bodies MUST NOT enter Tool
+  input, output, Events, Signals, errors, or receipts.
 
 ### 11.2 Skills
 
@@ -1019,9 +1030,18 @@ not own execution truth.
   actions. The decision MUST call the public Thread approval API and render from
   the resulting durable Events rather than dispatching a Tool directly from
   the TUI.
+- **JX-TUI-034.** Configuration MUST identify `~/.jixu/settings.json` as the
+  single local BYOK configuration file. Model connection values, enabled Tool
+  configuration, permission policy, and first-party Tool credentials all live
+  in that file; the reference application MUST NOT maintain or advertise a
+  separate `auth.json`. `web_search` MUST appear in the same Tool Center
+  catalogue and disclose its Jina-backed network boundary and configured or
+  missing-Key state. A settings change applies only when a new immutable Agent
+  and Harness are constructed; it MUST NOT mutate the selected Thread's Agent
+  snapshot or Driver closure in place.
 
-Configuration stores credentials separately from non-secret settings, uses
-restrictive POSIX permissions, and never records secrets in Thread data.
+Configuration uses one local BYOK settings file with restrictive POSIX
+permissions and never records secrets in Thread data.
 
 ## 15. Security
 
@@ -1041,6 +1061,12 @@ restrictive POSIX permissions, and never records secrets in Thread data.
   execution and the selected file scope. A rule or approval MAY reduce or grant
   a particular Tool dispatch, but MUST NOT be described as OS isolation,
   network isolation, or process containment.
+- **JX-SEC-008.** `settings.json` contains BYOK credentials and MUST be written
+  atomically with user-only POSIX permissions. Jina credentials MUST remain in
+  the Tool closure behind the Driver boundary. Durable failures MAY name the
+  settings path and missing field but MUST NOT contain the configured Key,
+  Authorization header, upstream request headers, or an upstream body that
+  could echo credentials.
 
 ## 16. Package boundaries
 
@@ -1051,6 +1077,7 @@ restrictive POSIX permissions, and never records secrets in Thread data.
 | `@jixu/store-jsonl` | Inspectable local JSONL Store. |
 | `@jixu/store-sqlite` | Local SQLite Store. |
 | `@jixu/tools-node` | Opt-in Node file and shell Tools. |
+| `@jixu/tools-jina` | Opt-in Jina-backed Web Search Tool. |
 | `@jixu/testkit` | Store and Driver contract suites. |
 | `jixu` | Public facade, CLI, configuration, and reference TUI. |
 
@@ -1273,11 +1300,11 @@ frameworks, and UI frameworks.
   accepts an arbitrary valid URL. Connecting persists only the resulting
   protocol and normalized Base URL through the existing configuration schema.
 - **JX-AC-043 — Configuration chrome semantics.** A wide Configuration frame
-  names `~/.jixu/settings.json` and `~/.jixu/auth.json` independently, labels
-  the workspace path, and presents Back, focus movement, selection, and Quit as
-  separately laid-out key/action groups with no punctuation separator standing
-  in for hierarchy. At 80x24 the same frame identifies `settings.json` and
-  `auth.json`, remains fully operable, and retains visible Back and Quit.
+  names `~/.jixu/settings.json` as the single local BYOK configuration file,
+  labels the workspace path, and presents Back, focus movement, selection, and
+  Quit as separately laid-out key/action groups with no punctuation separator
+  standing in for hierarchy. At 80x24 the same frame identifies
+  `settings.json`, remains fully operable, and retains visible Back and Quit.
 - **JX-AC-044 — CLI exit wordmark.** Both the TUI Quit action and `SIGINT`
   resolve the ordinary CLI shutdown, unmount and destroy the renderer, then
   write exactly one bounded `JIXU` wordmark to TTY stdout. `SIGTERM`, help,
@@ -1310,10 +1337,10 @@ frameworks, and UI frameworks.
   bottom edge, and lets the following live response continue from there.
 - **JX-AC-047 — Tool catalogue, policy, and durable approval.** The reference
   Agent is constructed from the enabled entries of one typed first-party Tool
-  catalogue. Settings schema v4 persists the enabled names, explicit file
-  scope, maintained permission profile, and ordered custom rules separately
-  from credentials; loading schema v3 migrates in place without a backup and
-  preserves its previously disclosed process-wide behavior. Unknown Tool names,
+  catalogue. Settings schema v5 persists the enabled names, explicit file
+  scope, maintained permission profile, ordered custom rules, and BYOK values
+  in one user-only file; loading schema v3 or v4 migrates in place without a
+  backup and preserves its previously disclosed process-wide behavior. Unknown Tool names,
   malformed rules, and unknown effects fail closed. Policy fixtures prove
   whole-value wildcard order and multi-resource deny precedence. An allowed
   Tool dispatches normally, a denied Tool records `tool.requested` then
@@ -1323,6 +1350,22 @@ frameworks, and UI frameworks.
   allow-once Event. Denial produces the ordinary Tool failure path. The
   Configuration Tool Center and workspace approval actions exercise these same
   public paths.
+- **JX-AC-048 — Single-file BYOK Jina Web Search.** Loading a schema v4
+  `settings.json` and schema v3 `auth.json` migrates the model Key, connection,
+  Tool selection, file scope, and permission rules atomically into schema v5
+  `settings.json`, adds an explicitly configured Jina Key without logging it,
+  and removes `auth.json` only after the consolidated write succeeds; no backup
+  is created. New saves produce only a user-readable, user-only
+  `settings.json`. A missing Jina Key invokes no fetch and returns the typed
+  setup path and explains that Jixu must be restarted before the next Thread.
+  A deterministic Jina fixture verifies Bearer authentication at the request
+  boundary without exposing the Key, normalized
+  search results with source URLs and page content, site and result-count
+  inputs, response and content truncation, timeout, cancellation, malformed
+  JSON, authentication, rate-limit, and upstream failure mapping. The ordinary
+  Harness path records one durable `web_search` receipt, Replay dispatches no
+  request, and the Tool Center presents the network boundary without changing
+  the current Thread's Agent snapshot.
 
 The minimum validation for a code change is targeted tests, typecheck, lint, and
 `git diff --check`. Release work also runs the complete acceptance suite and
@@ -1582,6 +1625,18 @@ balanced profile and workspace-bounded file Tools. Event schema version 5 gains
 additive approval Event types and remains replay-compatible. Reducer version 11
 invalidates disposable Checkpoints. This version does not add an OS sandbox:
 the unsandboxed shell and selected file scope remain explicitly disclosed.
+
+Version 0.4.26 consolidates local BYOK configuration into Settings schema v5
+and removes `auth.json` after an atomic in-place migration. The model Key and
+the first Jina Web Search Key live in `settings.json`, which remains user-only
+on POSIX; `JIXU_API_KEY` is no longer a credential fallback. The new
+idempotent `web_search` Tool calls Jina Search through a
+bounded first-party adapter and records normalized, source-linked, truncated
+results through the existing Tool Event path. A missing Key is a deterministic
+configuration failure; configured network failures retain typed retryability.
+The Tool descriptor is independent of the credential value, and edited
+settings apply to a newly constructed Harness and Thread rather than mutating
+an existing Agent. Event and Reducer schema versions remain unchanged.
 
 ## 19. Implementation order
 

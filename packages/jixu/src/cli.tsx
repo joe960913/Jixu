@@ -6,6 +6,7 @@ import {
   createLLMModelDriver,
 } from "@jixu/llm";
 import { JsonlEventStore } from "@jixu/store-jsonl";
+import { createJinaWebSearchTool } from "@jixu/tools-jina";
 import { createNodeTools } from "@jixu/tools-node";
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
@@ -45,7 +46,6 @@ Environment:
   JIXU_API               Prefill openai-chat-completions or anthropic-messages
   JIXU_BASE_URL          Prefill the selected protocol API root
   JIXU_MODEL             Prefill the model ID
-  JIXU_API_KEY           Prefill credentials when auth.json has none
   JIXU_HOME              Override the global config directory
   JIXU_MOTION            Set to off for a static execution indicator
 
@@ -158,7 +158,7 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
     : new JixuConfigStore(resolve(process.env.JIXU_HOME));
   const stored = await configStore.load();
   const selectedApi = options.api ?? stored.api ?? "openai-chat-completions";
-  const apiKey = stored.apiKey ?? process.env.JIXU_API_KEY;
+  const apiKey = stored.apiKey;
   const baseUrl = options.baseUrl ?? stored.baseUrl;
   const model = options.model ?? stored.model;
   const autoConnect =
@@ -169,10 +169,22 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
     options.api === undefined &&
     options.baseUrl === undefined &&
     options.model === undefined;
-  const toolCatalogue = createNodeTools({
-    filesystemScope: stored.tools.fileScope,
-    root: options.root,
-  }).all;
+  const createToolCatalogue = (config: JixuConnectionConfig["tools"]) => [
+    ...createNodeTools({
+      filesystemScope: config.fileScope,
+      root: options.root,
+    }).all,
+    createJinaWebSearchTool({
+      ...(config.webSearch.apiKey === undefined
+        ? {}
+        : { apiKey: config.webSearch.apiKey }),
+      settingsPath:
+        process.env.JIXU_HOME === undefined
+          ? "~/.jixu/settings.json"
+          : configStore.settingsPath,
+    }),
+  ];
+  const toolCatalogue = createToolCatalogue(stored.tools);
 
   let exitReason: JixuExitReason | null = null;
   let finish!: () => void;
@@ -189,10 +201,7 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
     controls: { readonly onConfigure: () => void; readonly onQuit: () => void },
   ) => {
     await configStore.saveConnection(config);
-    const availableTools = createNodeTools({
-      filesystemScope: config.tools.fileScope,
-      root: options.root,
-    }).all;
+    const availableTools = createToolCatalogue(config.tools);
     const toolsByName = new Map(
       availableTools.map((tool) => [tool.descriptor.name, tool] as const),
     );

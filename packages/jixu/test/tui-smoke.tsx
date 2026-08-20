@@ -8,6 +8,7 @@ import {
   TOOL_OUTPUT_SIGNAL_TYPE,
 } from "@jixu/core";
 import type { ModelDriver } from "@jixu/core";
+import { createJinaWebSearchTool } from "@jixu/tools-jina";
 import { createNodeTools } from "@jixu/tools-node";
 import {
   BoxRenderable,
@@ -624,7 +625,10 @@ const harness = createHarness({
 let connected: JixuConnectionConfig | null = null;
 const activeController: { current: ThreadController | null } = { current: null };
 const secret = "openrouter-secret-fixture";
-const toolCatalogue = createNodeTools({ root: process.cwd() }).all;
+const toolCatalogue = [
+  ...createNodeTools({ root: process.cwd() }).all,
+  createJinaWebSearchTool(),
+];
 
 const parserRegistration = await registerJixuCodeParsers();
 assert.equal(parserRegistration.status, "registered");
@@ -818,7 +822,7 @@ try {
   assert.match(configurationFrame, /Groq/);
   assert.match(configurationFrame, /Custom/);
   assert.match(configurationFrame, /SETTINGS ~\/\.jixu\/settings\.json/);
-  assert.match(configurationFrame, /API KEY ~\/\.jixu\/auth\.json/);
+  assert.match(configurationFrame, /API KEY\s+SAVED IN SETTINGS\.JSON/);
   assert.match(configurationFrame, /Esc Back/);
   assert.match(configurationFrame, /Workspace \/workspace/);
   assert.match(configurationFrame, /Ctrl\+C Quit/);
@@ -1864,6 +1868,8 @@ try {
   assert.match(toolCenterFrame, /write/);
   assert.match(toolCenterFrame, /edit/);
   assert.match(toolCenterFrame, /bash/);
+  assert.match(toolCenterFrame, /web_search/);
+  assert.match(toolCenterFrame, /Jina key missing/);
   assert.match(toolCenterFrame, /not OS-sandboxed/);
 
   await act(async () => {

@@ -90,7 +90,11 @@ function ToolRow({
   const enabled = settings.enabled.includes(name);
   const effect = effectiveJixuToolPermission(settings, name);
   const boundary =
-    name === "bash"
+    name === "web_search"
+      ? settings.webSearch.apiKey === undefined
+        ? "Jina key missing"
+        : "Jina configured"
+      : name === "bash"
       ? "process access"
       : settings.fileScope === "workspace"
         ? "workspace only"
@@ -293,6 +297,11 @@ export function ToolCenter({
       <text fg={jixuTheme.warning} selectable={false}>
         bash is not OS-sandboxed. ALLOW/ASK/DENY controls dispatch, not process reach.
       </text>
+      {value.webSearch.apiKey === undefined && (
+        <text fg={jixuTheme.info} selectable={false}>
+          Add tools.webSearch.apiKey to ~/.jixu/settings.json, restart, then create a Thread.
+        </text>
+      )}
       <box style={{ flexDirection: "row", justifyContent: "space-between" }}>
         <text fg={error === null ? jixuTheme.secondary : jixuTheme.danger} selectable={false}>
           {error ?? "Arrows Move/Change    Space Enable    Enter Change    Esc Connection"}

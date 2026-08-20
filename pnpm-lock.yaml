@@ -41,6 +41,9 @@ importers:
       '@jixu/store-jsonl':
         specifier: workspace:*
         version: link:../store-jsonl
+      '@jixu/tools-jina':
+        specifier: workspace:*
+        version: link:../tools-jina
       '@jixu/tools-node':
         specifier: workspace:*
         version: link:../tools-node
@@ -82,6 +85,12 @@ importers:
         version: link:../core
 
   packages/testkit:
+    dependencies:
+      '@jixu/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/tools-jina:
     dependencies:
       '@jixu/core':
         specifier: workspace:*
