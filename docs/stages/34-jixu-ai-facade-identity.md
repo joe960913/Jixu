@@ -4,7 +4,7 @@
 | --- | --- |
 | 日期 | 2026-08-21 |
 | Milestone | First npm beta |
-| 状态 | Completed（本地验收） |
+| 状态 | Completed（已发布） |
 | 关联需求 | `JX-CLI-001`、`JX-CLI-005` |
 | 关联验收 | `JX-AC-017`、`JX-AC-050`、`JX-AC-051` |
 
@@ -101,6 +101,13 @@ npm package metadata、pnpm workspace filters、exact-version optional dependenc
 
 - build、typecheck、core architecture lint 和 `git diff --check` 通过。
 - `JIXU_PUBLIC_RELEASE=1 pnpm run pack:packages` 生成 `jixu-ai@0.1.0-beta.0` host candidate，并保留相同的八个 host-visible `jixu-*` candidates。
+- GitHub Actions run `32421762143` 在 source commit `c9c41647d5f3dc8bc6fc506b65c6a84f2ac18a1d` 上完成 macOS arm64、macOS x64、Linux x64 target jobs、聚合打包和 Linux clean-consumer verification。
+
+### Registry acceptance
+
+- `npm publish --access public --tag beta --ignore-scripts` 成功写入 `jixu-ai@0.1.0-beta.0`。
+- registry metadata 确认 `bin.jixu`、一个 direct dependency 和三个 exact-version native optional dependencies 与 source manifest 一致。
+- 已发布 tarball 的 SHA-512 integrity 为 `sha512-lD8VGgeoph4dKYVb+pyzzba9fxl1RYaT+wiOtdIutIR10ZJIS7BReHcsV8U17kKke5QlSoPHKAfo8vSxieG9cA==`，与通过四包管理器 clean-consumer acceptance 的本地 tarball 完全一致；因此没有为重复验证重新下载 registry tarball。
 
 ### 关键断言
 
@@ -112,17 +119,16 @@ npm package metadata、pnpm workspace filters、exact-version optional dependenc
 
 npm 的未注册查询与 `npm publish --dry-run` 都不足以证明一个 unscoped 新名称最终可写；package-similarity protection 只在真实 registry write 中返回。首次公开 facade 必须把真实 write 视为独立 acceptance boundary，并在失败后避免盲目重试。
 
+首次发布虽然显式使用了 `--tag beta`，registry 仍补充了指向唯一版本的 `latest`。尝试移除时 registry 返回 `E400`；公开 metadata contract 要求 package 的 `dist-tags` 至少存在 `latest`。当前 `beta` 和 `latest` 因而都指向语义上仍为 prerelease 的 `0.1.0-beta.0`，README 继续明确使用 `@beta`。
+
 ## 8. 已知限制与风险
 
-- 本地只能生成和执行 macOS arm64 candidate；macOS x64 与 Linux x64 必须继续由 target runners 重新聚合。
-- `jixu-ai` 尚需通过真实 npm write；未注册状态不能替代发布成功证据。
 - macOS beta native packages 保持 ad-hoc signature，不声明 Developer ID、notarization 或 Gatekeeper trust。
+- Windows 不在支持的平台集合内。
 
 ## 9. 下一阶段入口
 
-推送当前提交，运行三平台 release candidate matrix。只发布聚合产物中的
-`jixu-ai@0.1.0-beta.0` 到 `beta`，然后从 registry 做 clean install、`jixu --version`、
-help 和 facade import 验收；已发布的十个依赖包不重复发布。
+继续收集 beta 用户对真实 `jixu` TUI 与 Agent Framework 路径的反馈；稳定版前重新确认版本、macOS 签名政策和 release acceptance，不重复发布已存在的 immutable versions。
 
 ## 10. 文件索引
 
