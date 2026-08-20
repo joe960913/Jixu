@@ -4,7 +4,7 @@
 | --- | --- |
 | 日期 | 2026-08-21 |
 | Milestone | First npm beta follow-up |
-| 状态 | In progress |
+| 状态 | Completed |
 | 关联需求 | `JX-CLI-001`、`JX-CLI-005` |
 | 关联验收 | `JX-AC-050`、`JX-AC-051` |
 
@@ -59,13 +59,19 @@ npm package files、Publint pack inspection、SHA-256/SHA-512 artifact manifests
 
 ## 6. 验证证据
 
-待本地 release suite、三平台 matrix、npm write 和公开 metadata 验收完成后补充。
+- `pnpm run check`：81/81 Node tests、typecheck、lint 和 OpenTUI smoke 通过。
+- streaming frame acceptance 使用实际观察 gate 后连续运行 10/10 通过，移除 Linux runner 的毫秒级竞态。
+- facade-only acceptance 从候选 tarball 安装，其余依赖从 npm registry 精确解析为 `0.1.0-beta.0`；README、public import、native `--version` 与 help 均通过。
+- 最终 `jixu-ai@0.1.0-beta.2` tarball 为 315.0 kB、81 files，不包含 `dist/jixu`，SHA-512 integrity 为 `sha512-1TMCovs1LkLLD5U4EErBzBnYdZLXP8B+thmHsQdIPJBxPPETj8ipN2ehMH52h/YdpfqWPlYwmlbyBmyl8ZL8xA==`。
+- npm public metadata 已确认 README 可见，`beta` 与 `latest` 均指向 `0.1.0-beta.2`。
 
 ## 7. 遇到的问题与经验
 
 README 是公开包的核心入口，必须像 executable、types 和 licenses 一样成为 release-blocking artifact assertion，不能只依赖仓库页面人工检查。
 
 原全套 portability fixture 会同时安装所有 workspace tarballs，因此掩盖了 facade 的未声明 runtime imports。facade-only acceptance 必须只安装 facade candidate，让其余依赖从真实 registry 按 packed exact versions 解析。
+
+`beta.1` 先发布到 `beta` 后再移动 `latest`，npm 没有重新投影顶层 README。`beta.2` 因此直接发布到 `latest`，确认 README 后再同步 `beta`；只移动 dist-tag 不能替代 README projection acceptance。
 
 ## 8. 已知限制与风险
 
@@ -74,7 +80,7 @@ README 是公开包的核心入口，必须像 executable、types 和 licenses �
 
 ## 9. 下一阶段入口
 
-完成 facade-only `beta.2` 发布后，从 npm public metadata 确认 README、版本、dist-tags 和 tarball integrity。
+继续收集 npm 安装与真实 TUI 启动反馈；只有 native bytes、target catalogue 或 launcher compatibility 改变时才运行完整三平台矩阵。
 
 ## 10. 文件索引
 
