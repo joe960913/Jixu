@@ -39,14 +39,20 @@ interface CliOptions {
   readonly help: boolean;
   readonly model?: string;
   readonly root: string;
+  readonly version: boolean;
 }
 
 const MODEL_DRIVER_ID = "configured-model";
+const JIXU_VERSION = process.env.JIXU_VERSION ?? "0.0.0-dev";
 
-const HELP = `Jixu — Pick up where you left off.
+const HELP = `Jixu — Continue durable Agent work in your terminal.
 
 Usage:
   jixu [--api openai-chat-completions|anthropic-messages] [--base-url URL] [--model MODEL] [--root PATH]
+
+Options:
+  -h, --help             Show help
+  -v, --version          Show the installed version
 
 Environment:
   JIXU_API               Prefill openai-chat-completions or anthropic-messages
@@ -55,9 +61,6 @@ Environment:
   JIXU_HOME              Override the global config directory
   JIXU_MOTION            Set to off to disable optional presentation motion
 
-Examples:
-  pnpm dev
-  pnpm dev -- --api anthropic-messages --base-url https://api.anthropic.com
 `;
 
 function api(value: string | undefined): JixuApi | undefined {
@@ -88,11 +91,16 @@ export function parseCliOptions(
   let selectedModel = environment.JIXU_MODEL;
   let root = process.cwd();
   let help = false;
+  let version = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === "--help" || argument === "-h") {
       help = true;
+      continue;
+    }
+    if (argument === "--version" || argument === "-v") {
+      version = true;
       continue;
     }
     if (argument === "--api") {
@@ -137,6 +145,7 @@ export function parseCliOptions(
   return {
     help,
     root: resolve(root),
+    version,
     ...(selectedApi === undefined
       ? {}
       : { api: selectedApi }),
@@ -149,6 +158,10 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
   const options = parseCliOptions(args);
   if (options.help) {
     process.stdout.write(HELP);
+    return;
+  }
+  if (options.version) {
+    process.stdout.write(`${JIXU_VERSION}\n`);
     return;
   }
 
@@ -298,4 +311,10 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
   if (exitOutput.length > 0) process.stdout.write(exitOutput);
 }
 
-await runCli();
+try {
+  await runCli();
+} catch (error) {
+  const message = error instanceof Error ? error.message : "Jixu failed to start.";
+  process.stderr.write(`${message}\n`);
+  process.exitCode = 1;
+}

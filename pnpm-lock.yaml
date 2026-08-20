@@ -27,6 +27,12 @@ importers:
         specifier: 6.0.3
         version: 6.0.3
 
+  packages/cli-darwin-arm64: {}
+
+  packages/cli-darwin-x64: {}
+
+  packages/cli-linux-x64: {}
+
   packages/core: {}
 
   packages/jixu:
@@ -62,6 +68,16 @@ importers:
       ws:
         specifier: 8.21.3
         version: 8.21.3
+    optionalDependencies:
+      '@jixu/cli-darwin-arm64':
+        specifier: workspace:*
+        version: link:../cli-darwin-arm64
+      '@jixu/cli-darwin-x64':
+        specifier: workspace:*
+        version: link:../cli-darwin-x64
+      '@jixu/cli-linux-x64':
+        specifier: workspace:*
+        version: link:../cli-linux-x64
 
   packages/llm:
     dependencies:
