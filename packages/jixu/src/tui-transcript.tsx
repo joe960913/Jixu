@@ -196,6 +196,33 @@ function contentLineCount(content: string): number {
   return Math.max(1, content.split("\n").length);
 }
 
+function stopNestedVerticalScroll(
+  event: OpenTUIMouseEvent,
+  scrollbox: ScrollBoxRenderable | null,
+): void {
+  if (scrollbox === null) return;
+  let direction = event.scroll?.direction;
+  if (event.modifiers.shift) {
+    direction = direction === "up"
+      ? "left"
+      : direction === "down"
+        ? "right"
+        : direction === "left"
+          ? "up"
+          : "down";
+  }
+  const maxScrollTop = Math.max(
+    0,
+    scrollbox.scrollHeight - scrollbox.viewport.height,
+  );
+  if (
+    (direction === "up" && scrollbox.scrollTop > 0) ||
+    (direction === "down" && scrollbox.scrollTop < maxScrollTop)
+  ) {
+    event.stopPropagation();
+  }
+}
+
 function requestDetailLineCount(operation: ToolOperation): number {
   const detail = operation.requestDetail;
   return detail.kind === "replacement-diff"
@@ -234,6 +261,7 @@ function ToolDetail({
   readonly operation: ToolOperation;
   readonly transient: ToolLiveOutput | undefined;
 }) {
+  const scrollbox = useRef<ScrollBoxRenderable>(null);
   const preview = transient?.text ?? (expanded ? operation.preview : undefined);
   const previewText = preview?.replace(/\n+$/gu, "");
   if (!expanded && (previewText === undefined || previewText.length === 0)) {
@@ -296,7 +324,11 @@ function ToolDetail({
   }
   return (
     <scrollbox
+      ref={scrollbox}
       id={`tool-detail-${operation.effectId}`}
+      onMouseScroll={(event) => {
+        stopNestedVerticalScroll(event, scrollbox.current);
+      }}
       scrollY
       style={{
         flexDirection: "column",

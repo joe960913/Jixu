@@ -1,7 +1,17 @@
 {
   "name": "jixu-ai",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "The Jixu Agent Framework facade and installable TUI.",
+  "keywords": [
+    "ai-agent",
+    "agent-framework",
+    "single-agent",
+    "durable-execution",
+    "event-sourcing",
+    "tui",
+    "cli",
+    "typescript"
+  ],
   "type": "module",
   "license": "MIT",
   "repository": {

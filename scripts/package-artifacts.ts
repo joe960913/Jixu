@@ -33,6 +33,7 @@ interface PackageManifest {
   readonly files?: readonly string[];
   readonly libc?: readonly string[];
   readonly license?: string;
+  readonly keywords?: readonly string[];
   readonly main?: string;
   readonly name: string;
   readonly optionalDependencies?: Readonly<Record<string, string>>;
@@ -179,6 +180,7 @@ function releaseFields(manifest: PackageManifest): Readonly<Record<string, unkno
     engines: manifest.engines,
     exports: manifest.exports,
     files: manifest.files,
+    keywords: manifest.keywords,
     libc: manifest.libc,
     license: manifest.license,
     main: manifest.main,
