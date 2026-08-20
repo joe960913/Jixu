@@ -1,6 +1,6 @@
 {
   "name": "jixu-core",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.0",
   "description": "Durable single-Agent Harness and Thread kernel for Jixu.",
   "type": "module",
   "license": "MIT",

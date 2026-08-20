@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.31
+**Version:** 0.4.32
 **Status:** normative, pre-release
 **Last updated:** 2026-08-21
 
@@ -1138,11 +1138,16 @@ implement another TUI, Harness, or Thread lifecycle.
   executable with the matching OpenTUI native package and embedded runtime
   assets. The initial pre-release target set is macOS arm64, macOS x64, and
   Linux x64 with glibc. Other targets are not part of this release line.
-- **JX-CLI-005.** `jixu-ai` and every platform package in one release MUST have
-  the same exact version. Platform package metadata MUST fail closed for a
-  mismatched OS, CPU, or libc. A release manifest MUST record the target,
-  package, executable name, byte length, and SHA-256 digest of every native
-  artifact before publication.
+- **JX-CLI-005.** Platform packages produced from one native artifact set MUST
+  have the same exact version. `jixu-ai` MAY advance independently for a
+  facade-only documentation or packaging correction when its launcher target
+  catalogue and native bytes are unchanged and its dependencies and
+  `optionalDependencies` resolve to already published exact versions. Any
+  native-byte, target, or launcher-compatibility change MUST publish and
+  target-test a new complete platform set. Platform package metadata MUST fail
+  closed for a mismatched OS, CPU, or libc. A native release manifest MUST
+  record the target, package, executable name, byte length, and SHA-256 digest
+  of every native artifact before publication.
 - **JX-CLI-006.** The npm launcher MAY require the package Node.js floor, but
   a selected standalone executable MUST require neither Node.js nor Bun at
   runtime. Future GitHub Release or Homebrew distribution MUST reuse the exact
@@ -1457,10 +1462,13 @@ implement another TUI, Harness, or Thread lifecycle.
   one target-compatible platform artifact install in clean npm, pnpm, Yarn,
   and Bun consumers with dependency lifecycle scripts disabled. Their package
   execution path invokes the packed `jixu-ai` launcher, selects the compatible
-  optional package, and returns the artifact's exact version and production
-  help text. Omitting the compatible optional package and selecting an
-  unsupported OS, CPU, or libc each produce a bounded actionable failure
-  without a network request or source build.
+  optional package, and returns the selected native artifact's exact version
+  and production help text. A facade-only release additionally installs from
+  its candidate tarball against the exact already published dependency set and
+  verifies its README, public import, selected native version, and help path.
+  Omitting the compatible optional package and selecting an unsupported OS,
+  CPU, or libc each produce a bounded actionable failure without a network
+  request or source build.
 - **JX-AC-051 — Standalone reference TUI.** On every advertised target, the
   exact signed or native release candidate starts from a clean directory and
   clean Jixu home without Node.js or Bun, initializes the real OpenTUI renderer,
@@ -1787,6 +1795,15 @@ was never published, so there is no facade package migration or compatibility
 alias. This correction changes package metadata, consumer imports, and install
 documentation only; it adds no Thread, Event, State, configuration, or
 stored-data migration.
+
+Version 0.4.32 allows a facade-only immutable release to reuse an already
+published exact native and Framework dependency set when only package
+documentation or packaging changes. This avoids rebuilding unchanged native
+bytes while keeping native releases fail-closed: any native, target, or
+launcher-compatibility change still requires a complete target-tested platform
+set. `jixu-ai@0.1.0-beta.1` therefore adds its missing npm README while
+depending exactly on the published `0.1.0-beta.0` packages. No runtime API,
+Thread data, Event schema, or native executable changes.
 
 ## 19. Implementation order
 

@@ -18,7 +18,8 @@
 
 - 为 `jixu-ai` 增加简洁、独立且适合 npm 展示的英文 README。
 - 将 README 纳入 facade package files，并把缺失检查加入正式 pack pipeline。
-- 按 fixed-version policy 将全部 11 个公开包统一升级到 `0.1.0-beta.1`。
+- 仅将 facade 升级到 `0.1.0-beta.1`，精确复用已经发布和验证的 `0.1.0-beta.0` Framework 与 native packages。
+- 将公开 facade import 实际需要的 `jixu-tools-jina` 与 `jixu-tools-node` 从开发依赖提升为 runtime dependencies。
 
 ### 本阶段明确不做
 
@@ -35,22 +36,22 @@ npm package page 必须由实际发布 tarball 自足地提供 README，不能�
 
 - 只依赖仓库根 README：npm 从 package root 打包，不会自动包含。
 - 重新写入 `beta.0`：npm 不允许覆盖已发布的相同 name/version。
-- 只升级 facade：会破坏当前所有公开包共享 exact version 的 release invariant。
+- 整套 11 包升级：安全但会为纯 README 修复重复构建和发布未变化的 native bytes。
 
 ### 主要 trade-off
 
-为保持 release model 简单和 fail-closed，本次需要重新生成并发布未发生业务代码变化的 Framework 与 native packages。
+facade 与 native package version 不再强制相同；代价是 `jixu --version` 表示实际执行的 native artifact version，而 npm facade 有自己的 packaging version。所有依赖仍使用 exact version，native 变化仍强制完整矩阵。
 
 ## 3. 架构与概念
 
-README 只描述既有 `jixu-ai -> bin.jixu -> native package` 入口，不增加运行时概念。package manifests 继续是版本权威，packer 继续机械解析 workspace dependencies 为相同 exact version。
+README 只描述既有 `jixu-ai -> bin.jixu -> native package` 入口，不增加运行时概念。各 package manifest 是自身版本权威，packer 机械解析 workspace dependencies 为对应 dependency manifest 的 exact version。
 
 ## 4. 实现方式
 
 - `packages/jixu/README.md` 提供 npm package 文档。
 - `packages/jixu/package.json` 显式声明 README。
 - `scripts/package-artifacts.ts` 在正式 tarball inspection 中 fail closed。
-- root 与 11 个公开 package manifests 共享 `0.1.0-beta.1`。
+- facade-only pack path 不构建 native bytes，只发布 `jixu-ai` candidate，并针对公开的 exact dependency set 做干净 npm 安装验收。
 
 ## 5. 使用的技术
 
@@ -64,6 +65,8 @@ npm package files、Publint pack inspection、SHA-256/SHA-512 artifact manifests
 
 README 是公开包的核心入口，必须像 executable、types 和 licenses 一样成为 release-blocking artifact assertion，不能只依赖仓库页面人工检查。
 
+原全套 portability fixture 会同时安装所有 workspace tarballs，因此掩盖了 facade 的未声明 runtime imports。facade-only acceptance 必须只安装 facade candidate，让其余依赖从真实 registry 按 packed exact versions 解析。
+
 ## 8. 已知限制与风险
 
 - macOS beta native packages继续使用 ad-hoc signature。
@@ -71,7 +74,7 @@ README 是公开包的核心入口，必须像 executable、types 和 licenses �
 
 ## 9. 下一阶段入口
 
-完成 `beta.1` 发布后，从 npm public metadata 确认 README、版本、dist-tags 和 tarball integrity。
+完成 facade-only `beta.1` 发布后，从 npm public metadata 确认 README、版本、dist-tags 和 tarball integrity。
 
 ## 10. 文件索引
 

@@ -40,6 +40,12 @@ importers:
       jixu-core:
         specifier: workspace:*
         version: link:../core
+      jixu-tools-jina:
+        specifier: workspace:*
+        version: link:../tools-jina
+      jixu-tools-node:
+        specifier: workspace:*
+        version: link:../tools-node
     devDependencies:
       '@opentui/core':
         specifier: 0.5.4
@@ -53,12 +59,6 @@ importers:
       jixu-store-jsonl:
         specifier: workspace:*
         version: link:../store-jsonl
-      jixu-tools-jina:
-        specifier: workspace:*
-        version: link:../tools-jina
-      jixu-tools-node:
-        specifier: workspace:*
-        version: link:../tools-node
       react:
         specifier: 19.2.8
         version: 19.2.8
