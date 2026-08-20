@@ -25,7 +25,6 @@ export interface AttentionPlan {
   readonly detail: string;
   readonly icon: JixuIconName;
   readonly label: string;
-  readonly revision?: number;
   readonly steps: readonly AttentionPlanStep[];
 }
 
@@ -155,7 +154,6 @@ function planModel(snapshot: ThreadControllerSnapshot): AttentionPlan {
       "Plan is active.",
     icon: "plan",
     label: snapshot.activePlan.objective,
-    revision: snapshot.activePlan.revision,
     steps: snapshot.activePlan.steps.map((step) => ({
       description: step.description,
       id: step.id,

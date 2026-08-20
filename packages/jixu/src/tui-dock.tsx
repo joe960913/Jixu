@@ -66,7 +66,6 @@ function PlanStrip({
         <box style={{ flexDirection: "row", height: 1 }}>
           <text fg={jixuTheme.warning}>
             <strong>PLAN</strong>
-            <span fg={jixuTheme.secondary}> r{plan.revision}</span>
           </text>
         </box>
         <text fg={jixuTheme.secondary}>{truncate(plan.objective, labelWidth - 2)}</text>

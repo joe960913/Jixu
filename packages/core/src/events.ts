@@ -2,6 +2,7 @@ import type {
   AgentSnapshot,
   DriverError,
   ModelResponse,
+  PendingPlanRejection,
 } from "./domain.ts";
 import type {
   ModelGenerateEffect,
@@ -35,6 +36,7 @@ export interface ThreadEventPayloads {
   readonly "model.completed": {
     readonly accounting: ModelAccounting;
     readonly effectId: string;
+    readonly planRejections?: readonly PendingPlanRejection[];
     readonly response: ModelResponse;
   };
   readonly "model.failed": {

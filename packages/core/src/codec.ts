@@ -137,6 +137,18 @@ function assertDriverError(
   boolean(item.retryable, `${label}.retryable`);
 }
 
+function assertPlanRejection(
+  value: JsonValue | undefined,
+  label: string,
+): void {
+  const item = object(value, label);
+  string(item.effectId, `${label}.effectId`);
+  assertDriverError(item.error, `${label}.error`);
+  array(item.proposals, `${label}.proposals`).forEach((proposal, index) =>
+    parsePlanUpdateProposal(proposal, `${label}.proposals[${index}]`),
+  );
+}
+
 function assertThreadState(
   value: JsonValue | undefined,
   label: string,
@@ -182,6 +194,15 @@ function assertThreadState(
       }
       projectedPlan = parsed.status === "active" ? parsed : null;
     },
+  );
+  array(
+    state.pendingPlanRejections,
+    `${label}.pendingPlanRejections`,
+  ).forEach((rejection, index) =>
+    assertPlanRejection(
+      rejection,
+      `${label}.pendingPlanRejections[${index}]`,
+    ),
   );
 
   if (state.error !== null) {
@@ -315,6 +336,17 @@ function parseEffect(
       parsePlanSnapshot(input.activePlan, `${label}.input.activePlan`);
     }
     string(input.instructions, `${label}.input.instructions`);
+    if (input.planRejectionFeedback !== undefined) {
+      const feedback = string(
+        input.planRejectionFeedback,
+        `${label}.input.planRejectionFeedback`,
+      );
+      if (feedback.trim().length === 0 || feedback.length > 500) {
+        throw new SchemaValidationError(
+          `${label}.input.planRejectionFeedback must contain 1-500 characters`,
+        );
+      }
+    }
     const model = object(input.model, `${label}.input.model`);
     string(model.model, `${label}.input.model.model`);
     string(model.provider, `${label}.input.model.provider`);
@@ -445,17 +477,22 @@ function assertEventPayload(type: ThreadEventType, payload: JsonObject, threadId
     case "model.completed":
       parseModelAccounting(payload.accounting, "payload.accounting");
       string(payload.effectId, "payload.effectId");
+      if (payload.planRejections !== undefined) {
+        array(payload.planRejections, "payload.planRejections").forEach(
+          (rejection, index) =>
+            assertPlanRejection(
+              rejection,
+              `payload.planRejections[${index}]`,
+            ),
+        );
+      }
       parseModelResponse(payload.response);
       return;
     case "plan.updated":
       parsePlanSnapshot(payload.plan, "payload.plan");
       return;
     case "plan.rejected":
-      string(payload.effectId, "payload.effectId");
-      assertDriverError(payload.error, "payload.error");
-      array(payload.proposals, "payload.proposals").forEach((proposal, index) =>
-        parsePlanUpdateProposal(proposal, `payload.proposals[${index}]`),
-      );
+      assertPlanRejection(payload, "payload");
       return;
     case "model.failed":
       parseModelAccounting(payload.accounting, "payload.accounting");

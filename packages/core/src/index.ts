@@ -27,6 +27,7 @@ export type {
   ModelMessage,
   ModelRef,
   ModelResponse,
+  PendingPlanRejection,
   QueuedInput,
   ThreadState,
   ThreadStatus,
@@ -103,6 +104,7 @@ export type {
 } from "./metrics.ts";
 export {
   materializePlanUpdates,
+  parsePlanControlUpdate,
   parsePlanSnapshot,
   parsePlanUpdateProposal,
   PLAN_CONTROL,

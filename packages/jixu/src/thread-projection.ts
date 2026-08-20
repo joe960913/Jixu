@@ -215,11 +215,9 @@ export function projectThread(
 
     if (event.type === "model.completed") {
       const content = event.payload.response.content;
-      if (content.length === 0 && event.payload.response.toolCalls.length > 0) {
-        continue;
-      }
+      if (content.trim().length === 0) continue;
       transcript.push({
-        content: content || "(reply without text)",
+        content,
         id: nextId++,
         kind: "message",
         label: "JIXU",

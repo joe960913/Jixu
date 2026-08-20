@@ -398,6 +398,173 @@ test("JX-AC-021 JX-AC-035 adaptive Plan lifecycle keeps instructions stable with
   }
 });
 
+test("JX-AC-031 Plan-only control commits before a model-generated public continuation", async () => {
+  const objective = "Create a reliable execution Plan";
+  const publicReply = "I created the Plan and it is ready to use.";
+  const model = new SequenceModelDriver([
+    succeed({
+      content: "",
+      planUpdates: [
+        planUpdate("create", objective, ["in_progress", "pending"], "Inspect"),
+      ],
+      toolCalls: [],
+    }),
+    succeed({ content: publicReply, toolCalls: [] }),
+  ]);
+  const thread = await createHarness({
+    agent: agentWith(),
+    modelDrivers: { mock: model },
+  }).createThread();
+
+  const state = await thread.send("Create a Plan");
+  const events = await thread.events();
+
+  assert.equal(state.result, publicReply);
+  assert.equal(state.activePlan?.objective, objective);
+  assert.equal(model.effects.length, 2);
+  assert.equal(model.effects[1]?.input.activePlan?.objective, objective);
+  assert.deepEqual(model.effects[1]?.input.messages, [
+    { content: "Create a Plan", role: "user" },
+  ]);
+  assert.deepEqual(
+    events.map((event) => event.type),
+    [
+      "thread.created",
+      "input.received",
+      "model.requested",
+      "model.completed",
+      "plan.updated",
+      "model.requested",
+      "model.completed",
+    ],
+  );
+});
+
+test("JX-AC-031 rejected Plan-only control feeds correction back to the model", async () => {
+  const objective = "Inspect the repository without executing";
+  const publicReply = "I created the Plan and will wait for your instruction.";
+  const model = new SequenceModelDriver([
+    succeed({
+      content: "",
+      planUpdates: [planUpdate("create", objective, ["pending"], null)],
+      toolCalls: [],
+    }),
+    succeed({
+      content: publicReply,
+      planUpdates: [
+        planUpdate("create", objective, ["pending"], "Wait for user instruction"),
+      ],
+      toolCalls: [],
+    }),
+  ]);
+  const thread = await createHarness({
+    agent: agentWith(),
+    modelDrivers: { mock: model },
+  }).createThread();
+
+  const state = await thread.send("Create a Plan but do not execute it");
+  const events = await thread.events();
+
+  assert.equal(state.result, publicReply);
+  assert.equal(state.activePlan?.objective, objective);
+  assert.equal(model.effects.length, 2);
+  assert.match(
+    model.effects[1]?.input.planRejectionFeedback ?? "",
+    /nextAction is required while active/,
+  );
+  assert.deepEqual(
+    model.effects[1]?.input.planControl,
+    model.effects[0]?.input.planControl,
+  );
+  assert.deepEqual(model.effects[1]?.input.messages, [
+    { content: "Create a Plan but do not execute it", role: "user" },
+  ]);
+  assert.deepEqual(
+    events.map((event) => event.type),
+    [
+      "thread.created",
+      "input.received",
+      "model.requested",
+      "model.completed",
+      "plan.rejected",
+      "model.requested",
+      "model.completed",
+      "plan.updated",
+    ],
+  );
+});
+
+test("JX-AC-031 malformed Plan metadata retries without model.failed and can abandon", async () => {
+  const objective = "Inspect the repository";
+  const model = new SequenceModelDriver([
+    succeed({
+      content: "Plan created.",
+      planUpdates: [
+        planUpdate("create", objective, ["pending"], "Wait for user instruction"),
+      ],
+      toolCalls: [],
+    }),
+    {
+      planRejections: [{
+        code: "plan_update_invalid",
+        message: "Plan control call-1.steps[0] must be a JSON object",
+        retryable: false,
+      }],
+      status: "succeeded",
+      value: { content: "", planUpdates: [], toolCalls: [] },
+    },
+    succeed({
+      content: "Plan cancelled.",
+      planUpdates: [planUpdate("abandon", objective, ["pending"], null)],
+      toolCalls: [],
+    }),
+  ]);
+  const thread = await createHarness({
+    agent: agentWith(),
+    modelDrivers: { mock: model },
+  }).createThread();
+
+  await thread.send("Create a Plan");
+  const beforeCancel = (await thread.events()).length;
+  const state = await thread.send("Cancel the Plan");
+  const cancelEvents = (await thread.events()).slice(beforeCancel);
+
+  assert.equal(state.result, "Plan cancelled.");
+  assert.equal(state.activePlan, null);
+  assert.deepEqual(
+    model.effects[1]?.input.planControl.inputSchema.required,
+    ["operation"],
+  );
+  assert.equal(cancelEvents.some((event) => event.type === "model.failed"), false);
+  assert.deepEqual(
+    cancelEvents.map((event) => event.type),
+    [
+      "input.received",
+      "model.requested",
+      "model.completed",
+      "plan.rejected",
+      "model.requested",
+      "model.completed",
+      "plan.updated",
+    ],
+  );
+  assert.match(
+    model.effects[2]?.input.planRejectionFeedback ?? "",
+    /steps\[0\] must be a JSON object/,
+  );
+  assert.deepEqual(
+    model.effects[2]?.input.planControl,
+    model.effects[1]?.input.planControl,
+  );
+  assert.equal(
+    model.effects[2]?.input.messages.some(
+      (message) =>
+        message.role === "assistant" && message.content.trim().length === 0,
+    ),
+    false,
+  );
+});
+
 test("JX-AC-031 invalid Plan metadata preserves the model response and Tool path", async () => {
   let executions = 0;
   const inspect = defineTool({

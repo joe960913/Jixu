@@ -315,6 +315,68 @@ test("JX-AC-022 recovery commits a proposed Plan before Tool dispatch and restor
   );
 });
 
+test("JX-AC-004 JX-AC-031 rejected Plan-only control survives restart and retries", async () => {
+  const inner = new InMemoryEventStore();
+  const store = new CrashStore(inner, (event) => event.type === "plan.rejected");
+  const rejectionMessage =
+    "Plan control call-1.steps[0] must be a JSON object";
+  const agent = defineTestAgent();
+  const first = await createHarness({
+    agent,
+    modelDrivers: {
+      mock: new SequenceModelDriver([{
+        planRejections: [{
+          code: "plan_update_invalid",
+          message: rejectionMessage,
+          retryable: false,
+        }],
+        status: "succeeded",
+        value: { content: "", planUpdates: [], toolCalls: [] },
+      }]),
+    },
+    store,
+  }).createThread();
+
+  await assert.rejects(
+    first.send("Create a Plan but do not execute it"),
+    /simulated process stop/,
+  );
+  const completed = (await inner.read(first.id)).at(-1);
+  assert.equal(completed?.type, "model.completed");
+  if (completed?.type === "model.completed") {
+    assert.equal(
+      completed.payload.planRejections?.[0]?.error.message,
+      rejectionMessage,
+    );
+  }
+
+  const recoveredDriver = new SequenceModelDriver([
+    succeed({
+      content: "Plan created; execution is waiting for approval.",
+      planUpdates: [recoveryPlan("create", "in_progress")],
+      toolCalls: [],
+    }),
+  ]);
+  const recovered = await createHarness({
+    agent,
+    modelDrivers: { mock: recoveredDriver },
+    store,
+  }).openThread(first.id);
+  const state = await recovered.wait();
+  const events = await recovered.events();
+
+  assert.equal(state.result, "Plan created; execution is waiting for approval.");
+  assert.notEqual(state.activePlan, null);
+  assert.match(
+    recoveredDriver.effects[0]?.input.planRejectionFeedback ?? "",
+    /steps\[0\] must be a JSON object/,
+  );
+  assert.deepEqual(
+    events.slice(-4).map((event) => event.type),
+    ["plan.rejected", "model.requested", "model.completed", "plan.updated"],
+  );
+});
+
 test("JX-AC-009 pause survives restart and only continue dispatches ready work", async () => {
   let release!: (outcome: ModelOutcome) => void;
   let started!: () => void;

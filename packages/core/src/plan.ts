@@ -78,7 +78,10 @@ function stringListSchema(maxItems: number, minItems = 0) {
   } as const;
 }
 
-function planControlSchema(operations: readonly PlanUpdateOperation[]): JsonObject {
+function planControlSchema(
+  operations: readonly PlanUpdateOperation[],
+  requirePlanBody: boolean,
+): JsonObject {
   return {
     additionalProperties: false,
     properties: {
@@ -117,15 +120,17 @@ function planControlSchema(operations: readonly PlanUpdateOperation[]): JsonObje
         type: "array",
       },
     },
-    required: [
-      "operation",
-      "objective",
-      "acceptanceCriteria",
-      "steps",
-      "assumptions",
-      "blockers",
-      "nextAction",
-    ],
+    required: requirePlanBody
+      ? [
+          "operation",
+          "objective",
+          "acceptanceCriteria",
+          "steps",
+          "assumptions",
+          "blockers",
+          "nextAction",
+        ]
+      : ["operation"],
     type: "object",
   };
 }
@@ -136,10 +141,11 @@ export function createPlanControl(
   const creating = activePlan === null;
   return cloneFrozenJson({
     description: creating
-      ? "Create an optional execution Plan only when work has dependent stages, material uncertainty, a long recovery horizon, or explicit verification boundaries. Do not create a ceremonial Plan for a short answer or one known action. A Plan coordinates work but never authorizes or performs it."
-      : "Update the accepted active Plan. Use revise to reflect progress or new evidence; when every step is completed or skipped, revise it with those terminal statuses and Jixu will complete it automatically. Use supersede only for a materially different objective, or abandon when the objective should stop. Never create a second Plan while one is active. A Plan coordinates work but never authorizes or performs it.",
+      ? "Create an optional execution Plan only when work has dependent stages, material uncertainty, a long recovery horizon, or explicit verification boundaries. Do not create a ceremonial Plan for a short answer or one known action. A Plan coordinates work but never authorizes or performs it. This control is not a user-facing response; also provide concise public text or continue through ordinary Tools."
+      : "Update the accepted active Plan. Use revise to reflect progress or new evidence; when every step is completed or skipped, revise it with those terminal statuses and Jixu will complete it automatically. Use supersede only for a materially different objective. To stop the objective, send only {\"operation\":\"abandon\"}; Jixu derives the terminal revision from the active Plan. Never create a second Plan while one is active. A Plan coordinates work but never authorizes or performs it. This control is not a user-facing response; also provide concise public text or continue through ordinary Tools.",
     inputSchema: planControlSchema(
       creating ? ["create"] : ["revise", "supersede", "abandon"],
+      creating,
     ),
     name: PLAN_CONTROL_NAME,
   });
@@ -307,6 +313,34 @@ export function parsePlanUpdateProposal(
   return {
     ...parseBody(proposal, label),
     operation: operation(proposal.operation, `${label}.operation`),
+  };
+}
+
+export function parsePlanControlUpdate(
+  value: unknown,
+  activePlan: PlanSnapshot | null,
+  label = "Plan control",
+): PlanUpdateProposal {
+  const proposal = record(value, label);
+  const proposalOperation = operation(
+    proposal.operation,
+    `${label}.operation`,
+  );
+  if (proposalOperation !== "abandon") {
+    return parsePlanUpdateProposal(proposal, label);
+  }
+  if (activePlan === null) fail(label, "cannot abandon without an active Plan");
+  return {
+    acceptanceCriteria: activePlan.acceptanceCriteria,
+    assumptions: activePlan.assumptions,
+    blockers: activePlan.blockers,
+    nextAction: null,
+    objective: activePlan.objective,
+    operation: "abandon",
+    steps: activePlan.steps.map((step) => ({
+      ...step,
+      status: step.status === "in_progress" ? "skipped" : step.status,
+    })),
   };
 }
 
