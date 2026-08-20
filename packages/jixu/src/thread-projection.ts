@@ -15,6 +15,25 @@ export function eventActivity(
 ): Omit<ActivityEntry, "id"> {
   const base = { eventId: event.id };
   switch (event.type) {
+    case "approval.requested":
+      return {
+        ...base,
+        detail: event.payload.name,
+        kind: "control",
+        label: "Tool approval required",
+        tone: "warning",
+      };
+    case "approval.decided":
+      return {
+        ...base,
+        detail: event.payload.effectId,
+        kind: "control",
+        label:
+          event.payload.decision === "allow_once"
+            ? "Tool approved once"
+            : "Tool denied",
+        tone: event.payload.decision === "allow_once" ? "success" : "danger",
+      };
     case "thread.created":
       return { ...base, kind: "runtime", label: "Thread created", tone: "brand" };
     case "thread.forked":

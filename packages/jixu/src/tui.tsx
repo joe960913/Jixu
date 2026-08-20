@@ -1,7 +1,12 @@
 import { useKeyboard } from "@opentui/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { JixuConnectionConfig } from "./config.ts";
+import type { ExecutableTool } from "@jixu/core";
+
+import {
+  DEFAULT_JIXU_TOOL_SETTINGS,
+  type JixuConnectionConfig,
+} from "./config.ts";
 import type { ThreadController } from "./thread-controller.ts";
 import {
   Booting,
@@ -28,6 +33,7 @@ export interface JixuAppProps {
   readonly initial?: JixuInitialConfiguration;
   readonly motion?: boolean;
   readonly onQuit: () => void;
+  readonly toolCatalogue?: readonly ExecutableTool[];
   readonly workspace: string;
 }
 
@@ -38,13 +44,14 @@ function completeInitial(
   const apiKey = initial?.apiKey;
   const baseUrl = initial?.baseUrl;
   const model = initial?.model;
+  const tools = initial?.tools ?? DEFAULT_JIXU_TOOL_SETTINGS;
 
   return api === undefined ||
     apiKey === undefined ||
     baseUrl === undefined ||
     model === undefined
     ? null
-    : { api, apiKey, baseUrl, model };
+    : { api, apiKey, baseUrl, model, tools };
 }
 
 export function JixuApp({
@@ -52,6 +59,7 @@ export function JixuApp({
   initial,
   motion = true,
   onQuit,
+  toolCatalogue = [],
   workspace,
 }: JixuAppProps) {
   const [active, setActive] = useState<JixuActiveConnection | null>(null);
@@ -78,6 +86,7 @@ export function JixuApp({
         autoConnect: true,
         baseUrl: config.baseUrl,
         model: config.model,
+        tools: config.tools,
       });
       setActive({ config, controller });
       setBooting(false);
@@ -122,6 +131,7 @@ export function JixuApp({
         initialError={connectionError}
         onBack={() => setView("workspace")}
         onConnect={activate}
+        toolCatalogue={toolCatalogue}
         workspace={workspace}
       />
     );

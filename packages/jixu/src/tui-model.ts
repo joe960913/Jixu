@@ -1,4 +1,9 @@
-import type { PlanSnapshot, ThreadMetrics, ThreadStatus } from "@jixu/core";
+import type {
+  PlanSnapshot,
+  ThreadMetrics,
+  ThreadStatus,
+  ToolApproval,
+} from "@jixu/core";
 
 export type JixuTone =
   | "brand"
@@ -109,6 +114,7 @@ export interface ThreadControllerSnapshot {
   readonly threadPickerOpen: boolean;
   readonly threads: readonly ThreadSummary[];
   readonly threadStatus: ThreadStatus | "none";
+  readonly toolApproval: ToolApproval | null;
   readonly toolLiveOutput: Readonly<Record<string, ToolLiveOutput>>;
   readonly toolOperations: readonly ToolOperation[];
   readonly transcript: readonly TranscriptEntry[];

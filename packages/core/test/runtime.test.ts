@@ -136,6 +136,98 @@ test("JX-AC-001 JX-AC-002 JX-AC-014 Tool use and later send continue one Thread"
   );
 });
 
+test("JX-AC-047 Tool ask is durable and only allow_once dispatches the pending Effect", async () => {
+  let executions = 0;
+  const tool = defineTool({
+    authorization: { action: "inspect", resources: () => ["workspace/file.ts"] },
+    description: "Inspect a file",
+    execute: () => {
+      executions += 1;
+      return "inspected";
+    },
+    idempotency: "idempotent",
+    input: objectSchema,
+    name: "inspect",
+    output: stringSchema,
+  });
+  const model = new SequenceModelDriver([
+    succeed({
+      content: "",
+      toolCalls: [{ arguments: {}, id: "inspect-1", name: "inspect" }],
+    }),
+    succeed({ content: "Inspection complete.", toolCalls: [] }),
+  ]);
+  const thread = await createHarness({
+    agent: agentWith([tool]),
+    modelDrivers: { mock: model },
+    toolPermissionPolicy: { defaultEffect: "ask", rules: [] },
+  }).createThread();
+
+  const waiting = await thread.send("Inspect it");
+  assert.equal(waiting.status, "waiting");
+  assert.equal(waiting.waitingReason?.reasonCode, "tool_approval_required");
+  assert.equal(executions, 0);
+  const approval = Object.values(waiting.toolApprovals)[0];
+  assert.ok(approval !== undefined);
+  assert.equal(approval.action, "inspect");
+  assert.deepEqual(approval.resources, ["workspace/file.ts"]);
+
+  const completed = await thread.decideApproval(
+    approval.effectId,
+    "allow_once",
+  );
+  assert.equal(completed.status, "idle");
+  assert.equal(completed.result, "Inspection complete.");
+  assert.equal(executions, 1);
+  assert.deepEqual(
+    (await thread.events())
+      .filter((event) => event.type.startsWith("approval."))
+      .map((event) => event.type),
+    ["approval.requested", "approval.decided"],
+  );
+});
+
+test("JX-AC-047 denied Tool Effects fail deterministically without driver execution", async () => {
+  let executions = 0;
+  const tool = defineTool({
+    description: "Dangerous operation",
+    execute: () => {
+      executions += 1;
+      return "unexpected";
+    },
+    input: objectSchema,
+    name: "danger",
+    output: stringSchema,
+  });
+  const model = new SequenceModelDriver([
+    succeed({
+      content: "",
+      toolCalls: [{ arguments: {}, id: "danger-1", name: "danger" }],
+    }),
+    succeed({ content: "The operation was denied.", toolCalls: [] }),
+  ]);
+  const thread = await createHarness({
+    agent: agentWith([tool]),
+    modelDrivers: { mock: model },
+    toolPermissionPolicy: {
+      defaultEffect: "allow",
+      rules: [{ action: "danger", effect: "deny", resource: "*" }],
+    },
+  }).createThread();
+
+  const state = await thread.send("Try it");
+  assert.equal(state.status, "idle");
+  assert.equal(executions, 0);
+  const failure = (await thread.events()).findLast(
+    (event) => event.type === "tool.failed",
+  );
+  assert.equal(failure?.type, "tool.failed");
+  if (failure?.type === "tool.failed") {
+    assert.equal(failure.payload.error.code, "tool_permission_denied");
+    assert.equal(failure.payload.disposition, "failed");
+  }
+});
+
 test("JX-AC-039 typed Tool rejection stays failed while unknown exceptions stay indeterminate", async () => {
   const typed = defineTool({
     description: "Reject outside scope",

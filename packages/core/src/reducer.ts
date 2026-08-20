@@ -30,7 +30,7 @@ import {
 } from "./plan.ts";
 import { PROGRESS_CONTROL } from "./progress.ts";
 
-export const REDUCER_VERSION = 10;
+export const REDUCER_VERSION = 11;
 
 export interface TransitionResult {
   readonly effects: readonly EffectRequest[];
@@ -56,6 +56,47 @@ function requireStatus(
       `${eventType} cannot apply while Thread ${state.threadId} is ${state.status}`,
     );
   }
+}
+
+function requireOneStatus(
+  state: ThreadState,
+  eventType: string,
+  expected: readonly ThreadState["status"][],
+): void {
+  if (!expected.includes(state.status)) {
+    throw new InvalidTransitionError(
+      `${eventType} cannot apply while Thread ${state.threadId} is ${state.status}`,
+    );
+  }
+}
+
+function withoutApproval(
+  state: ThreadState,
+  effectId: string,
+): Pick<ThreadState, "status" | "toolApprovals" | "waitingReason"> {
+  const toolApprovals = { ...state.toolApprovals };
+  delete toolApprovals[effectId];
+  const unresolved = Object.values(toolApprovals).find(
+    (approval) => approval.decision === null,
+  );
+  if (unresolved !== undefined) {
+    return {
+      status: "waiting",
+      toolApprovals,
+      waitingReason: {
+        effectId: unresolved.effectId,
+        reasonCode: "tool_approval_required",
+      },
+    };
+  }
+  return {
+    status: state.status === "waiting" ? "running" : state.status,
+    toolApprovals,
+    waitingReason:
+      state.waitingReason?.reasonCode === "tool_approval_required"
+        ? null
+        : state.waitingReason,
+  };
 }
 
 function removePending(
@@ -357,6 +398,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           readyEffects: [],
           result: null,
           status: "idle",
+          toolApprovals: {},
           waitingReason: null,
         }),
       };
@@ -401,6 +443,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           pendingPlanRejections: [],
           pendingPlanUpdates: [],
           result: null,
+          toolApprovals: {},
           waitingReason: null,
         }),
       };
@@ -459,6 +502,88 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           pauseRequested: false,
           status: "waiting",
           waitingReason: event.payload,
+        }),
+      };
+    }
+
+    case "approval.requested": {
+      requireOneStatus(state, event.type, ["running", "waiting"]);
+      const effect = state.pendingEffects[event.payload.effectId];
+      if (
+        effect === undefined ||
+        effect.type !== "tool.execute" ||
+        effect.input.name !== event.payload.name ||
+        effect.input.toolCallId !== event.payload.toolCallId
+      ) {
+        throw new InvalidTransitionError(
+          `Approval Effect ${event.payload.effectId} is not a matching pending Tool`,
+        );
+      }
+      if (state.toolApprovals[event.payload.effectId] !== undefined) {
+        throw new InvalidTransitionError(
+          `Approval Effect ${event.payload.effectId} is already recorded`,
+        );
+      }
+      const approval = Object.freeze({
+        ...event.payload,
+        decision: null,
+        decisionEventId: null,
+      });
+      const toolApprovals = {
+        ...state.toolApprovals,
+        [event.payload.effectId]: approval,
+      };
+      const first = Object.values(toolApprovals).find(
+        (candidate) => candidate.decision === null,
+      );
+      if (first === undefined) {
+        throw new InvalidTransitionError("Approval request did not remain pending");
+      }
+      return {
+        effects: [],
+        state: advance(state, event.sequence, {
+          pauseRequested: false,
+          status: "waiting",
+          toolApprovals,
+          waitingReason: {
+            effectId: first.effectId,
+            reasonCode: "tool_approval_required",
+          },
+        }),
+      };
+    }
+
+    case "approval.decided": {
+      requireOneStatus(state, event.type, ["running", "waiting"]);
+      const approval = state.toolApprovals[event.payload.effectId];
+      if (approval === undefined || approval.decision !== null) {
+        throw new InvalidTransitionError(
+          `Approval Effect ${event.payload.effectId} is not awaiting a decision`,
+        );
+      }
+      const toolApprovals = {
+        ...state.toolApprovals,
+        [event.payload.effectId]: {
+          ...approval,
+          decision: event.payload.decision,
+          decisionEventId: event.id,
+        },
+      };
+      const unresolved = Object.values(toolApprovals).find(
+        (candidate) => candidate.decision === null,
+      );
+      return {
+        effects: [],
+        state: advance(state, event.sequence, {
+          status: unresolved === undefined ? "running" : "waiting",
+          toolApprovals,
+          waitingReason:
+            unresolved === undefined
+              ? null
+              : {
+                  effectId: unresolved.effectId,
+                  reasonCode: "tool_approval_required",
+                },
         }),
       };
     }
@@ -679,7 +804,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
     }
 
     case "tool.completed": {
-      requireStatus(state, event.type, "running");
+      requireOneStatus(state, event.type, ["running", "waiting"]);
       const remaining = removePending(
         state,
         event.payload.effectId,
@@ -697,6 +822,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         ],
         metrics: recordEffectOutcome(state.metrics, "tools", "succeeded"),
         pendingEffects: remaining,
+        ...withoutApproval(state, event.payload.effectId),
       });
       const hasPendingTools = Object.values(remaining).some(
         (effect) => effect.type === "tool.execute",
@@ -715,7 +841,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
     }
 
     case "tool.failed": {
-      requireStatus(state, event.type, "running");
+      requireOneStatus(state, event.type, ["running", "waiting"]);
       const remaining = removePending(
         state,
         event.payload.effectId,
@@ -723,6 +849,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
       );
       return failAfterToolOutcome(
         advance(state, event.sequence, {
+          ...withoutApproval(state, event.payload.effectId),
           metrics: recordEffectOutcome(
             state.metrics,
             "tools",

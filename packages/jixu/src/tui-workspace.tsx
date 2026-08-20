@@ -16,6 +16,7 @@ import { jixuTheme } from "./theme.ts";
 import { AttentionRail, AttentionStrip } from "./tui-attention-rail.tsx";
 import { createAttentionModel } from "./tui-attention.ts";
 import { ExecutionDock } from "./tui-dock.tsx";
+import { ToolApprovalPrompt } from "./tui-tool-approval.tsx";
 import { Transcript } from "./tui-transcript.tsx";
 import type {
   ThreadControllerSnapshot,
@@ -52,6 +53,7 @@ const inactiveSnapshot: ThreadControllerSnapshot = Object.freeze({
   threadPickerOpen: false,
   threads: Object.freeze([]),
   threadStatus: "none",
+  toolApproval: null,
   toolLiveOutput: Object.freeze({}),
   toolOperations: Object.freeze([]),
   transcript: Object.freeze([]),
@@ -106,11 +108,15 @@ function costContext(snapshot: ThreadControllerSnapshot): {
 function ComposerStatus({
   compact,
   configured,
+  enabledTools,
+  fileScope,
   modelContext,
   threadCost,
 }: {
   readonly compact: boolean;
   readonly configured: boolean;
+  readonly enabledTools: readonly string[];
+  readonly fileScope: "process" | "workspace";
   readonly modelContext: string | null;
   readonly threadCost: ReturnType<typeof costContext>;
 }) {
@@ -144,14 +150,22 @@ function ComposerStatus({
         }}
       >
         <text fg={jixuTheme.secondary}>
-          <strong>LOCAL I/O</strong> · <span fg={jixuTheme.warning}>process access</span>
+          <strong>TOOLS</strong>
+          <span fg={jixuTheme.text}>  {enabledTools.join(" ") || "none"}</span>
+          <span fg={jixuTheme.secondary}>  FILES </span>
+          <span fg={fileScope === "workspace" ? jixuTheme.success : jixuTheme.warning}>
+            {fileScope}
+          </span>
+          {enabledTools.includes("bash") ? (
+            <span fg={jixuTheme.warning}>  BASH process</span>
+          ) : null}
         </text>
         <box style={{ flexGrow: 1 }} />
         <text fg={threadCost.partial ? jixuTheme.warning : jixuTheme.success}>
           {threadCost.label}
         </text>
         {compact ? null : (
-          <text fg={jixuTheme.secondary}> · ctrl+c quit</text>
+          <text fg={jixuTheme.secondary}>  ctrl+c quit</text>
         )}
       </box>
     </box>
@@ -507,6 +521,12 @@ export function AgentWorkspace({
                 width: chatWidth,
               }}
             >
+              <ToolApprovalPrompt
+                controller={active?.controller ?? null}
+                snapshot={snapshot}
+                width={chatWidth}
+              />
+
               <ExecutionDock snapshot={snapshot} width={chatWidth} />
 
               {showAttentionRail ? null : (
@@ -569,6 +589,8 @@ export function AgentWorkspace({
                   placeholder={
                     !configured
                       ? "Use /config to connect a model…"
+                      : snapshot.toolApproval !== null
+                        ? "Use /approve, /deny, or the approval buttons…"
                       : snapshot.busy
                         ? "Queue a follow-up…"
                         : "Ask Jixu anything…"
@@ -590,6 +612,8 @@ export function AgentWorkspace({
           <ComposerStatus
             compact={compact}
             configured={configured}
+            enabledTools={active?.config.tools.enabled ?? []}
+            fileScope={active?.config.tools.fileScope ?? "workspace"}
             modelContext={modelContext}
             threadCost={threadCost}
           />

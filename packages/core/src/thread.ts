@@ -1,4 +1,4 @@
-import type { ThreadState } from "./domain.ts";
+import type { ThreadState, ToolApprovalDecision } from "./domain.ts";
 import type { AnyThreadEvent } from "./events.ts";
 import type { ThreadStreamItem } from "./ports.ts";
 
@@ -16,6 +16,10 @@ export interface Thread {
   readonly id: string;
   clear(): Promise<ThreadState>;
   continue(): Promise<ThreadState>;
+  decideApproval(
+    effectId: string,
+    decision: ToolApprovalDecision,
+  ): Promise<ThreadState>;
   events(): Promise<readonly AnyThreadEvent[]>;
   fork(options: ForkOptions): Promise<Thread>;
   pause(): Promise<ThreadState>;

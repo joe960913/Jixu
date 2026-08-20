@@ -8,6 +8,7 @@ import {
   TOOL_OUTPUT_SIGNAL_TYPE,
 } from "@jixu/core";
 import type { ModelDriver } from "@jixu/core";
+import { createNodeTools } from "@jixu/tools-node";
 import {
   BoxRenderable,
   CodeRenderable,
@@ -25,13 +26,18 @@ import { setRendererCapabilities } from "@opentui/core/testing";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 
-import type { JixuConnectionConfig } from "../src/config.ts";
+import {
+  DEFAULT_JIXU_TOOL_SETTINGS,
+  type JixuConnectionConfig,
+} from "../src/config.ts";
 import { createThreadController } from "../src/thread-controller.ts";
 import type { ThreadController } from "../src/thread-controller.ts";
 import { jixuTheme } from "../src/theme.ts";
 import { CODE_BLOCK_MAX_CONTENT_HEIGHT } from "../src/tui-markdown.ts";
+import type { ThreadControllerSnapshot } from "../src/tui-model.ts";
 import { registerJixuCodeParsers } from "../src/tui-parsers.ts";
 import { jixuMarkdownSyntaxStyle } from "../src/tui-syntax-theme.ts";
+import { ToolApprovalPrompt } from "../src/tui-tool-approval.tsx";
 import { JixuApp } from "../src/tui.tsx";
 
 let resolveThinkingStarted!: () => void;
@@ -618,6 +624,7 @@ const harness = createHarness({
 let connected: JixuConnectionConfig | null = null;
 const activeController: { current: ThreadController | null } = { current: null };
 const secret = "openrouter-secret-fixture";
+const toolCatalogue = createNodeTools({ root: process.cwd() }).all;
 
 const parserRegistration = await registerJixuCodeParsers();
 assert.equal(parserRegistration.status, "registered");
@@ -681,6 +688,7 @@ const setup = await testRender(
     }}
     initial={{ api: "openai-chat-completions" }}
     onQuit={() => undefined}
+    toolCatalogue={toolCatalogue}
     workspace="/workspace"
   />,
   { height: 30, kittyKeyboard: true, width: 120 },
@@ -934,6 +942,7 @@ try {
     apiKey: secret,
     baseUrl: "https://router.example/v1",
     model: "vendor/model-example",
+    tools: DEFAULT_JIXU_TOOL_SETTINGS,
   });
   // JX-AC-030 JX-AC-037: the wide surface keeps chat beside the attention rail.
   assert.match(connectedFrame, /vendor\/model-example/);
@@ -948,7 +957,9 @@ try {
   assert.match(connectedFrame, /Direct execution/);
   assert.match(connectedFrame, /VERIFIED/);
   assert.match(connectedFrame, /NEEDS YOU/);
-  assert.match(connectedFrame, /LOCAL I\/O · process access/);
+  assert.match(connectedFrame, /TOOLS\s+read write edit bash/);
+  assert.match(connectedFrame, /FILES workspace/);
+  assert.match(connectedFrame, /BASH process/);
   assert.match(connectedFrame, /USD —/);
   assert.doesNotMatch(connectedFrame, /ACTIVITY|No activity yet|Thread created/);
   assert.doesNotMatch(connectedFrame, /Next Level Agent/);
@@ -987,7 +998,7 @@ try {
   assert.match(thinkingFrame, /Thinking task/);
   assert.match(thinkingFrame, /Thinking \.\.\./);
   assert.match(thinkingFrame, /MODEL\s+vendor\/model-example/);
-  assert.match(thinkingFrame, /LOCAL I\/O · process access/);
+  assert.match(thinkingFrame, /FILES workspace/);
 
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 1_050));
@@ -1791,6 +1802,7 @@ const compactConfigSetup = await testRender(
     }
     initial={{ api: "openai-chat-completions" }}
     onQuit={() => undefined}
+    toolCatalogue={toolCatalogue}
     workspace="/workspace"
   />,
   { height: 24, kittyKeyboard: true, width: 80 },
@@ -1814,7 +1826,7 @@ try {
   const compactConfigFrame = compactConfigSetup.captureCharFrame();
   // JX-AC-029 JX-AC-042: presets and reversible navigation survive 80x24.
   assert.match(compactConfigFrame, /JIXU  Configuration/);
-  assert.match(compactConfigFrame, /BACK TO CHAT/);
+  assert.match(compactConfigFrame, /← BACK/);
   assert.match(compactConfigFrame, /Model connection/);
   assert.match(compactConfigFrame, /OpenAI/);
   assert.match(compactConfigFrame, /Groq/);
@@ -1822,14 +1834,46 @@ try {
   assert.match(compactConfigFrame, /API KEY/);
   assert.match(compactConfigFrame, /MODEL ID/);
   assert.match(compactConfigFrame, /CONNECT/);
-  assert.match(compactConfigFrame, /SETTINGS settings\.json/);
-  assert.match(compactConfigFrame, /API KEY auth\.json/);
+  assert.doesNotMatch(compactConfigFrame, /SETTINGS settings\.json/);
+  assert.doesNotMatch(compactConfigFrame, /API KEY auth\.json/);
   assert.match(compactConfigFrame, /Esc Back/);
   assert.match(compactConfigFrame, /Tab Next/);
   assert.match(compactConfigFrame, /Enter Select/);
   assert.match(compactConfigFrame, /Ctrl\+C Quit/);
   assert.doesNotMatch(compactConfigFrame, /Chat Completions/);
   assert.doesNotMatch(compactConfigFrame, /·/);
+
+  const toolsTab = compactConfigSetup.renderer.root.findDescendantById(
+    "config-tools-tab",
+  );
+  assert.notEqual(toolsTab, undefined);
+  await act(async () => {
+    if (toolsTab !== undefined) {
+      await compactConfigSetup.mockMouse.click(toolsTab.x, toolsTab.y);
+    }
+  });
+  await act(async () => {
+    await compactConfigSetup.renderOnce();
+    await compactConfigSetup.flush();
+  });
+  const toolCenterFrame = compactConfigSetup.captureCharFrame();
+  assert.match(toolCenterFrame, /Tool Center/);
+  assert.match(toolCenterFrame, /PROFILE\s+BALANCED/);
+  assert.match(toolCenterFrame, /FILE SCOPE\s+WORKSPACE/);
+  assert.match(toolCenterFrame, /read/);
+  assert.match(toolCenterFrame, /write/);
+  assert.match(toolCenterFrame, /edit/);
+  assert.match(toolCenterFrame, /bash/);
+  assert.match(toolCenterFrame, /not OS-sandboxed/);
+
+  await act(async () => {
+    compactConfigSetup.mockInput.pressEscape();
+  });
+  await act(async () => {
+    await compactConfigSetup.renderOnce();
+    await compactConfigSetup.flush();
+  });
+  assert.match(compactConfigSetup.captureCharFrame(), /Model connection/);
 
   await act(async () => {
     compactConfigSetup.mockInput.pressKey("2");
@@ -1860,6 +1904,64 @@ try {
 } finally {
   act(() => {
     compactConfigSetup.renderer.destroy();
+  });
+}
+
+const approvalSnapshot = {
+  activePlan: null,
+  activity: [],
+  busy: false,
+  currentThreadId: "approval-thread",
+  inspection: null,
+  metrics: null,
+  streamingText: "",
+  threadPickerOpen: false,
+  threads: [],
+  threadStatus: "waiting",
+  toolApproval: {
+    action: "bash",
+    decision: null,
+    decisionEventId: null,
+    effectId: "approval-effect",
+    name: "bash",
+    resources: ["process"],
+    toolCallId: "approval-call",
+  },
+  toolLiveOutput: {},
+  toolOperations: [],
+  transcript: [],
+  workStatus: null,
+} satisfies ThreadControllerSnapshot;
+const approvalSetup = await testRender(
+  <ToolApprovalPrompt
+    controller={null}
+    snapshot={approvalSnapshot}
+    width={80}
+  />,
+  { height: 5, width: 80 },
+);
+
+try {
+  await act(async () => {
+    await approvalSetup.renderOnce();
+    await approvalSetup.flush();
+  });
+  const approvalFrame = approvalSetup.captureCharFrame();
+  assert.match(approvalFrame, /APPROVAL/);
+  assert.match(approvalFrame, /bash requests bash on process/);
+  assert.match(approvalFrame, /ALLOW ONCE/);
+  assert.match(approvalFrame, /DENY/);
+  assert.notEqual(
+    approvalSetup.renderer.root.findDescendantById("tool-approval-allow"),
+    undefined,
+  );
+  assert.notEqual(
+    approvalSetup.renderer.root.findDescendantById("tool-approval-deny"),
+    undefined,
+  );
+} finally {
+  act(() => {
+    approvalSetup.renderer.destroy();
   });
 }
 
@@ -1905,6 +2007,7 @@ try {
     apiKey: secret,
     baseUrl: "https://router.example/v1",
     model: "vendor/model-example",
+    tools: DEFAULT_JIXU_TOOL_SETTINGS,
   });
   // JX-AC-037: wide terminals reserve a stable, right-side attention surface.
   const headerLine = restoredFrame
@@ -1974,7 +2077,8 @@ const compactSetup = await testRender(
       apiKey: secret,
       autoConnect: true,
       baseUrl: "https://router.example/v1",
-      model: "vendor/model-example",
+    model: "vendor/model-example",
+    tools: DEFAULT_JIXU_TOOL_SETTINGS,
     }}
     onQuit={() => undefined}
     workspace="/workspace"
@@ -1996,7 +2100,7 @@ try {
   // JX-AC-030 JX-AC-037 JX-AC-038: 80x24 keeps discovery over decoration.
   const compactFrame = compactSetup.captureCharFrame();
   assert.match(compactFrame, /Ask Jixu anything/);
-  assert.match(compactFrame, /LOCAL I\/O · process access/);
+  assert.match(compactFrame, /FILES workspace/);
   assert.match(compactFrame, /USD —/);
   assert.match(compactFrame, /Type \/ to view commands\./);
   assert.doesNotMatch(compactFrame, /\/help · \/new · \/clear/);
@@ -2026,7 +2130,7 @@ try {
   // JX-AC-018: the 80x24 surface keeps a usable composer and command picker.
   assert.match(compactCommandFrame, /Commands/);
   assert.match(compactCommandFrame, /▶ \/fork/);
-  assert.match(compactCommandFrame, /LOCAL I\/O · process access/);
+  assert.match(compactCommandFrame, /FILES workspace/);
 
   await act(async () => {
     compactSetup.mockInput.pressEnter();

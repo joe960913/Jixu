@@ -39,6 +39,20 @@ test("JX-TOOL-006 read, write, and edit use canonical Tools inside one workspace
       tools.all.map((tool) => tool.descriptor.name),
       ["read", "write", "edit", "bash"],
     );
+    assert.deepEqual(
+      tools.all.map((tool) => tool.metadata.origin),
+      ["builtin", "builtin", "builtin", "builtin"],
+    );
+    assert.deepEqual(
+      tools.read.authorize(
+        tools.read.parseInput({ path: "notes/../notes/example.txt" }),
+      ),
+      { action: "read", resources: ["notes/example.txt"] },
+    );
+    assert.deepEqual(
+      tools.bash.authorize(tools.bash.parseInput({ command: "printf test" })),
+      { action: "bash", resources: ["process"] },
+    );
 
     const writeInput = tools.write.parseInput({
       content: "alpha beta",

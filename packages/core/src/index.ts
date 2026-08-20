@@ -11,8 +11,12 @@ export type {
   Schema,
   SchemaConfig,
   Tool,
+  ToolAuthorizationConfig,
   ToolConfig,
   ToolExecutionContext,
+  ToolMetadata,
+  ToolOrigin,
+  ToolRisk,
 } from "./agent.ts";
 export {
   createInitialThreadState,
@@ -23,6 +27,7 @@ export type {
   AssistantMessage,
   Checkpoint,
   DriverError,
+  EffectOutcomeWaitingReason,
   ForkLineage,
   ModelMessage,
   ModelRef,
@@ -32,6 +37,9 @@ export type {
   ThreadState,
   ThreadStatus,
   ToolCall,
+  ToolApproval,
+  ToolApprovalDecision,
+  ToolApprovalWaitingReason,
   ToolDescriptor,
   ToolIdempotency,
   ToolMessage,
@@ -136,6 +144,20 @@ export {
   TOOL_OUTPUT_SIGNAL_TYPE,
 } from "./tool-output.ts";
 export type { ToolOutputDelta } from "./tool-output.ts";
+export {
+  ALLOW_ALL_TOOL_POLICY,
+  defineToolPermissionPolicy,
+  matchesToolPermissionPattern,
+  resolveToolPermission,
+} from "./tool-permissions.ts";
+export type {
+  ToolAuthorizationRequest,
+  ToolPermissionEffect,
+  ToolPermissionPolicy,
+  ToolPermissionResolution,
+  ToolPermissionRule,
+  ToolResourcePermission,
+} from "./tool-permissions.ts";
 export type {
   Clock,
   EventStore,

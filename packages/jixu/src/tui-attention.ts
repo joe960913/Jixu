@@ -82,6 +82,14 @@ function nowLine(
   }
 
   if (snapshot.threadStatus === "waiting") {
+    if (snapshot.toolApproval !== null) {
+      return {
+        detail: `${snapshot.toolApproval.name} requests ${snapshot.toolApproval.action}`,
+        icon: "attention",
+        label: "Tool approval required",
+        tone: "warning",
+      };
+    }
     const decision = latestActivity(
       snapshot,
       (entry) => entry.label === "Decision required",
@@ -230,6 +238,14 @@ function needsYouLine(
   }
 
   if (snapshot.threadStatus === "waiting") {
+    if (snapshot.toolApproval !== null) {
+      return {
+        detail: "Choose Allow once or Deny in the approval bar.",
+        icon: "attention",
+        label: `${snapshot.toolApproval.name} needs approval`,
+        tone: "warning",
+      };
+    }
     const decision = latestActivity(
       snapshot,
       (entry) => entry.label === "Decision required",

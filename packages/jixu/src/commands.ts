@@ -37,6 +37,18 @@ export const JIXU_SLASH_COMMANDS: readonly JixuSlashCommand[] = Object.freeze([
     usage: "/continue",
   },
   {
+    description: "Allow the waiting Tool call once",
+    name: "/approve",
+    requiresArguments: false,
+    usage: "/approve",
+  },
+  {
+    description: "Deny the waiting Tool call",
+    name: "/deny",
+    requiresArguments: false,
+    usage: "/deny",
+  },
+  {
     description: "Inspect durable Events for the current Thread",
     name: "/events",
     requiresArguments: false,

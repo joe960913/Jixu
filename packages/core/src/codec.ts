@@ -265,6 +265,70 @@ function assertThreadState(
     },
   );
 
+  const approvals = object(state.toolApprovals, `${label}.toolApprovals`);
+  let unresolvedApprovalCount = 0;
+  for (const [key, approvalValue] of Object.entries(approvals)) {
+    const approval = object(
+      approvalValue,
+      `${label}.toolApprovals.${key}`,
+    );
+    const effectId = string(
+      approval.effectId,
+      `${label}.toolApprovals.${key}.effectId`,
+    );
+    if (effectId !== key) {
+      throw new SchemaValidationError(
+        `${label}.toolApprovals.${key} has a mismatched Effect ID`,
+      );
+    }
+    const pendingEffect = pending[effectId];
+    if (pendingEffect === undefined) {
+      throw new SchemaValidationError(
+        `${label}.toolApprovals.${key} must reference a pending Effect`,
+      );
+    }
+    string(approval.action, `${label}.toolApprovals.${key}.action`);
+    string(approval.name, `${label}.toolApprovals.${key}.name`);
+    string(approval.toolCallId, `${label}.toolApprovals.${key}.toolCallId`);
+    if (approval.decisionEventId !== null) {
+      string(
+        approval.decisionEventId,
+        `${label}.toolApprovals.${key}.decisionEventId`,
+      );
+    }
+    const resources = array(
+      approval.resources,
+      `${label}.toolApprovals.${key}.resources`,
+    );
+    if (resources.length === 0) {
+      throw new SchemaValidationError(
+        `${label}.toolApprovals.${key}.resources must not be empty`,
+      );
+    }
+    resources.forEach((resource, index) =>
+      string(resource, `${label}.toolApprovals.${key}.resources[${index}]`),
+    );
+    if (approval.decision === null) {
+      if (approval.decisionEventId !== null) {
+        throw new SchemaValidationError(
+          `${label}.toolApprovals.${key}.decisionEventId requires a decision`,
+        );
+      }
+      unresolvedApprovalCount += 1;
+    } else if (
+      approval.decision !== "allow_once" &&
+      approval.decision !== "deny"
+    ) {
+      throw new SchemaValidationError(
+        `${label}.toolApprovals.${key}.decision is unsupported`,
+      );
+    } else if (approval.decisionEventId === null) {
+      throw new SchemaValidationError(
+        `${label}.toolApprovals.${key}.decision requires decisionEventId`,
+      );
+    }
+  }
+
   if (state.result !== null) {
     string(state.result, `${label}.result`);
   }
@@ -286,6 +350,11 @@ function assertThreadState(
       `${label}.pauseRequested requires running status`,
     );
   }
+  if (unresolvedApprovalCount > 0 && status !== "waiting") {
+    throw new SchemaValidationError(
+      `${label}.toolApprovals requires waiting status while unresolved`,
+    );
+  }
 
   if (state.waitingReason === null) {
     if (status === "waiting") {
@@ -300,12 +369,23 @@ function assertThreadState(
     waiting.effectId,
     `${label}.waitingReason.effectId`,
   );
-  if (waiting.reasonCode !== "effect_outcome_unknown") {
+  if (
+    waiting.reasonCode !== "effect_outcome_unknown" &&
+    waiting.reasonCode !== "tool_approval_required"
+  ) {
     throw new SchemaValidationError(
       `${label}.waitingReason.reasonCode is unsupported`,
     );
   }
-  if (status !== "waiting" || pending[waitingEffectId] === undefined) {
+  if (
+    status !== "waiting" ||
+    pending[waitingEffectId] === undefined ||
+    (waiting.reasonCode === "tool_approval_required" &&
+      object(
+        approvals[waitingEffectId],
+        `${label}.toolApprovals.${waitingEffectId}`,
+      ).decision !== null)
+  ) {
     throw new SchemaValidationError(
       `${label}.waitingReason must reference a pending Effect while waiting`,
     );
@@ -420,6 +500,8 @@ function assertEmptyPayload(payload: JsonObject, label: string): void {
 }
 
 const eventTypes = new Set<ThreadEventType>([
+  "approval.decided",
+  "approval.requested",
   "context.cleared",
   "input.received",
   "model.completed",
@@ -440,6 +522,26 @@ const eventTypes = new Set<ThreadEventType>([
 
 function assertEventPayload(type: ThreadEventType, payload: JsonObject, threadId: string): void {
   switch (type) {
+    case "approval.decided":
+      string(payload.effectId, "payload.effectId");
+      if (payload.decision !== "allow_once" && payload.decision !== "deny") {
+        throw new SchemaValidationError("payload.decision is unsupported");
+      }
+      return;
+    case "approval.requested": {
+      string(payload.action, "payload.action");
+      string(payload.effectId, "payload.effectId");
+      string(payload.name, "payload.name");
+      string(payload.toolCallId, "payload.toolCallId");
+      const resources = array(payload.resources, "payload.resources");
+      if (resources.length === 0) {
+        throw new SchemaValidationError("payload.resources must not be empty");
+      }
+      resources.forEach((resource, index) =>
+        string(resource, `payload.resources[${index}]`),
+      );
+      return;
+    }
     case "thread.created":
       assertAgentSnapshot(payload.agent, "payload.agent");
       return;
