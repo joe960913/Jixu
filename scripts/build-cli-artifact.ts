@@ -187,7 +187,7 @@ export async function buildCliArtifact(
     binaryPath,
   ];
   await runCommand("bun", args, { cwd: repositoryRoot });
-  if (target.platform !== "win32") await chmod(binaryPath, 0o755);
+  await chmod(binaryPath, 0o755);
 
   const signature: JixuCliArtifact["metadata"]["signature"] =
     target.platform === "darwin"

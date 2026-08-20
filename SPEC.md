@@ -1109,7 +1109,6 @@ permissions and never records secrets in Thread data.
 | `@jixu/cli-darwin-arm64` | Native reference CLI executable for macOS arm64. |
 | `@jixu/cli-darwin-x64` | Native reference CLI executable for macOS x64. |
 | `@jixu/cli-linux-x64` | Native reference CLI executable for Linux x64 with glibc. |
-| `@jixu/cli-win32-x64` | Native reference CLI executable for Windows x64. |
 
 Core MUST remain free of provider SDKs, MCP SDKs, database drivers, web
 frameworks, and UI frameworks.
@@ -1137,10 +1136,8 @@ or Thread lifecycle.
   a credential gate, demo Agent, alternate state machine, or reduced runtime.
 - **JX-CLI-004.** Each supported target MUST be built as a Bun standalone
   executable with the matching OpenTUI native package and embedded runtime
-  assets. The initial pre-release target set is macOS arm64, macOS x64,
-  Linux x64 with glibc, and Windows x64. Linux arm64, Linux musl, and Windows
-  arm64 remain unsupported until their executable passes the same target-native
-  acceptance path.
+  assets. The initial pre-release target set is macOS arm64, macOS x64, and
+  Linux x64 with glibc. Other targets are not part of this release line.
 - **JX-CLI-005.** `jixu` and every platform package in one release MUST have
   the same exact version. Platform package metadata MUST fail closed for a
   mismatched OS, CPU, or libc. A release manifest MUST record the target,
@@ -1159,11 +1156,6 @@ or Thread lifecycle.
   directly through GitHub Releases or Homebrew MUST use the maintainer-approved
   Developer ID signing and notarization identity. Signing changes the release
   bytes, so checksums MUST be computed afterward.
-- **JX-CLI-008.** The Windows x64 platform package MUST contain `bin/jixu.exe`,
-  and the facade launcher MUST execute that exact file without a shell. A
-  Windows candidate MUST be compiled and exercised on Windows before it enters
-  the aggregated release manifest; cross-compilation alone is insufficient.
-
 ## 17. Acceptance criteria
 
 - **JX-AC-001 — Single-turn success.** One input durably requests a model,
@@ -1770,13 +1762,12 @@ future GitHub Release and Homebrew distribution. This changes package metadata
 and installation behavior only; it adds no Thread, Event, State, configuration,
 or stored-data migration.
 
-Version 0.4.29 adds Windows x64 to the initial installed-CLI target set and
-requires every advertised platform artifact to be built and exercised on its
-target runner before aggregation. The first SemVer pre-release may distribute
-ad-hoc-signed macOS executables through the npm `beta` channel without claiming
-Developer ID, notarization, or Gatekeeper trust; stable and directly distributed
-macOS artifacts retain those requirements. This changes release metadata and
-platform compatibility only and adds no Thread, Event, State, configuration, or
+Version 0.4.29 requires every advertised platform artifact to be built and
+exercised on its target runner before aggregation. The first SemVer pre-release
+may distribute ad-hoc-signed macOS executables through the npm `beta` channel
+without claiming Developer ID, notarization, or Gatekeeper trust; stable and
+directly distributed macOS artifacts retain those requirements. This changes
+release metadata only and adds no Thread, Event, State, configuration, or
 stored-data migration.
 
 ## 19. Implementation order

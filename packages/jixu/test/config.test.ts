@@ -55,10 +55,8 @@ test("JX-AC-048 model, Tool, and Jina BYOK settings persist in one schema v5 fil
     assert.match(settings, /"effect": "deny"/);
     assert.deepEqual(await readdir(directory), ["settings.json"]);
 
-    if (process.platform !== "win32") {
-      assert.equal((await stat(directory)).mode & 0o777, 0o700);
-      assert.equal((await stat(store.settingsPath)).mode & 0o777, 0o600);
-    }
+    assert.equal((await stat(directory)).mode & 0o777, 0o700);
+    assert.equal((await stat(store.settingsPath)).mode & 0o777, 0o600);
   } finally {
     await rm(parent, { force: true, recursive: true });
   }

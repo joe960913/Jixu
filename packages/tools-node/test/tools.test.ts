@@ -93,7 +93,7 @@ test("JX-TOOL-006 read, write, and edit use canonical Tools inside one workspace
   }
 });
 
-test("JX-AC-039 JX-TOOL-007 file Tools reject lexical and symlink escapes", async (t) => {
+test("JX-AC-039 JX-TOOL-007 file Tools reject lexical and symlink escapes", async () => {
   const fixture = await workspace();
   const outside = await mkdtemp(join(tmpdir(), "jixu-outside-"));
   try {
@@ -107,10 +107,6 @@ test("JX-AC-039 JX-TOOL-007 file Tools reject lexical and symlink escapes", asyn
         /escapes the workspace scope/.test(error.message),
     );
 
-    if (process.platform === "win32") {
-      t.diagnostic("Symlink boundary assertion is skipped on Windows");
-      return;
-    }
     await symlink(join(outside, "secret.txt"), join(fixture.root, "linked.txt"));
     await assert.rejects(
       tools.read.execute(tools.read.parseInput({ path: "linked.txt" }), context()),
@@ -185,8 +181,7 @@ test("JX-AC-039 JX-AC-041 JX-SEC-005 bash output and live Signals share one boun
     });
     assert.match(tools.bash.descriptor.description, /Unsandboxed/);
     const input = tools.bash.parseInput({
-      command:
-        "node -e \"process.stdout.write('123456'); process.stderr.write('err'); process.exit(3)\"",
+      command: "printf '123456'; printf 'err' >&2; exit 3",
     });
     const signals: Signal[] = [];
     const output = tools.bash.parseOutput(
