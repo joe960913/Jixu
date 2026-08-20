@@ -506,6 +506,11 @@ try {
     setup.renderer.root.findDescendantById("ephemeral-agent-status"),
     undefined,
   );
+  // JX-AC-036: a Tool-only model response keeps the receipt visibly owned by JIXU.
+  const liveToolHeader = liveToolFrame
+    .split("\n")
+    .find((line) => line.includes("TOOLS"));
+  assert.match(liveToolHeader ?? "", /JIXU.*TOOLS/);
   assert.match(liveToolFrame, /cat > \/tmp\/hello\.html · In progress/);
   assert.match(liveToolFrame, /MODEL\s+vendor\/model-example/);
 
