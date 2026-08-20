@@ -105,7 +105,7 @@ model tool call
 - `packages/jixu/src/cli.tsx`：catalogue 组合、Jina Tool closure 与 enabled Tool selection。
 - `packages/jixu/src/agent-instructions.ts`：Web Search 能力、引用要求与 prompt-injection 边界。
 - `packages/jixu/src/tui-tool-center.tsx`、`work-status.ts`：配置披露、query receipt 与 source preview。
-- `scripts/package-artifacts.mjs`、`verify-package-portability.mjs`：新包进入同一 release artifact path。
+- `scripts/package-artifacts.ts`、`verify-package-portability.ts`：新包进入同一 release artifact path。
 
 ### 关键算法或状态转换
 
@@ -190,5 +190,5 @@ deep-research workflow。
 - `packages/jixu/src/agent-instructions.ts`
 - `packages/jixu/src/tui-tool-center.tsx`
 - `packages/jixu/src/work-status.ts`
-- `scripts/package-artifacts.mjs`
-- `scripts/verify-package-portability.mjs`
+- `scripts/package-artifacts.ts`
+- `scripts/verify-package-portability.ts`

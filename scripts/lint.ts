@@ -1,14 +1,16 @@
-import { readdir, readFile } from "node:fs/promises";
+import { access, readdir, readFile } from "node:fs/promises";
 import { extname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { runCommand } from "./lib/command.ts";
+
 const root = fileURLToPath(new URL("../", import.meta.url));
 const coreRoot = fileURLToPath(new URL("../packages/core/src/", import.meta.url));
-const failures = [];
+const failures: string[] = [];
 
-async function collect(directory) {
+async function collect(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
-  const files = [];
+  const files: string[] = [];
 
   for (const entry of entries) {
     const path = join(directory, entry.name);
@@ -53,6 +55,21 @@ for (const path of await collect(coreRoot)) {
       failures.push(`${label}: relative imports must use an explicit .ts extension`);
     }
   }
+}
+
+const repositoryFiles = await runCommand(
+  "git",
+  ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+  { cwd: root },
+);
+for (const path of repositoryFiles.stdout.split("\0")) {
+  if (!/\.(?:cjs|js|mjs)$/u.test(path)) continue;
+  try {
+    await access(join(root, path));
+  } catch {
+    continue;
+  }
+  failures.push(`${path}: handwritten JavaScript is not allowed; use TypeScript`);
 }
 
 if (failures.length > 0) {

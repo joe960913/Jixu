@@ -1,14 +1,33 @@
 import { spawn } from "node:child_process";
 
-function commandError(command, args, result) {
+export interface CommandOptions {
+  readonly cwd?: string;
+  readonly env?: Readonly<NodeJS.ProcessEnv>;
+}
+
+export interface CommandResult {
+  readonly code: number | null;
+  readonly stderr: string;
+  readonly stdout: string;
+}
+
+function commandError(
+  command: string,
+  args: readonly string[],
+  result: CommandResult,
+): Error {
   const rendered = [command, ...args].join(" ");
   const details = [result.stdout, result.stderr].filter(Boolean).join("\n");
   return new Error(`${rendered} failed with exit ${result.code}\n${details}`);
 }
 
-export function runCommand(command, args, options = {}) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(command, args, {
+export function runCommand(
+  command: string,
+  args: readonly string[],
+  options: CommandOptions = {},
+): Promise<CommandResult> {
+  return new Promise<CommandResult>((resolvePromise, rejectPromise) => {
+    const child = spawn(command, [...args], {
       cwd: options.cwd,
       env: { ...process.env, ...options.env },
       stdio: ["ignore", "pipe", "pipe"],

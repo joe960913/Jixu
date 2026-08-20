@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, type BinaryToTextEncoding } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
@@ -7,7 +7,45 @@ import { fileURLToPath } from "node:url";
 
 import { pack, unpack } from "@publint/pack";
 
-import { runCommand } from "./lib/command.mjs";
+import { runCommand } from "./lib/command.ts";
+
+interface PackageRepository {
+  readonly directory: string;
+  readonly type?: string;
+  readonly url?: string;
+}
+
+interface PackageManifest {
+  readonly dependencies?: Readonly<Record<string, string>>;
+  readonly description?: string;
+  readonly engines?: Readonly<Record<string, string>>;
+  readonly exports: Readonly<Record<string, unknown>>;
+  readonly files?: readonly string[];
+  readonly license?: string;
+  readonly main?: string;
+  readonly name: string;
+  readonly private?: boolean;
+  readonly publishConfig?: Readonly<Record<string, unknown>>;
+  readonly repository: PackageRepository;
+  readonly type?: string;
+  readonly types?: string;
+  readonly version: string;
+}
+
+interface PackageExportTarget {
+  readonly default?: string;
+  readonly import?: string;
+  readonly types: string;
+}
+
+export interface PackageArtifactCandidate {
+  readonly files: readonly string[];
+  readonly integrity: string;
+  readonly manifest: PackageManifest;
+  readonly sha256: string;
+  readonly shasum: string;
+  readonly tarballPath: string;
+}
 
 export const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 
@@ -22,12 +60,37 @@ const packageDirectories = [
   "jixu",
 ];
 
-function isInside(parent, target) {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseManifest(source: string, label: string): PackageManifest {
+  const manifest: unknown = JSON.parse(source);
+  assert.ok(isRecord(manifest), `${label} must contain a JSON object`);
+  assert.equal(typeof manifest.name, "string", `${label} misses name`);
+  assert.equal(typeof manifest.version, "string", `${label} misses version`);
+  assert.ok(isRecord(manifest.repository), `${label} misses repository`);
+  assert.equal(
+    typeof manifest.repository.directory,
+    "string",
+    `${label} misses repository.directory`,
+  );
+  assert.ok(isRecord(manifest.exports), `${label} misses exports`);
+  if (manifest.dependencies !== undefined) {
+    assert.ok(isRecord(manifest.dependencies), `${label} dependencies must be an object`);
+    for (const [name, specifier] of Object.entries(manifest.dependencies)) {
+      assert.equal(typeof specifier, "string", `${label} dependency ${name} must be a string`);
+    }
+  }
+  return manifest as unknown as PackageManifest;
+}
+
+function isInside(parent: string, target: string): boolean {
   const path = relative(parent, target);
   return path !== "" && !path.startsWith("..") && !isAbsolute(path);
 }
 
-function assertSafeArtifactDestination(destination) {
+function assertSafeArtifactDestination(destination: string): void {
   const repositoryArtifacts = join(repositoryRoot, ".artifacts");
   assert.ok(
     isInside(repositoryArtifacts, destination) || isInside(tmpdir(), destination),
@@ -35,11 +98,15 @@ function assertSafeArtifactDestination(destination) {
   );
 }
 
-function digest(algorithm, bytes, encoding) {
+function digest(
+  algorithm: string,
+  bytes: Uint8Array,
+  encoding: BinaryToTextEncoding,
+): string {
   return createHash(algorithm).update(bytes).digest(encoding);
 }
 
-function releaseFields(manifest) {
+function releaseFields(manifest: PackageManifest): Readonly<Record<string, unknown>> {
   return {
     description: manifest.description,
     engines: manifest.engines,
@@ -56,18 +123,24 @@ function releaseFields(manifest) {
   };
 }
 
-function exportTargets(manifest) {
+function exportTargets(
+  manifest: PackageManifest,
+): readonly (PackageExportTarget & { readonly runtime: string; readonly subpath: string })[] {
   return Object.entries(manifest.exports).map(([subpath, target]) => {
-    assert.equal(typeof target, "object", `${manifest.name} ${subpath} export must be conditional`);
-    assert.ok(target !== null && !Array.isArray(target));
-    assert.equal(typeof target.types, "string", `${manifest.name} ${subpath} misses types`);
+    assert.ok(isRecord(target), `${manifest.name} ${subpath} export must be conditional`);
+    const types = target.types;
+    assert.ok(typeof types === "string", `${manifest.name} ${subpath} misses types`);
     const runtime = target.import ?? target.default;
-    assert.equal(typeof runtime, "string", `${manifest.name} ${subpath} misses ESM runtime`);
-    return { runtime, subpath, types: target.types };
+    assert.ok(typeof runtime === "string", `${manifest.name} ${subpath} misses ESM runtime`);
+    return { runtime, subpath, types };
   });
 }
 
-async function inspectTarball(tarballPath, sourceManifest, sourceManifests) {
+async function inspectTarball(
+  tarballPath: string,
+  sourceManifest: PackageManifest,
+  sourceManifests: ReadonlyMap<string, PackageManifest>,
+): Promise<PackageArtifactCandidate> {
   const bytes = await readFile(tarballPath);
   const unpacked = await unpack(bytes);
   const prefix = `${unpacked.rootDir}/`;
@@ -79,7 +152,10 @@ async function inspectTarball(tarballPath, sourceManifest, sourceManifests) {
   );
   const packedManifestBytes = files.get("package.json");
   assert.ok(packedManifestBytes, `${sourceManifest.name} tarball misses package.json`);
-  const manifest = JSON.parse(new TextDecoder().decode(packedManifestBytes));
+  const manifest = parseManifest(
+    new TextDecoder().decode(packedManifestBytes),
+    `${sourceManifest.name} packed package.json`,
+  );
 
   assert.deepEqual(
     releaseFields(manifest),
@@ -93,7 +169,7 @@ async function inspectTarball(tarballPath, sourceManifest, sourceManifests) {
     `${manifest.name} packed manifest contains workspace protocol`,
   );
 
-  const expectedDependencies = {};
+  const expectedDependencies: Record<string, string> = {};
   for (const [name, specifier] of Object.entries(sourceManifest.dependencies ?? {})) {
     if (specifier.startsWith("workspace:")) {
       const dependency = sourceManifests.get(name);
@@ -146,7 +222,7 @@ async function inspectTarball(tarballPath, sourceManifest, sourceManifests) {
   };
 }
 
-async function lintTarball(candidate) {
+async function lintTarball(candidate: PackageArtifactCandidate): Promise<void> {
   await runCommand("pnpm", ["exec", "publint", candidate.tarballPath], {
     cwd: repositoryRoot,
   });
@@ -157,7 +233,9 @@ async function lintTarball(candidate) {
   );
 }
 
-export async function buildPackageArtifacts(destination) {
+export async function buildPackageArtifacts(
+  destination: string,
+): Promise<readonly PackageArtifactCandidate[]> {
   const resolvedDestination = resolve(destination);
   assertSafeArtifactDestination(resolvedDestination);
   await rm(resolvedDestination, { force: true, recursive: true });
@@ -166,15 +244,17 @@ export async function buildPackageArtifacts(destination) {
   await runCommand("pnpm", ["run", "clean:packages"], { cwd: repositoryRoot });
   await runCommand("pnpm", ["run", "build:packages"], { cwd: repositoryRoot });
 
-  const sourceManifests = new Map();
+  const sourceManifests = new Map<string, PackageManifest>();
   for (const directory of packageDirectories) {
-    const manifest = JSON.parse(
-      await readFile(join(repositoryRoot, "packages", directory, "package.json"), "utf8"),
+    const manifestPath = join(repositoryRoot, "packages", directory, "package.json");
+    const manifest = parseManifest(
+      await readFile(manifestPath, "utf8"),
+      manifestPath,
     );
     sourceManifests.set(manifest.name, manifest);
   }
 
-  const candidates = [];
+  const candidates: PackageArtifactCandidate[] = [];
   for (const directory of packageDirectories) {
     const packageRoot = join(repositoryRoot, "packages", directory);
     const sourceManifest = [...sourceManifests.values()].find(
@@ -212,11 +292,11 @@ export async function buildPackageArtifacts(destination) {
   return candidates;
 }
 
-function cliDestination() {
+function cliDestination(): string {
   const outIndex = process.argv.indexOf("--out");
   if (outIndex === -1) return join(repositoryRoot, ".artifacts", "packages");
   const value = process.argv[outIndex + 1];
-  assert.equal(typeof value, "string", "--out requires a directory");
+  assert.ok(typeof value === "string", "--out requires a directory");
   return resolve(repositoryRoot, value);
 }
 

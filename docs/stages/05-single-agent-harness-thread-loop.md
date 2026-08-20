@@ -175,4 +175,4 @@ OpenTUI skill 约束了 Thread picker 和 Slash menu 继续使用原生 Select �
 - `packages/jixu/test/tui-smoke.tsx`
 - `packages/store-jsonl/src/index.ts`
 - `packages/store-sqlite/src/index.ts`
-- `scripts/verify-package-portability.mjs`
+- `scripts/verify-package-portability.ts`

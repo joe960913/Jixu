@@ -4,15 +4,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { runCommand } from "./lib/command.mjs";
-import { buildPackageArtifacts, repositoryRoot } from "./package-artifacts.mjs";
+import { runCommand } from "./lib/command.ts";
+import {
+  buildPackageArtifacts,
+  repositoryRoot,
+  type PackageArtifactCandidate,
+} from "./package-artifacts.ts";
 
-const managers = ["npm", "pnpm", "yarn", "bun"];
+type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
+
+const managers: readonly PackageManager[] = ["npm", "pnpm", "yarn", "bun"];
 const nodeFloorVersion = "22.19.0";
 const yarnVersion = "4.18.0";
 const typescriptCli = join(repositoryRoot, "node_modules", "typescript", "bin", "tsc");
 
-async function resolveNodeFloor() {
+async function resolveNodeFloor(): Promise<string> {
   const result = await runCommand(
     "pnpm",
     [
@@ -25,13 +31,13 @@ async function resolveNodeFloor() {
     { cwd: repositoryRoot },
   );
   const executable = result.stdout.split("\n").at(-1);
-  assert.equal(typeof executable, "string");
+  assert.ok(typeof executable === "string");
   const version = await runCommand(executable, ["--version"]);
   assert.equal(version.stdout, `v${nodeFloorVersion}`);
   return executable;
 }
 
-function runtimeSmoke(manager) {
+function runtimeSmoke(manager: PackageManager): string {
   return `
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -86,7 +92,7 @@ try {
 `;
 }
 
-function typeConsumer() {
+function typeConsumer(): string {
   return `
 import { createHarness, defineAgent, type ModelDriver } from "@jixu/core";
 import { createLLMModelDriver } from "@jixu/llm";
@@ -118,16 +124,23 @@ void createLLMModelDriver;
 `;
 }
 
-async function writeConsumerFiles(root, manager, candidates) {
+async function writeConsumerFiles(
+  root: string,
+  manager: PackageManager,
+  candidates: readonly PackageArtifactCandidate[],
+): Promise<void> {
   const tarballs = Object.fromEntries(
     candidates.map((candidate) => [
       candidate.manifest.name,
       pathToFileURL(candidate.tarballPath).href,
     ]),
   );
-  let localResolution = {};
-  if (manager === "yarn") localResolution = { resolutions: tarballs };
-  if (manager === "bun") localResolution = { overrides: tarballs };
+  const localResolution =
+    manager === "yarn"
+      ? { resolutions: tarballs }
+      : manager === "bun"
+        ? { overrides: tarballs }
+        : {};
   await writeFile(
     join(root, "package.json"),
     `${JSON.stringify(
@@ -158,7 +171,7 @@ async function writeConsumerFiles(root, manager, candidates) {
       "utf8",
     );
   }
-  await writeFile(join(root, "smoke.mjs"), runtimeSmoke(manager), "utf8");
+  await writeFile(join(root, "smoke.ts"), runtimeSmoke(manager), "utf8");
   await writeFile(join(root, "types.mts"), typeConsumer(), "utf8");
   await writeFile(
     join(root, "tsconfig.json"),
@@ -182,7 +195,10 @@ async function writeConsumerFiles(root, manager, candidates) {
   );
 }
 
-async function verifyInstalledPackages(root, candidates) {
+async function verifyInstalledPackages(
+  root: string,
+  candidates: readonly PackageArtifactCandidate[],
+): Promise<void> {
   for (const candidate of candidates) {
     const manifestPath = join(
       root,
@@ -190,7 +206,9 @@ async function verifyInstalledPackages(root, candidates) {
       ...candidate.manifest.name.split("/"),
       "package.json",
     );
-    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    const manifest: unknown = JSON.parse(await readFile(manifestPath, "utf8"));
+    assert.ok(typeof manifest === "object" && manifest !== null && !Array.isArray(manifest));
+    assert.ok("name" in manifest && "version" in manifest);
     assert.equal(manifest.name, candidate.manifest.name);
     assert.equal(manifest.version, candidate.manifest.version);
     assert.equal(
@@ -202,12 +220,12 @@ async function verifyInstalledPackages(root, candidates) {
 }
 
 async function verifyManager(
-  manager,
-  consumerRoot,
-  candidates,
-  corepackHome,
-  nodeFloor,
-) {
+  manager: PackageManager,
+  consumerRoot: string,
+  candidates: readonly PackageArtifactCandidate[],
+  corepackHome: string,
+  nodeFloor: string,
+): Promise<void> {
   const fixtureRoot = join(consumerRoot, manager);
   await mkdir(fixtureRoot, { recursive: true });
   await writeConsumerFiles(fixtureRoot, manager, candidates);
@@ -239,7 +257,9 @@ async function verifyManager(
     );
   }
 
-  const installs = {
+  const installs: Readonly<
+    Record<PackageManager, readonly [command: string, args: readonly string[]]>
+  > = {
     npm: ["npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund"]],
     pnpm: ["pnpm", ["install", "--ignore-scripts", "--reporter=append-only"]],
     yarn: ["corepack", ["yarn", "install"]],
@@ -252,7 +272,7 @@ async function verifyManager(
     cwd: fixtureRoot,
     env: environment,
   });
-  const smoke = await runCommand(nodeFloor, ["smoke.mjs"], {
+  const smoke = await runCommand(nodeFloor, ["smoke.ts"], {
     cwd: fixtureRoot,
     env: environment,
   });
@@ -260,7 +280,7 @@ async function verifyManager(
   console.log(`  ✓ ${manager} clean install + TypeScript + Node ${nodeFloorVersion} smoke`);
 }
 
-async function main() {
+async function main(): Promise<void> {
   const temporaryRoot = await mkdtemp(join(tmpdir(), "jixu-package-portability-"));
   const tarballRoot = join(temporaryRoot, "tarballs");
   const consumerRoot = join(temporaryRoot, "consumers");

@@ -3,7 +3,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
-const copies = [
+const copies: readonly {
+  readonly destination: string;
+  readonly source: string;
+}[] = [
   {
     destination: join(
       repositoryRoot,

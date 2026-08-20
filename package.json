@@ -8,15 +8,15 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build:packages": "tsc -b tsconfig.build.json && node scripts/copy-package-assets.mjs",
+    "build:packages": "tsc -b tsconfig.build.json && node scripts/copy-package-assets.ts",
     "clean:packages": "tsc -b tsconfig.build.json --clean",
-    "pack:packages": "node scripts/package-artifacts.mjs --out .artifacts/packages",
+    "pack:packages": "node scripts/package-artifacts.ts --out .artifacts/packages",
     "dev": "pnpm run build:packages && bun run packages/jixu/src/cli.tsx",
     "typecheck": "pnpm run build:packages && tsc --noEmit",
     "test": "pnpm run build:packages && node --test",
     "test:tui": "pnpm run build:packages && pnpm --filter jixu test:tui",
-    "test:packages": "node scripts/verify-package-portability.mjs",
-    "lint": "node scripts/lint.mjs",
+    "test:packages": "node scripts/verify-package-portability.ts",
+    "lint": "node scripts/lint.ts",
     "check": "pnpm run build:packages && tsc --noEmit && pnpm run lint && node --test && pnpm --filter jixu test:tui",
     "check:release": "pnpm run check && pnpm run test:packages"
   },

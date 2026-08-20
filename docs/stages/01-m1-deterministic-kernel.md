@@ -402,7 +402,7 @@ M2 是 Continuity，核心目标不是增加更多 noun，而是证明同一个 
 package.json                         workspace scripts and dev tooling
 pnpm-workspace.yaml                  workspace membership
 tsconfig.json                        strict TypeScript contract
-scripts/lint.mjs                     zero-dependency architecture lint
+scripts/lint.ts                      zero-dependency architecture lint
 packages/core/src/agent.ts           Agent, Schema, Tool definitions
 packages/core/src/domain.ts          canonical domain data
 packages/core/src/effects.ts         Effect and Driver outcome contracts
