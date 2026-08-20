@@ -53,7 +53,7 @@ Environment:
   JIXU_BASE_URL          Prefill the selected protocol API root
   JIXU_MODEL             Prefill the model ID
   JIXU_HOME              Override the global config directory
-  JIXU_MOTION            Set to off for a static execution indicator
+  JIXU_MOTION            Set to off to disable optional presentation motion
 
 Examples:
   pnpm dev
