@@ -7,7 +7,7 @@ test("JX-AC-051 npm pre-releases allow ad-hoc macOS signing without weakening st
   assert.deepEqual(
     resolveMacSigningPlan({
       publicRelease: true,
-      version: "0.1.0-beta.0",
+      version: "0.1.0-beta.1",
     }),
     {
       identity: "-",
