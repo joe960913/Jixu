@@ -1,0 +1,24 @@
+{
+  "parsers": [
+    {
+      "filetype": "bash",
+      "aliases": ["sh", "shell"],
+      "wasm": "https://unpkg.com/tree-sitter-bash@0.25.1/tree-sitter-bash.wasm",
+      "queries": {
+        "highlights": [
+          "https://unpkg.com/tree-sitter-bash@0.25.1/queries/highlights.scm"
+        ]
+      }
+    },
+    {
+      "filetype": "python",
+      "aliases": ["py"],
+      "wasm": "https://unpkg.com/tree-sitter-python@0.25.0/tree-sitter-python.wasm",
+      "queries": {
+        "highlights": [
+          "https://unpkg.com/tree-sitter-python@0.25.0/queries/highlights.scm"
+        ]
+      }
+    }
+  ]
+}

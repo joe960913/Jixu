@@ -31,7 +31,8 @@
   "scripts": {
     "dev": "pnpm --workspace-root run build:packages && bun run src/cli.tsx",
     "test:tui": "bun run test/tui-smoke.tsx",
-    "build:executable": "pnpm --workspace-root run build:packages && bun build --compile src/cli.tsx --outfile dist/jixu"
+    "build:executable": "pnpm --workspace-root run build:packages && bun build --compile src/cli.tsx --outfile dist/jixu",
+    "update:tree-sitter": "bun run scripts/update-tree-sitter-assets.ts"
   },
   "dependencies": {
     "@jixu/core": "workspace:*"

@@ -1,5 +1,5 @@
 import type { TextareaOptions, TextareaRenderable } from "@opentui/core";
-import { useTerminalDimensions } from "@opentui/react";
+import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import {
   useCallback,
   useEffect,
@@ -36,6 +36,11 @@ interface AgentWorkspaceProps {
   readonly workspace: string;
 }
 
+interface ToolDisclosureState {
+  readonly expandedEffectIds: ReadonlySet<string>;
+  readonly showAllOperations: boolean;
+}
+
 const inactiveSnapshot: ThreadControllerSnapshot = Object.freeze({
   activePlan: null,
   activity: Object.freeze([]),
@@ -47,6 +52,7 @@ const inactiveSnapshot: ThreadControllerSnapshot = Object.freeze({
   threadPickerOpen: false,
   threads: Object.freeze([]),
   threadStatus: "none",
+  toolLiveOutput: Object.freeze({}),
   toolOperations: Object.freeze([]),
   transcript: Object.freeze([]),
   workStatus: null,
@@ -65,6 +71,10 @@ const COMPOSER_KEY_BINDINGS: NonNullable<TextareaOptions["keyBindings"]> = [
   { action: "submit", name: "linefeed" },
   { action: "newline", name: "linefeed", shift: true },
 ];
+const EMPTY_TOOL_DISCLOSURE: ToolDisclosureState = Object.freeze({
+  expandedEffectIds: new Set<string>(),
+  showAllOperations: false,
+});
 
 function truncate(value: string, maximum: number): string {
   if (value.length <= maximum) return value;
@@ -180,6 +190,10 @@ export function AgentWorkspace({
   const emptyStateHeight = showCreationMark ? 15 : 5;
   const composer = useRef<TextareaRenderable>(null);
   const [draft, setDraft] = useState("");
+  const [transcriptRevealRequest, setTranscriptRevealRequest] = useState(0);
+  const [toolDisclosureByThread, setToolDisclosureByThread] = useState<
+    ReadonlyMap<string, ToolDisclosureState>
+  >(() => new Map());
   const [localInspection, setLocalInspection] = useState<
     ThreadControllerSnapshot["inspection"]
   >(
@@ -191,6 +205,72 @@ export function AgentWorkspace({
   const snapshot = configured
     ? controllerSnapshot
     : { ...inactiveSnapshot, inspection: localInspection };
+  const currentToolDisclosure = snapshot.currentThreadId === null
+    ? EMPTY_TOOL_DISCLOSURE
+    : toolDisclosureByThread.get(snapshot.currentThreadId) ?? EMPTY_TOOL_DISCLOSURE;
+  const toolEffectIds = snapshot.transcript.flatMap((entry) =>
+    entry.kind === "tool-receipts"
+      ? entry.operations.map((operation) => operation.effectId)
+      : [],
+  );
+  const toolEffectIdKey = toolEffectIds.join("\u0000");
+  const allToolDetailsExpanded =
+    toolEffectIds.length > 0 &&
+    toolEffectIds.every((effectId) =>
+      currentToolDisclosure.expandedEffectIds.has(effectId),
+    );
+
+  const toggleToolDetail = useCallback(
+    (effectId: string) => {
+      const threadId = snapshot.currentThreadId;
+      if (threadId === null) return;
+      setToolDisclosureByThread((current) => {
+        const existing = current.get(threadId) ?? EMPTY_TOOL_DISCLOSURE;
+        const expandedEffectIds = new Set(existing.expandedEffectIds);
+        if (expandedEffectIds.has(effectId)) {
+          expandedEffectIds.delete(effectId);
+        } else {
+          expandedEffectIds.add(effectId);
+        }
+        const next = new Map(current);
+        next.set(threadId, {
+          expandedEffectIds,
+          showAllOperations: existing.showAllOperations,
+        });
+        return next;
+      });
+    },
+    [snapshot.currentThreadId],
+  );
+
+  useKeyboard((key) => {
+    if (
+      !key.ctrl ||
+      key.name !== "o" ||
+      !snapshot.transcript.some((entry) => entry.kind === "tool-receipts")
+    ) {
+      return;
+    }
+    key.preventDefault();
+    const threadId = snapshot.currentThreadId;
+    if (threadId === null) return;
+    setToolDisclosureByThread((current) => {
+      const next = new Map(current);
+      next.set(
+        threadId,
+        allToolDetailsExpanded
+          ? {
+              expandedEffectIds: new Set<string>(),
+              showAllOperations: false,
+            }
+          : {
+              expandedEffectIds: new Set(toolEffectIds),
+              showAllOperations: true,
+            },
+      );
+      return next;
+    });
+  });
 
   useEffect(() => {
     if (active !== null || connectionError === null) return;
@@ -199,12 +279,43 @@ export function AgentWorkspace({
     );
   }, [active, connectionError]);
 
+  useEffect(() => {
+    const threadId = snapshot.currentThreadId;
+    if (threadId === null) return;
+    const visibleEffectIds = new Set(toolEffectIds);
+    setToolDisclosureByThread((current) => {
+      const existing = current.get(threadId);
+      if (existing === undefined) return current;
+      const expandedEffectIds = new Set(
+        [...existing.expandedEffectIds].filter((effectId) =>
+          visibleEffectIds.has(effectId),
+        ),
+      );
+      if (
+        expandedEffectIds.size === existing.expandedEffectIds.size &&
+        (visibleEffectIds.size > 0 || !existing.showAllOperations)
+      ) {
+        return current;
+      }
+      const next = new Map(current);
+      next.set(threadId, {
+        expandedEffectIds,
+        showAllOperations:
+          visibleEffectIds.size > 0 && existing.showAllOperations,
+      });
+      return next;
+    });
+  }, [snapshot.currentThreadId, toolEffectIdKey]);
+
   const submitValue = useCallback(
     (value: string) => {
       const cleanValue = value.trim();
       if (cleanValue.length === 0) return;
 
       if (active !== null) {
+        if (!cleanValue.startsWith("/")) {
+          setTranscriptRevealRequest((current) => current + 1);
+        }
         void active.controller.submit(cleanValue);
         return;
       }
@@ -382,6 +493,11 @@ export function AgentWorkspace({
                 motion={motion}
                 showCreationMark={showCreationMark}
                 snapshot={snapshot}
+                allToolDetailsExpanded={allToolDetailsExpanded}
+                expandedToolEffectIds={currentToolDisclosure.expandedEffectIds}
+                onToggleToolDetail={toggleToolDetail}
+                revealLatestRequest={transcriptRevealRequest}
+                showAllToolOperations={currentToolDisclosure.showAllOperations}
               />
             </box>
 

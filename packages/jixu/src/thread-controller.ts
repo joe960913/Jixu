@@ -1,10 +1,16 @@
-import { isJsonObject, MODEL_PROGRESS_SIGNAL_TYPE } from "@jixu/core";
+import {
+  isJsonObject,
+  MODEL_PROGRESS_SIGNAL_TYPE,
+  parseToolOutputDelta,
+  TOOL_OUTPUT_SIGNAL_TYPE,
+} from "@jixu/core";
 import type {
   AnyThreadEvent,
   Harness,
   Thread,
   ThreadState,
   ThreadStreamItem,
+  ToolOutputDelta,
 } from "@jixu/core";
 
 import { formatSlashCommandHelp } from "./commands.ts";
@@ -14,6 +20,7 @@ import type {
   JixuTone,
   ThreadControllerSnapshot,
   ThreadSummary,
+  ToolLiveOutput,
   TranscriptRole,
 } from "./tui-model.ts";
 
@@ -29,6 +36,8 @@ export interface ThreadControllerConfig {
 
 const HELP = formatSlashCommandHelp();
 const STREAM_FRAME_MS = 32;
+const TOOL_LIVE_OUTPUT_LINES = 3;
+const TOOL_LIVE_OUTPUT_LENGTH = 1_200;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown Jixu error";
@@ -58,6 +67,42 @@ function signalProgress(item: ThreadStreamItem): string | null {
     return null;
   }
   return typeof item.data.message === "string" ? item.data.message : null;
+}
+
+function signalToolOutput(item: ThreadStreamItem): ToolOutputDelta | null {
+  if (item.kind !== "signal" || item.type !== TOOL_OUTPUT_SIGNAL_TYPE) {
+    return null;
+  }
+  try {
+    return parseToolOutputDelta(item.data);
+  } catch {
+    return null;
+  }
+}
+
+function removeToolLiveOutput(
+  outputs: Readonly<Record<string, ToolLiveOutput>>,
+  effectId: string,
+): Readonly<Record<string, ToolLiveOutput>> {
+  return Object.fromEntries(
+    Object.entries(outputs).filter(([candidate]) => candidate !== effectId),
+  );
+}
+
+function appendToolLiveOutput(
+  current: ToolLiveOutput | undefined,
+  delta: string,
+): ToolLiveOutput {
+  const combined = `${current?.text ?? ""}${delta}`.replace(/\r\n?/gu, "\n");
+  const lineTail = combined.split("\n").slice(-TOOL_LIVE_OUTPUT_LINES).join("\n");
+  const text = lineTail.slice(-TOOL_LIVE_OUTPUT_LENGTH);
+  return Object.freeze({
+    text,
+    truncated:
+      current?.truncated === true ||
+      lineTail.length !== combined.length ||
+      text.length !== lineTail.length,
+  });
 }
 
 function titleFrom(events: readonly AnyThreadEvent[]): string {
@@ -90,6 +135,8 @@ export class ThreadController {
   #progressMessage: string | null = null;
   #streamBuffer = "";
   #streamFlush: ReturnType<typeof setTimeout> | null = null;
+  #toolOutputBuffer = new Map<string, string>();
+  #toolOutputFlush: ReturnType<typeof setTimeout> | null = null;
   #snapshot: ThreadControllerSnapshot = Object.freeze({
     activePlan: null,
     activity: Object.freeze([]),
@@ -101,6 +148,7 @@ export class ThreadController {
     threadPickerOpen: false,
     threads: Object.freeze([]),
     threadStatus: "none",
+    toolLiveOutput: Object.freeze({}),
     toolOperations: Object.freeze([]),
     transcript: Object.freeze([]),
     workStatus: null,
@@ -375,6 +423,7 @@ export class ThreadController {
     this.#observer?.abort();
     this.#observer = null;
     this.#resetStreaming();
+    this.#resetToolOutput();
     this.#current = thread;
     const [events, state] = await Promise.all([thread.events(), thread.state()]);
     this.#events = events;
@@ -392,6 +441,7 @@ export class ThreadController {
         current: summary.id === thread.id,
       })),
       threadStatus: state.status,
+      toolLiveOutput: Object.freeze({}),
       toolOperations: state.status === "running" ? projection.toolOperations : [],
       workStatus: null,
     });
@@ -424,6 +474,18 @@ export class ThreadController {
               this.#resetStreaming();
               updates.streamingText = "";
             }
+            if (
+              item.event.type === "tool.completed" ||
+              item.event.type === "tool.failed"
+            ) {
+              this.#discardToolOutput(item.event.payload.effectId);
+              updates.toolLiveOutput = removeToolLiveOutput(
+                this.#snapshot.toolLiveOutput,
+                item.event.payload.effectId,
+              );
+            } else if (item.event.type === "context.cleared") {
+              updates.toolLiveOutput = Object.freeze({});
+            }
             const workStatus = workStatusForEvent(
               item.event,
               this.#progressMessage,
@@ -446,6 +508,18 @@ export class ThreadController {
                 },
               });
             }
+            continue;
+          }
+          const toolOutput = signalToolOutput(item);
+          if (toolOutput !== null) {
+            const operation = this.#snapshot.toolOperations.find(
+              (candidate) =>
+                candidate.effectId === toolOutput.effectId &&
+                candidate.name === toolOutput.name &&
+                candidate.status === "running",
+            );
+            if (operation === undefined) continue;
+            this.#queueToolOutput(toolOutput.effectId, toolOutput.delta);
             continue;
           }
           const delta = signalDelta(item);
@@ -522,11 +596,14 @@ export class ThreadController {
     this.#inFlight = Math.max(0, this.#inFlight - 1);
     if (this.#inFlight === 0) this.#progressMessage = null;
     this.#resetStreaming();
+    if (this.#inFlight === 0) this.#resetToolOutput();
     this.#patch({
       busy: this.#inFlight > 0,
       streamingText: "",
       toolOperations:
         this.#inFlight > 0 ? this.#snapshot.toolOperations : [],
+      toolLiveOutput:
+        this.#inFlight > 0 ? this.#snapshot.toolLiveOutput : Object.freeze({}),
       workStatus: this.#inFlight > 0 ? this.#snapshot.workStatus : null,
     });
   }
@@ -556,6 +633,50 @@ export class ThreadController {
     if (this.#streamFlush !== null) clearTimeout(this.#streamFlush);
     this.#streamFlush = null;
     this.#streamBuffer = "";
+  }
+
+  #queueToolOutput(effectId: string, delta: string): void {
+    this.#toolOutputBuffer.set(
+      effectId,
+      `${this.#toolOutputBuffer.get(effectId) ?? ""}${delta}`,
+    );
+    if (this.#toolOutputFlush !== null) return;
+    this.#toolOutputFlush = setTimeout(
+      () => this.#flushToolOutput(),
+      STREAM_FRAME_MS,
+    );
+  }
+
+  #flushToolOutput(): void {
+    this.#toolOutputFlush = null;
+    if (this.#toolOutputBuffer.size === 0) return;
+    const toolLiveOutput = { ...this.#snapshot.toolLiveOutput };
+    for (const [effectId, delta] of this.#toolOutputBuffer) {
+      const operation = this.#snapshot.toolOperations.find(
+        (candidate) =>
+          candidate.effectId === effectId && candidate.status === "running",
+      );
+      if (operation === undefined) continue;
+      toolLiveOutput[effectId] = appendToolLiveOutput(
+        toolLiveOutput[effectId],
+        delta,
+      );
+    }
+    this.#toolOutputBuffer.clear();
+    this.#patch({ toolLiveOutput });
+  }
+
+  #discardToolOutput(effectId: string): void {
+    this.#toolOutputBuffer.delete(effectId);
+    if (this.#toolOutputBuffer.size > 0 || this.#toolOutputFlush === null) return;
+    clearTimeout(this.#toolOutputFlush);
+    this.#toolOutputFlush = null;
+  }
+
+  #resetToolOutput(): void {
+    if (this.#toolOutputFlush !== null) clearTimeout(this.#toolOutputFlush);
+    this.#toolOutputFlush = null;
+    this.#toolOutputBuffer.clear();
   }
 
   #projection(): Pick<
@@ -606,6 +727,10 @@ export class ThreadController {
       updates.toolOperations === undefined
         ? this.#snapshot.toolOperations
         : Object.freeze([...updates.toolOperations]);
+    const toolLiveOutput =
+      updates.toolLiveOutput === undefined
+        ? this.#snapshot.toolLiveOutput
+        : Object.freeze({ ...updates.toolLiveOutput });
     const transcript =
       updates.transcript === undefined
         ? this.#snapshot.transcript
@@ -615,6 +740,7 @@ export class ThreadController {
       ...updates,
       activity,
       threads,
+      toolLiveOutput,
       toolOperations,
       transcript,
     });

@@ -1,12 +1,113 @@
+import { isJsonObject } from "@jixu/core";
 import type { AnyThreadEvent } from "@jixu/core";
 
-import type { ToolOperation, WorkStatus } from "./tui-model.ts";
+import type {
+  ToolOperation,
+  ToolRequestDetail,
+  WorkStatus,
+} from "./tui-model.ts";
+
+const DETAIL_MAX_CHARACTERS = 12_000;
+const DETAIL_MAX_LINES = 120;
 
 function truncate(value: string, maximum = 72): string {
   const compact = value.replace(/\s+/g, " ").trim();
   return compact.length <= maximum
     ? compact
     : `${compact.slice(0, maximum - 1)}…`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1_000) return `${bytes} B`;
+  if (bytes < 1_000_000) {
+    return `${(bytes / 1_000).toFixed(bytes < 10_000 ? 1 : 0)} KB`;
+  }
+  return `${(bytes / 1_000_000).toFixed(bytes < 10_000_000 ? 1 : 0)} MB`;
+}
+
+function lineCount(content: string): number {
+  if (content.length === 0) return 0;
+  const newlines = content.match(/\n/gu)?.length ?? 0;
+  return newlines + (content.endsWith("\n") ? 0 : 1);
+}
+
+function outputPreview(
+  content: string,
+  position: "end" | "start",
+): string | undefined {
+  const normalized = content.replace(/\r\n?/gu, "\n").trimEnd();
+  if (normalized.length === 0) return undefined;
+  return boundDetail(normalized, position);
+}
+
+function boundDetail(
+  content: string,
+  position: "end" | "start" = "start",
+): string {
+  const normalized = content.replace(/\r\n?/gu, "\n");
+  const lines = normalized.split("\n");
+  let truncated = lines.length > DETAIL_MAX_LINES;
+  const selectedLines = position === "start"
+    ? lines.slice(0, DETAIL_MAX_LINES)
+    : lines.slice(-DETAIL_MAX_LINES);
+  let selected = selectedLines.join("\n");
+  if (selected.length > DETAIL_MAX_CHARACTERS) {
+    truncated = true;
+    selected = position === "start"
+      ? selected.slice(0, DETAIL_MAX_CHARACTERS)
+      : selected.slice(-DETAIL_MAX_CHARACTERS);
+  }
+  if (!truncated) return selected;
+  return position === "start" ? `${selected}\n…` : `…\n${selected}`;
+}
+
+function rawStringArgument(
+  event: Extract<AnyThreadEvent, { readonly type: "tool.requested" }>,
+  key: string,
+): string | null {
+  const value = event.payload.effect.input.arguments[key];
+  return typeof value === "string" ? value : null;
+}
+
+function requestDetail(
+  event: Extract<AnyThreadEvent, { readonly type: "tool.requested" }>,
+): ToolRequestDetail {
+  const arguments_ = event.payload.effect.input.arguments;
+  const name = event.payload.effect.input.name;
+  if (name === "read") {
+    return {
+      content: boundDetail(rawStringArgument(event, "path") ?? "(path unavailable)"),
+      kind: "text",
+      label: "PATH",
+    };
+  }
+  if (name === "write") {
+    return {
+      content: boundDetail(rawStringArgument(event, "content") ?? "(content unavailable)"),
+      kind: "text",
+      label: "CONTENT",
+    };
+  }
+  if (name === "edit") {
+    return {
+      after: boundDetail(rawStringArgument(event, "newText") ?? ""),
+      before: boundDetail(rawStringArgument(event, "oldText") ?? ""),
+      kind: "replacement-diff",
+      replaceAll: arguments_.replaceAll === true,
+    };
+  }
+  if (name === "bash") {
+    return {
+      content: boundDetail(rawStringArgument(event, "command") ?? "(command unavailable)"),
+      kind: "text",
+      label: "COMMAND",
+    };
+  }
+  return {
+    content: boundDetail(JSON.stringify(arguments_, null, 2)),
+    kind: "text",
+    label: "ARGUMENTS",
+  };
 }
 
 function stringArgument(
@@ -67,8 +168,112 @@ export function toolOperationForRequest(
     ...(status.detail === undefined ? {} : { detail: status.detail }),
     effectId: event.payload.effect.id,
     name: event.payload.effect.input.name,
+    requestDetail: requestDetail(event),
     status: "running",
   };
+}
+
+export function toolOperationForOutcome(
+  event: Extract<
+    AnyThreadEvent,
+    { readonly type: "tool.completed" | "tool.failed" }
+  >,
+  operation: ToolOperation,
+): ToolOperation {
+  if (event.type === "tool.failed") {
+    return {
+      ...operation,
+      outcome: event.payload.error.code,
+      preview: truncate(event.payload.error.message, 240),
+      status:
+        event.payload.disposition === "indeterminate"
+          ? "indeterminate"
+          : "failed",
+    };
+  }
+
+  const output = event.payload.output;
+  if (!isJsonObject(output)) {
+    return { ...operation, outcome: "Completed", status: "succeeded" };
+  }
+
+  if (event.payload.name === "read") {
+    const content = typeof output.content === "string" ? output.content : null;
+    const path = typeof output.path === "string" ? truncate(output.path) : undefined;
+    if (content !== null) {
+      const lines = lineCount(content);
+      const preview = outputPreview(content, "start");
+      const truncated = output.truncated === true ? " · truncated" : "";
+      return {
+        ...operation,
+        ...(path === undefined ? {} : { detail: path }),
+        outcome: `${lines} ${lines === 1 ? "line" : "lines"} · ${formatBytes(new TextEncoder().encode(content).byteLength)}${truncated}`,
+        ...(preview === undefined ? {} : { preview }),
+        status: "succeeded",
+      };
+    }
+  }
+
+  if (event.payload.name === "write") {
+    const bytes = typeof output.bytes === "number" ? output.bytes : null;
+    const path = typeof output.path === "string" ? truncate(output.path) : undefined;
+    if (bytes !== null) {
+      return {
+        ...operation,
+        ...(path === undefined ? {} : { detail: path }),
+        outcome: `${formatBytes(bytes)} written`,
+        status: "succeeded",
+      };
+    }
+  }
+
+  if (event.payload.name === "edit") {
+    const replacements =
+      typeof output.replacements === "number" ? output.replacements : null;
+    const path = typeof output.path === "string" ? truncate(output.path) : undefined;
+    if (replacements !== null) {
+      return {
+        ...operation,
+        ...(path === undefined ? {} : { detail: path }),
+        outcome: `${replacements} ${replacements === 1 ? "replacement" : "replacements"}`,
+        status: "succeeded",
+      };
+    }
+  }
+
+  if (event.payload.name === "bash") {
+    const stdout = typeof output.stdout === "string" ? output.stdout : "";
+    const stderr = typeof output.stderr === "string" ? output.stderr : "";
+    const exitCode = typeof output.exitCode === "number" ? output.exitCode : null;
+    const signal = typeof output.signal === "string" ? output.signal : null;
+    const outcome = output.cancelled === true
+      ? "cancelled"
+      : output.timedOut === true
+        ? "timed out"
+        : signal !== null
+          ? `signal ${signal}`
+          : exitCode === null
+            ? "completed"
+            : `exit ${exitCode}`;
+    const combinedOutput = stdout.length > 0 && stderr.length > 0
+      ? `${stdout}${stdout.endsWith("\n") ? "" : "\n"}${stderr}`
+      : `${stdout}${stderr}`;
+    const preview = outputPreview(combinedOutput, "end");
+    const warning =
+      output.cancelled === true ||
+      output.timedOut === true ||
+      signal !== null ||
+      (exitCode !== null && exitCode !== 0);
+    return {
+      ...operation,
+      outcome: `${outcome}${output.truncated === true ? " · output truncated" : ""}`,
+      outcomeTone: warning ? "warning" : "success",
+      ...(preview === undefined ? {} : { preview }),
+      status: "succeeded",
+    };
+  }
+
+  return { ...operation, outcome: "Completed", status: "succeeded" };
 }
 
 function withProgress(
