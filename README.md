@@ -5,7 +5,7 @@ it Tools, and continue its work in a durable Thread.
 
 > Jixu is pre-1.0. The public API may change before 1.0.
 
-![Jixu terminal interface](./assets/jixu-tui.png)
+![Jixu terminal interface](./assets/jixu-tui.webp)
 
 ## Install
 
