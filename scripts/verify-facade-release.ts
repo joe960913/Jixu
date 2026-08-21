@@ -23,6 +23,7 @@ try {
   const facade = candidates[0];
   assert.ok(facade);
   assert.equal(facade.manifest.name, "jixu-ai");
+  assert.match(facade.manifest.version, /^\d+\.\d+\.\d+$/u);
   assert.ok(facade.files.includes("README.md"));
   assert.equal(facade.files.includes("dist/jixu"), false);
 
@@ -73,10 +74,12 @@ try {
   assert.equal((await installed("jixu-ai")).version, facade.manifest.version);
   assert.equal((await installed("jixu-core")).version, coreVersion);
   assert.equal((await installed(target.packageName)).version, nativeVersion);
-  assert.match(
-    await readFile(join(consumerRoot, "node_modules", "jixu-ai", "README.md"), "utf8"),
-    /npm install -g jixu-ai@beta/u,
+  const readme = await readFile(
+    join(consumerRoot, "node_modules", "jixu-ai", "README.md"),
+    "utf8",
   );
+  assert.match(readme, /npm install -g jixu-ai(?:\r?\n|$)/u);
+  assert.doesNotMatch(readme, /jixu-ai@beta/u);
 
   const executable = join(consumerRoot, "node_modules", ".bin", "jixu");
   assert.equal(
