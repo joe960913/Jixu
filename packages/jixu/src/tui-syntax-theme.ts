@@ -3,6 +3,26 @@ import { RGBA, SyntaxStyle } from "@opentui/core";
 import { jixuTheme } from "./theme.ts";
 
 const color = (value: string): RGBA => RGBA.fromHex(value);
+const requiredStyleId = (style: SyntaxStyle, name: string): number => {
+  const styleId = style.getStyleId(name);
+  if (styleId === null) {
+    throw new Error(`Syntax style ${name} is unavailable.`);
+  }
+  return styleId;
+};
+
+export const jixuComposerSyntaxStyle = SyntaxStyle.fromStyles({
+  attachment: {
+    bg: color(jixuTheme.attachmentBackground),
+    bold: true,
+    fg: color(jixuTheme.attachmentText),
+  },
+});
+
+export const composerPastedImageStyleId = requiredStyleId(
+  jixuComposerSyntaxStyle,
+  "attachment",
+);
 
 export const jixuMarkdownSyntaxStyle = SyntaxStyle.fromStyles({
   attribute: { fg: color(jixuTheme.brand) },
