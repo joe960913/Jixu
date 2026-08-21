@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.39
+**Version:** 0.4.40
 **Status:** normative, pre-1.0
 **Last updated:** 2026-08-21
 
@@ -2030,6 +2030,20 @@ matching older facade/version. Intel users must pin the last compatible pre-1.0
 distribution or move to Apple Silicon macOS or Linux x64 glibc. This changes
 package compatibility and release metadata only; it adds no Thread, Event,
 State, configuration, Replay, or stored-data migration.
+
+Version 0.4.40 advances the Framework, facade, and the two supported native CLI
+packages together to `0.2.0`. This pre-1.0 release contains the durable pasted-
+image input and single-Agent Standard/Ultra Mode introduced since `0.1.0`, and
+publishes only macOS arm64 and Linux x64 glibc native artifacts under the
+compatibility boundary established by Version 0.4.39. The historical Intel
+package remains available only at its previously published versions and MUST
+NOT receive a `0.2.0` artifact. Both supported targets MUST be rebuilt and
+target-tested from the release commit as one complete npm manifest; the GitHub
+Release MUST reuse those exact native bytes and checksums and disclose the
+macOS ad-hoc-signing trust boundary. This changes package versions, native
+bytes, registry metadata, and public release assets only; it adds no new
+runtime semantics, Event schema, Reducer version, configuration, Replay, or
+stored-data migration beyond the already specified `0.4.36`–`0.4.39` changes.
 
 ## 19. Implementation order
 
