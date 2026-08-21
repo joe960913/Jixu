@@ -15,8 +15,8 @@ test("JX-AC-050 selects only the published OS, CPU, and libc targets", () => {
     "jixu-cli-darwin-arm64",
   );
   assert.equal(
-    selectJixuCliTarget({ architecture: "x64", platform: "darwin" })?.packageName,
-    "jixu-cli-darwin-x64",
+    selectJixuCliTarget({ architecture: "x64", platform: "darwin" }),
+    undefined,
   );
   assert.equal(
     selectJixuCliTarget({
@@ -104,11 +104,17 @@ test("JX-AC-050 missing and unsupported native packages fail actionably", () => 
       }),
     /Reinstall jixu-ai with optional dependencies enabled/u,
   );
+  let resolvedUnsupportedPackage = false;
   assert.throws(
     () =>
       launchJixuCli({
-        runtime: { architecture: "x64", platform: "freebsd" },
+        resolvePackage: () => {
+          resolvedUnsupportedPackage = true;
+          return "/installed/node_modules/jixu-cli-darwin-x64/package.json";
+        },
+        runtime: { architecture: "x64", platform: "darwin" },
       }),
-    /Supported targets: darwin\/arm64, darwin\/x64, linux\/x64\/glibc/u,
+    /Jixu does not publish a native executable for darwin\/x64\. Supported targets: darwin\/arm64, linux\/x64\/glibc\./u,
   );
+  assert.equal(resolvedUnsupportedPackage, false);
 });

@@ -30,8 +30,9 @@ npx jixu-ai
 # bunx jixu-ai
 ```
 
-Supported native targets are macOS arm64, macOS x64, and Linux x64 with glibc.
-Node.js 22.19.0 or newer is required. Bun is not required at runtime.
+Supported native targets are macOS arm64 and Linux x64 with glibc. Intel macOS
+x64 is not supported. Node.js 22.19.0 or newer is required. Bun is not required
+at runtime.
 
 ## Agent Framework
 

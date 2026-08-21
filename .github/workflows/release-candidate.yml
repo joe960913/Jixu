@@ -17,8 +17,6 @@ jobs:
         include:
           - target: darwin-arm64
             runner: macos-26
-          - target: darwin-x64
-            runner: macos-26-intel
           - target: linux-x64
             runner: ubuntu-24.04
     runs-on: ${{ matrix.runner }}
