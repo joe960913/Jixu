@@ -295,9 +295,9 @@ The minimum validation for a code change is targeted tests, typecheck, lint, and
 
 ### Stage records
 
-After each implementation stage passes its required validation, create one
-Chinese retrospective in `docs/stages/` before reporting the stage complete.
-Use the local template in that directory and record:
+After each maintainer-owned implementation stage passes its required
+validation, create one Chinese retrospective in `docs/stages/` before reporting
+the stage complete. Use the local template in that directory and record:
 
 - the stage goal, requirement IDs, and boundary;
 - why the architecture and trade-offs were chosen;
@@ -311,11 +311,17 @@ stage record. Create one for UI work only when it is a redesign or
 refactor-level change, or when it is part of a broader implementation milestone
 that independently requires a retrospective.
 
-These records are repository documentation and MAY be tracked, committed, and
-published with the rest of the project. They are explanatory rather than
-normative; `SPEC.md` remains authoritative. Do not exclude `/docs/` through
-`.gitignore` or `.git/info/exclude` unless the maintainer explicitly changes
-that policy.
+These records are private maintainer process documentation stored in a
+separately versioned private Git repository checked out at `docs/`. The public
+Jixu repository MUST ignore `/docs/` and MUST NOT stage, commit, or publish its
+contents. Sync stage records through the private repository's own remote, under
+the same maintainer acceptance boundary as the public repository. External
+contributors without access to the private checkout are exempt from creating a
+stage record and MUST provide the equivalent goal, design, validation,
+limitations, and next-boundary summary in their pull request or handoff.
+
+Stage records are explanatory rather than normative. `SPEC.md`, its current
+requirements, and its acceptance criteria remain authoritative and public.
 
 ## 11. Change discipline
 
