@@ -921,6 +921,16 @@ test("JX-AC-020 JX-AC-052 queued multimodal input is durable and starts in Event
 
   const first = thread.send("first");
   await firstStarted;
+  const secondAccepted = (async () => {
+    let acceptedCount = 0;
+    for await (const item of thread.stream()) {
+      if (item.kind === "event" && item.event.type === "input.received") {
+        acceptedCount += 1;
+        if (acceptedCount === 2) return;
+      }
+    }
+    assert.fail("Thread stream ended before the queued input was accepted");
+  })();
   const second = thread.send({
     content: [
       { text: "帮我看看这个 ", type: "text" },
@@ -940,13 +950,7 @@ test("JX-AC-020 JX-AC-052 queued multimodal input is durable and starts in Event
       { text: " 又是啥", type: "text" },
     ],
   });
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const acceptedCount = (await thread.events()).filter(
-      (event) => event.type === "input.received",
-    ).length;
-    if (acceptedCount === 2) break;
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await secondAccepted;
   const accepted = (await thread.events()).filter(
     (event) => event.type === "input.received",
   );
