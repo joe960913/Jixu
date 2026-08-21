@@ -59,6 +59,9 @@ export class JsonlEventStore implements EventStore {
     this.#threadDirectory = join(directory, "threads");
     this.#checkpointDirectory = join(directory, "checkpoints");
     this.#initialization = this.#initialize();
+    // Operations still await the original rejection; this only observes
+    // constructor-started work before a caller reaches its first Store method.
+    void this.#initialization.catch(() => undefined);
   }
 
   async #initialize(): Promise<void> {

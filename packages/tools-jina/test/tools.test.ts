@@ -15,6 +15,13 @@ import type {
 
 import { createJinaWebSearchTool } from "../src/index.ts";
 
+const TEST_MODEL_CAPABILITIES = {
+  contextWindowTokens: 32_768,
+  maxOutputTokens: 4_096,
+  resolvedModel: "deterministic",
+  source: { kind: "explicit", name: "jina-tool-test" },
+} as const;
+
 function context(signal = new AbortController().signal): ToolExecutionContext {
   return {
     cancellation: signal,
@@ -177,6 +184,7 @@ test("JX-AC-048 ordinary Harness dispatch is durable and Replay performs no Jina
     agent: defineAgent({
       instructions: "Search before answering.",
       model: { model: "deterministic", provider: "mock" },
+      modelCapabilities: TEST_MODEL_CAPABILITIES,
       tools: [webSearch],
     }),
     modelDrivers: { mock: driver },

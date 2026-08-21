@@ -37,6 +37,13 @@ import {
   succeed,
 } from "../../testkit/src/index.ts";
 
+const TEST_MODEL_CAPABILITIES = {
+  contextWindowTokens: 32_768,
+  maxOutputTokens: 4_096,
+  resolvedModel: "deterministic",
+  source: { kind: "explicit", name: "continuity-test" },
+} as const;
+
 class CrashStore implements EventStore {
   readonly #inner: EventStore;
   readonly #matches: (event: AnyThreadEvent) => boolean;
@@ -117,6 +124,7 @@ function defineTestAgent(tools: NonNullable<AgentConfig["tools"]> = []) {
   return defineAgent({
     instructions: "Continue precisely.",
     model: { model: "deterministic", provider: "mock" },
+    modelCapabilities: TEST_MODEL_CAPABILITIES,
     tools,
   });
 }
@@ -727,6 +735,7 @@ test("JX-AC-006 JX-AC-007 JX-AC-028 JX-AC-052 fork preserves Artifact references
   const mismatched = defineAgent({
     instructions: "Different Agent.",
     model: { model: "deterministic", provider: "mock" },
+    modelCapabilities: TEST_MODEL_CAPABILITIES,
   });
   await assert.rejects(
     createHarness({

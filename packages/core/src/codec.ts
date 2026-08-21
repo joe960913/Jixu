@@ -2,12 +2,25 @@ import type { Checkpoint } from "./domain.ts";
 import { parseModelResponse } from "./domain.ts";
 import {
   CONTEXT_COMPILER_VERSION,
+  CONTEXT_ESTIMATOR_VERSION,
+  CONTEXT_MANIFEST_SCHEMA_VERSION,
   MAX_PLAN_REPAIR_ATTEMPTS,
   MODEL_CONTEXT_SCHEMA_VERSION,
+  estimateContextTokens,
+  parseContinuityHandoffBody,
 } from "./context.ts";
+import { defineContextPolicy } from "./context-policy.ts";
+import {
+  defineModelCapabilityProfile,
+  modelCapabilityProfileFor,
+} from "./model-capabilities.ts";
+import type { ModelCapabilityProfile } from "./model-capabilities.ts";
 import type { EffectRequest } from "./effects.ts";
 import { SchemaValidationError, UnsupportedEventError } from "./errors.ts";
-import { isSupportedEventSchemaVersion } from "./events.ts";
+import {
+  CURRENT_EVENT_SCHEMA_VERSION,
+  isSupportedEventSchemaVersion,
+} from "./events.ts";
 import type { AnyThreadEvent, ThreadEventType } from "./events.ts";
 import {
   cloneJson,
@@ -17,6 +30,7 @@ import {
 } from "./json.ts";
 import type { JsonObject, JsonValue } from "./json.ts";
 import {
+  CONTINUITY_HANDOFF_MEDIA_TYPE,
   MAX_INPUT_IMAGE_BYTES,
   MAX_INPUT_IMAGE_PLACEHOLDER_LENGTH,
   MAX_INPUT_IMAGES,
@@ -107,6 +121,39 @@ function assertToolDescriptor(
   integer(item.outputSchemaVersion, `${label}.outputSchemaVersion`);
 }
 
+function modelCapabilityProfile(
+  value: JsonValue | undefined,
+  label: string,
+): ModelCapabilityProfile {
+  const item = object(value, label);
+  const source = object(item.source, `${label}.source`);
+  try {
+    const parsed = defineModelCapabilityProfile({
+      contextWindowTokens: integer(
+        item.contextWindowTokens,
+        `${label}.contextWindowTokens`,
+      ),
+      maxOutputTokens: integer(
+        item.maxOutputTokens,
+        `${label}.maxOutputTokens`,
+      ),
+      resolvedModel: string(item.resolvedModel, `${label}.resolvedModel`),
+      source: {
+        kind: string(source.kind, `${label}.source.kind`) as never,
+        name: string(source.name, `${label}.source.name`),
+      },
+    });
+    if (item.schemaVersion !== parsed.schemaVersion) {
+      throw new TypeError("schemaVersion is unsupported");
+    }
+    return parsed;
+  } catch (error) {
+    throw new SchemaValidationError(
+      `${label} is invalid: ${error instanceof Error ? error.message : "unknown error"}`,
+    );
+  }
+}
+
 function assertAgentSnapshot(
   value: JsonValue | undefined,
   label: string,
@@ -116,6 +163,43 @@ function assertAgentSnapshot(
   const model = object(item.model, `${label}.model`);
   string(model.model, `${label}.model.model`);
   string(model.provider, `${label}.model.provider`);
+  const capabilities =
+    item.modelCapabilities === undefined
+      ? undefined
+      : modelCapabilityProfile(
+          item.modelCapabilities,
+          `${label}.modelCapabilities`,
+        );
+  if (item.contextPolicy !== undefined) {
+    const policy = object(item.contextPolicy, `${label}.contextPolicy`);
+    try {
+      const parsed = defineContextPolicy({
+        contextWindowTokens: integer(
+          policy.contextWindowTokens,
+          `${label}.contextPolicy.contextWindowTokens`,
+        ),
+        rawTailTokens: integer(
+          policy.rawTailTokens,
+          `${label}.contextPolicy.rawTailTokens`,
+        ),
+        reservedOutputTokens: integer(
+          policy.reservedOutputTokens,
+          `${label}.contextPolicy.reservedOutputTokens`,
+        ),
+        safetyMarginTokens: integer(
+          policy.safetyMarginTokens,
+          `${label}.contextPolicy.safetyMarginTokens`,
+        ),
+      }, capabilities);
+      if (policy.schemaVersion !== parsed.schemaVersion) {
+        throw new TypeError("Context Policy schemaVersion is unsupported");
+      }
+    } catch (error) {
+      throw new SchemaValidationError(
+        `${label}.contextPolicy is invalid: ${error instanceof Error ? error.message : "unknown error"}`,
+      );
+    }
+  }
   array(item.tools, `${label}.tools`).forEach((tool, index) =>
     assertToolDescriptor(tool, `${label}.tools[${index}]`),
   );
@@ -418,15 +502,182 @@ function assertModelRuntimeContext(
   }
 }
 
-function assertContextManifest(
+function assertContextBoundary(
   value: JsonValue | undefined,
   label: string,
 ): void {
+  const boundary = object(value, label);
+  string(boundary.eventId, `${label}.eventId`);
+  if (integer(boundary.sequence, `${label}.sequence`) < 1) {
+    throw new SchemaValidationError(`${label}.sequence must be positive`);
+  }
+}
+
+function assertContextManifestSourceV2(
+  value: JsonValue | undefined,
+  label: string,
+): void {
+  const source = object(value, label);
+  string(source.id, `${label}.id`);
+  const kind = string(source.kind, `${label}.kind`);
+  if (
+    kind !== "active_plan" &&
+    kind !== "agent" &&
+    kind !== "artifact" &&
+    kind !== "handoff" &&
+    kind !== "message" &&
+    kind !== "messages" &&
+    kind !== "runtime" &&
+    kind !== "tools"
+  ) {
+    throw new SchemaValidationError(`${label}.kind is unsupported`);
+  }
+  string(source.reason, `${label}.reason`);
+  string(source.version, `${label}.version`);
+  if (source.causedByEventId !== null) {
+    string(source.causedByEventId, `${label}.causedByEventId`);
+  }
+  if (source.digest !== null) string(source.digest, `${label}.digest`);
+  if (source.digest === undefined) {
+    throw new SchemaValidationError(`${label}.digest is required`);
+  }
+  if (
+    source.disposition !== "included" &&
+    source.disposition !== "excluded" &&
+    source.disposition !== "transformed"
+  ) {
+    throw new SchemaValidationError(`${label}.disposition is unsupported`);
+  }
+  const estimatedTokens = integer(
+    source.estimatedTokens,
+    `${label}.estimatedTokens`,
+  );
+  const priority = integer(source.priority, `${label}.priority`);
+  if (estimatedTokens < 0 || priority < 0 || priority > 100) {
+    throw new SchemaValidationError(`${label} cost or priority is invalid`);
+  }
+  if (source.sensitivity !== "internal" && source.sensitivity !== "private") {
+    throw new SchemaValidationError(`${label}.sensitivity is unsupported`);
+  }
+  if (source.trust !== "accepted") {
+    throw new SchemaValidationError(`${label}.trust is unsupported`);
+  }
+}
+
+function contextPolicyFromManifest(
+  manifest: JsonObject,
+  label: string,
+  allowLegacyModelCapabilities = false,
+): ReturnType<typeof defineContextPolicy> {
+  if (manifest.contextPolicySchemaVersion !== 1) {
+    throw new SchemaValidationError(
+      `${label}.contextPolicySchemaVersion is unsupported`,
+    );
+  }
+  const inputBudgetTokens = integer(
+    manifest.inputBudgetTokens,
+    `${label}.inputBudgetTokens`,
+  );
+  const capabilities =
+    manifest.modelCapabilities === undefined && allowLegacyModelCapabilities
+      ? modelCapabilityProfileFor(undefined)
+      : modelCapabilityProfile(
+          manifest.modelCapabilities,
+          `${label}.modelCapabilities`,
+        );
+  try {
+    return defineContextPolicy({
+      contextWindowTokens:
+        inputBudgetTokens +
+        integer(manifest.outputBudgetTokens, `${label}.outputBudgetTokens`) +
+        integer(manifest.safetyMarginTokens, `${label}.safetyMarginTokens`),
+      rawTailTokens: integer(
+        manifest.rawTailBudgetTokens,
+        `${label}.rawTailBudgetTokens`,
+      ),
+      reservedOutputTokens: manifest.outputBudgetTokens as number,
+      safetyMarginTokens: manifest.safetyMarginTokens as number,
+    }, capabilities);
+  } catch (error) {
+    throw new SchemaValidationError(
+      `${label} Context Policy is invalid: ${error instanceof Error ? error.message : "unknown error"}`,
+    );
+  }
+}
+
+function assertContextManifest(
+  value: JsonValue | undefined,
+  label: string,
+  allowLegacyModelCapabilities = false,
+): void {
   const manifest = object(value, label);
+  if (manifest.schemaVersion === CONTEXT_MANIFEST_SCHEMA_VERSION) {
+    if (manifest.compilerVersion !== CONTEXT_COMPILER_VERSION) {
+      throw new SchemaValidationError(`${label}.compilerVersion is unsupported`);
+    }
+    if (manifest.estimatorVersion !== CONTEXT_ESTIMATOR_VERSION) {
+      throw new SchemaValidationError(`${label}.estimatorVersion is unsupported`);
+    }
+    string(manifest.logicalRequestDigest, `${label}.logicalRequestDigest`);
+    contextPolicyFromManifest(
+      manifest,
+      label,
+      allowLegacyModelCapabilities,
+    );
+    for (const field of [
+      "estimatedInputTokens",
+      "inputBudgetTokens",
+      "outputBudgetTokens",
+      "safetyMarginTokens",
+    ] as const) {
+      if (integer(manifest[field], `${label}.${field}`) < 0) {
+        throw new SchemaValidationError(`${label}.${field} must not be negative`);
+      }
+    }
+    if (
+      (manifest.estimatedInputTokens as number) >
+      (manifest.inputBudgetTokens as number)
+    ) {
+      throw new SchemaValidationError(`${label} records an over-budget model request`);
+    }
+    if (manifest.activeClearBoundary !== null) {
+      assertContextBoundary(
+        manifest.activeClearBoundary,
+        `${label}.activeClearBoundary`,
+      );
+    }
+    if (manifest.rawTailBoundary !== null) {
+      assertContextBoundary(manifest.rawTailBoundary, `${label}.rawTailBoundary`);
+    }
+    if (manifest.acceptedHandoffDigest !== null) {
+      const digest = string(
+        manifest.acceptedHandoffDigest,
+        `${label}.acceptedHandoffDigest`,
+      );
+      if (!/^sha256:[a-f0-9]{64}$/u.test(digest)) {
+        throw new SchemaValidationError(
+          `${label}.acceptedHandoffDigest is not SHA-256`,
+        );
+      }
+    }
+    if (manifest.activePlanRevision !== null) {
+      if (
+        integer(manifest.activePlanRevision, `${label}.activePlanRevision`) < 1
+      ) {
+        throw new SchemaValidationError(
+          `${label}.activePlanRevision must be positive`,
+        );
+      }
+    }
+    array(manifest.sources, `${label}.sources`).forEach((source, index) =>
+      assertContextManifestSourceV2(source, `${label}.sources[${index}]`),
+    );
+    return;
+  }
   if (manifest.schemaVersion !== MODEL_CONTEXT_SCHEMA_VERSION) {
     throw new SchemaValidationError(`${label}.schemaVersion is unsupported`);
   }
-  if (manifest.compilerVersion !== CONTEXT_COMPILER_VERSION) {
+  if (manifest.compilerVersion !== 1) {
     throw new SchemaValidationError(`${label}.compilerVersion is unsupported`);
   }
   string(manifest.logicalRequestDigest, `${label}.logicalRequestDigest`);
@@ -482,6 +733,7 @@ function assertContextManifest(
 function assertContextManifestMatchesInput(
   input: JsonObject,
   label: string,
+  allowLegacyModelCapabilities = false,
 ): void {
   const manifest = object(input.contextManifest, `${label}.contextManifest`);
   const activePlan =
@@ -493,6 +745,170 @@ function assertContextManifestMatchesInput(
     throw new SchemaValidationError(
       `${label}.contextManifest.activePlanRevision does not match input`,
     );
+  }
+  if (manifest.schemaVersion === CONTEXT_MANIFEST_SCHEMA_VERSION) {
+    const sources = array(
+      manifest.sources,
+      `${label}.contextManifest.sources`,
+    ).map((value, index) =>
+      object(value, `${label}.contextManifest.sources[${index}]`),
+    );
+    const sourceIds = sources.map((source) => source.id);
+    if (new Set(sourceIds).size !== sourceIds.length) {
+      throw new SchemaValidationError(
+        `${label}.contextManifest source identities must be unique`,
+      );
+    }
+    const oneSource = (kind: string): JsonObject => {
+      const matches = sources.filter((source) => source.kind === kind);
+      if (matches.length !== 1 || matches[0] === undefined) {
+        throw new SchemaValidationError(
+          `${label}.contextManifest must contain exactly one ${kind} source`,
+        );
+      }
+      return matches[0];
+    };
+    const runtimeDigest = jsonDigest(input.runtimeContext);
+    const contextPolicy = contextPolicyFromManifest(
+      manifest,
+      `${label}.contextManifest`,
+      allowLegacyModelCapabilities,
+    );
+    const hasModelCapabilities = manifest.modelCapabilities !== undefined;
+    const capabilities =
+      !hasModelCapabilities && allowLegacyModelCapabilities
+        ? modelCapabilityProfileFor(undefined)
+        : modelCapabilityProfile(
+            manifest.modelCapabilities,
+            `${label}.contextManifest.modelCapabilities`,
+          );
+    const runtimeSource = oneSource("runtime");
+    if (
+      runtimeSource?.digest !== runtimeDigest ||
+      runtimeSource.id !== `runtime:${runtimeDigest}` ||
+      runtimeSource.disposition !== "included"
+    ) {
+      throw new SchemaValidationError(
+        `${label}.contextManifest runtime source does not match input`,
+      );
+    }
+    const agentDigest = jsonDigest({
+      contextPolicy,
+      instructions: input.instructions,
+      model: input.model,
+      ...(hasModelCapabilities ? { modelCapabilities: capabilities } : {}),
+      tools: input.tools,
+    });
+    const agentSource = oneSource("agent");
+    if (
+      agentSource?.digest !== agentDigest ||
+      agentSource.id !== `agent:${agentDigest}` ||
+      agentSource.disposition !== "included"
+    ) {
+      throw new SchemaValidationError(
+        `${label}.contextManifest Agent source does not match input`,
+      );
+    }
+    const toolsDigest = jsonDigest(input.tools);
+    const toolsSource = oneSource("tools");
+    if (
+      toolsSource?.digest !== toolsDigest ||
+      toolsSource.disposition !== "included"
+    ) {
+      throw new SchemaValidationError(
+        `${label}.contextManifest Tool source does not match input`,
+      );
+    }
+    const includedMessages = sources.filter(
+      (source) =>
+        source.kind === "message" && source.disposition === "included",
+    );
+    const messages = array(input.messages, `${label}.messages`);
+    if (
+      includedMessages.length !== messages.length ||
+      messages.some(
+        (message, index) =>
+          includedMessages[index]?.digest !== jsonDigest(message),
+      )
+    ) {
+      throw new SchemaValidationError(
+        `${label}.contextManifest raw message sources do not match input`,
+      );
+    }
+    if (sources.some((source) => source.kind === "messages")) {
+      throw new SchemaValidationError(
+        `${label}.contextManifest v2 cannot contain aggregate message sources`,
+      );
+    }
+    const activePlanSource = oneSource("active_plan");
+    const expectedPlanDigest =
+      activePlan === null ? null : jsonDigest(activePlan);
+    if (
+      activePlanSource.digest !== expectedPlanDigest ||
+      activePlanSource.disposition !==
+        (activePlan === null ? "excluded" : "included")
+    ) {
+      throw new SchemaValidationError(
+        `${label}.contextManifest active Plan source does not match input`,
+      );
+    }
+    const handoff = input.continuityHandoff;
+    const handoffSource = oneSource("handoff");
+    if (
+      (handoff === null &&
+        (manifest.acceptedHandoffDigest !== null ||
+          handoffSource.disposition !== "excluded" ||
+          handoffSource.digest !== null)) ||
+      (handoff !== null &&
+        (handoffSource?.disposition !== "included" ||
+          handoffSource.digest !== manifest.acceptedHandoffDigest ||
+          handoffSource.id !== `handoff:${String(manifest.acceptedHandoffDigest)}`))
+    ) {
+      throw new SchemaValidationError(
+        `${label}.contextManifest Handoff source does not match input`,
+      );
+    }
+    const rawTailBoundary = manifest.rawTailBoundary;
+    if (
+      (includedMessages.length === 0 && rawTailBoundary !== null) ||
+      (includedMessages.length > 0 &&
+        (!isJsonObject(rawTailBoundary) ||
+          rawTailBoundary.eventId !== includedMessages[0]?.causedByEventId))
+    ) {
+      throw new SchemaValidationError(
+        `${label}.contextManifest raw-tail boundary does not match input`,
+      );
+    }
+    const imageBytes = messages.reduce<number>((total, message) => {
+      if (!isJsonObject(message) || message.role !== "user" || !Array.isArray(message.parts)) {
+        return total;
+      }
+      return message.parts.reduce<number>((partTotal, part) => {
+        if (!isJsonObject(part) || part.type !== "image") return partTotal;
+        const artifact = isJsonObject(part.artifact) ? part.artifact : null;
+        return partTotal +
+          (artifact !== null && typeof artifact.byteLength === "number"
+            ? artifact.byteLength
+            : 0);
+      }, total);
+    }, 0);
+    const estimatedInputTokens =
+      estimateContextTokens({
+        activePlan: input.activePlan,
+        handoff,
+        instructions: input.instructions,
+        messages: input.messages,
+        planControl: input.planControl,
+        progressControl: input.progressControl,
+        runtime: input.runtimeContext,
+        tools: input.tools,
+      }) + imageBytes;
+    if (manifest.estimatedInputTokens !== estimatedInputTokens) {
+      throw new SchemaValidationError(
+        `${label}.contextManifest input estimate does not match input`,
+      );
+    }
+    return;
   }
   const agentDigest = jsonDigest({
     instructions: input.instructions,
@@ -565,6 +981,231 @@ function assertContextManifestMatchesInput(
   });
 }
 
+function assertArtifactReferenceValue(
+  value: JsonValue | undefined,
+  label: string,
+  expectedMediaType?: string,
+): void {
+  const artifact = object(value, label);
+  const digest = string(artifact.digest, `${label}.digest`);
+  if (!/^sha256:[a-f0-9]{64}$/u.test(digest)) {
+    throw new SchemaValidationError(`${label}.digest is not SHA-256`);
+  }
+  const byteLength = integer(artifact.byteLength, `${label}.byteLength`);
+  if (byteLength < 1 || byteLength > MAX_INPUT_IMAGE_BYTES) {
+    throw new SchemaValidationError(`${label}.byteLength is outside the Artifact limit`);
+  }
+  const mediaType = string(artifact.mediaType, `${label}.mediaType`);
+  if (expectedMediaType !== undefined && mediaType !== expectedMediaType) {
+    throw new SchemaValidationError(`${label}.mediaType is unsupported`);
+  }
+}
+
+function assertContinuityHandoff(
+  value: JsonValue | undefined,
+  label: string,
+): void {
+  const handoff = object(value, label);
+  if (handoff.schemaVersion !== 1) {
+    throw new SchemaValidationError(`${label}.schemaVersion is unsupported`);
+  }
+  if (handoff.activePlan !== null) {
+    parsePlanSnapshot(handoff.activePlan, `${label}.activePlan`);
+  }
+  const model = object(handoff.model, `${label}.model`);
+  string(model.model, `${label}.model.model`);
+  string(model.provider, `${label}.model.provider`);
+  if (handoff.previousHandoffDigest !== null) {
+    string(handoff.previousHandoffDigest, `${label}.previousHandoffDigest`);
+  }
+  const source = object(handoff.source, `${label}.source`);
+  if (source.compilerVersion !== CONTEXT_COMPILER_VERSION) {
+    throw new SchemaValidationError(`${label}.source.compilerVersion is unsupported`);
+  }
+  string(source.threadId, `${label}.source.threadId`);
+  const fromSequence = integer(source.fromSequence, `${label}.source.fromSequence`);
+  const throughSequence = integer(
+    source.throughSequence,
+    `${label}.source.throughSequence`,
+  );
+  if (fromSequence < 1 || throughSequence < fromSequence) {
+    throw new SchemaValidationError(`${label}.source Event range is invalid`);
+  }
+  const messageThroughSequence = integer(
+    source.messageThroughSequence,
+    `${label}.source.messageThroughSequence`,
+  );
+  if (
+    messageThroughSequence < 0 ||
+    messageThroughSequence > throughSequence
+  ) {
+    throw new SchemaValidationError(
+      `${label}.source.messageThroughSequence is outside the source range`,
+    );
+  }
+  if (source.clearBoundary !== null) {
+    assertContextBoundary(source.clearBoundary, `${label}.source.clearBoundary`);
+  }
+  const eventIds = array(source.eventIds, `${label}.source.eventIds`).map(
+    (eventId, index) => string(eventId, `${label}.source.eventIds[${index}]`),
+  );
+  if (eventIds.length === 0 || new Set(eventIds).size !== eventIds.length) {
+    throw new SchemaValidationError(`${label}.source.eventIds must be unique and non-empty`);
+  }
+  try {
+    const body = parseContinuityHandoffBody(handoff.body, eventIds);
+    if (!jsonEquals(body, handoff.body)) {
+      throw new TypeError("Continuity Handoff body contains unknown fields");
+    }
+  } catch (error) {
+    throw new SchemaValidationError(
+      `${label}.body is invalid: ${error instanceof Error ? error.message : "unknown error"}`,
+    );
+  }
+}
+
+function assertAcceptedHandoff(
+  value: JsonValue | undefined,
+  label: string,
+): void {
+  const accepted = object(value, label);
+  assertArtifactReferenceValue(
+    accepted.artifact,
+    `${label}.artifact`,
+    CONTINUITY_HANDOFF_MEDIA_TYPE,
+  );
+  assertContinuityHandoff(accepted.handoff, `${label}.handoff`);
+}
+
+function assertModelContinuation(
+  value: JsonValue | undefined,
+  label: string,
+): void {
+  const continuation = object(value, label);
+  string(continuation.eventId, `${label}.eventId`);
+  const reason = string(continuation.reason, `${label}.reason`);
+  if (reason === "input_received") return;
+  if (reason === "plan_updated") {
+    parsePlanSnapshot(continuation.plan, `${label}.plan`);
+    return;
+  }
+  if (reason === "plan_rejected") {
+    assertDriverError(continuation.error, `${label}.error`);
+    return;
+  }
+  if (reason === "tool_completed") {
+    string(continuation.toolCallId, `${label}.toolCallId`);
+    string(continuation.toolName, `${label}.toolName`);
+    return;
+  }
+  throw new SchemaValidationError(`${label}.reason is unsupported`);
+}
+
+function assertContextCompactionInput(
+  input: JsonObject,
+  label: string,
+  allowLegacyModelCapabilities = false,
+): void {
+  if (input.activePlan !== null) {
+    parsePlanSnapshot(input.activePlan, `${label}.activePlan`);
+  }
+  if (input.clearBoundary !== null) {
+    assertContextBoundary(input.clearBoundary, `${label}.clearBoundary`);
+  }
+  assertModelContinuation(input.continuation, `${label}.continuation`);
+  const model = object(input.model, `${label}.model`);
+  string(model.model, `${label}.model.model`);
+  string(model.provider, `${label}.model.provider`);
+  const capabilities =
+    input.modelCapabilities === undefined && allowLegacyModelCapabilities
+      ? modelCapabilityProfileFor(undefined)
+      : modelCapabilityProfile(
+          input.modelCapabilities,
+          `${label}.modelCapabilities`,
+        );
+  if (integer(input.minimumInputTokens, `${label}.minimumInputTokens`) < 1) {
+    throw new SchemaValidationError(`${label}.minimumInputTokens must be positive`);
+  }
+  if (integer(input.nextEffectIndex, `${label}.nextEffectIndex`) < 1) {
+    throw new SchemaValidationError(`${label}.nextEffectIndex must be positive`);
+  }
+  const policy = object(input.policy, `${label}.policy`);
+  try {
+    const parsed = defineContextPolicy({
+      contextWindowTokens: integer(
+        policy.contextWindowTokens,
+        `${label}.policy.contextWindowTokens`,
+      ),
+      rawTailTokens: integer(policy.rawTailTokens, `${label}.policy.rawTailTokens`),
+      reservedOutputTokens: integer(
+        policy.reservedOutputTokens,
+        `${label}.policy.reservedOutputTokens`,
+      ),
+      safetyMarginTokens: integer(
+        policy.safetyMarginTokens,
+        `${label}.policy.safetyMarginTokens`,
+      ),
+    }, capabilities);
+    if (policy.schemaVersion !== parsed.schemaVersion) {
+      throw new TypeError("schemaVersion is unsupported");
+    }
+  } catch (error) {
+    throw new SchemaValidationError(
+      `${label}.policy is invalid: ${error instanceof Error ? error.message : "unknown error"}`,
+    );
+  }
+  if (input.previousHandoff !== null) {
+    assertAcceptedHandoff(input.previousHandoff, `${label}.previousHandoff`);
+  }
+  const sourceEventIds = array(input.sourceEventIds, `${label}.sourceEventIds`);
+  if (sourceEventIds.length === 0) {
+    throw new SchemaValidationError(`${label}.sourceEventIds must not be empty`);
+  }
+  sourceEventIds.forEach((eventId, index) =>
+    string(eventId, `${label}.sourceEventIds[${index}]`),
+  );
+  if (new Set(sourceEventIds).size !== sourceEventIds.length) {
+    throw new SchemaValidationError(`${label}.sourceEventIds must be unique`);
+  }
+  const fromSequence = integer(input.sourceFromSequence, `${label}.sourceFromSequence`);
+  const throughSequence = integer(
+    input.sourceThroughSequence,
+    `${label}.sourceThroughSequence`,
+  );
+  if (fromSequence < 1 || throughSequence < fromSequence) {
+    throw new SchemaValidationError(`${label} source Event range is invalid`);
+  }
+  array(input.sourceManifest, `${label}.sourceManifest`).forEach((source, index) =>
+    assertContextManifestSourceV2(source, `${label}.sourceManifest[${index}]`),
+  );
+  const sourceMessageThroughSequence = integer(
+    input.sourceMessageThroughSequence,
+    `${label}.sourceMessageThroughSequence`,
+  );
+  if (
+    sourceMessageThroughSequence < 0 ||
+    sourceMessageThroughSequence > throughSequence
+  ) {
+    throw new SchemaValidationError(
+      `${label}.sourceMessageThroughSequence is outside the source range`,
+    );
+  }
+  array(input.sourceMessages, `${label}.sourceMessages`).forEach((message, index) =>
+    assertModelMessage(message, `${label}.sourceMessages[${index}]`),
+  );
+  string(input.sourceThreadId, `${label}.sourceThreadId`);
+  if (integer(input.targetTokens, `${label}.targetTokens`) < 1) {
+    throw new SchemaValidationError(`${label}.targetTokens must be positive`);
+  }
+  const inputBudget =
+    (policy.contextWindowTokens as number) -
+    (policy.reservedOutputTokens as number) -
+    (policy.safetyMarginTokens as number);
+  if ((input.targetTokens as number) > inputBudget) {
+    throw new SchemaValidationError(`${label}.targetTokens exceeds input budget`);
+  }
+}
+
 function assertThreadState(
   value: JsonValue | undefined,
   label: string,
@@ -582,6 +1223,23 @@ function assertThreadState(
     throw new SchemaValidationError(`${label}.agent must be present`);
   }
   assertAgentSnapshot(state.agent, `${label}.agent`);
+  if (state.acceptedHandoff !== null) {
+    assertAcceptedHandoff(state.acceptedHandoff, `${label}.acceptedHandoff`);
+  }
+  if (state.activePlanSource !== null) {
+    assertContextBoundary(state.activePlanSource, `${label}.activePlanSource`);
+  }
+  if ((state.activePlan === null) !== (state.activePlanSource === null)) {
+    throw new SchemaValidationError(
+      `${label}.activePlanSource must match the active Plan projection`,
+    );
+  }
+  if (state.contextClearBoundary !== null) {
+    assertContextBoundary(
+      state.contextClearBoundary,
+      `${label}.contextClearBoundary`,
+    );
+  }
 
   let projectedPlan: PlanSnapshot | null =
     state.activePlan === null
@@ -646,6 +1304,11 @@ function assertThreadState(
       `${label}.inputQueue[${index}].content`,
     );
     string(queued.eventId, `${label}.inputQueue[${index}].eventId`);
+    if (integer(queued.sequence, `${label}.inputQueue[${index}].sequence`) < 1) {
+      throw new SchemaValidationError(
+        `${label}.inputQueue[${index}].sequence must be positive`,
+      );
+    }
     if (queued.parts !== undefined) {
       assertStoredInputParts(
         queued.parts,
@@ -657,6 +1320,18 @@ function assertThreadState(
 
   array(state.messages, `${label}.messages`).forEach((message, index) =>
     assertModelMessage(message, `${label}.messages[${index}]`),
+  );
+  const messageSources = array(
+    state.messageSources,
+    `${label}.messageSources`,
+  );
+  if (messageSources.length !== array(state.messages, `${label}.messages`).length) {
+    throw new SchemaValidationError(
+      `${label}.messageSources must match the message projection`,
+    );
+  }
+  messageSources.forEach((source, index) =>
+    assertContextBoundary(source, `${label}.messageSources[${index}]`),
   );
   parseThreadMetrics(state.metrics, `${label}.metrics`);
   assertThreadMode(state.mode, `${label}.mode`);
@@ -834,7 +1509,7 @@ function parseEffect(
   value: JsonValue | undefined,
   label: string,
   threadId: string,
-  allowLegacyModelMode = false,
+  eventSchemaVersion = CURRENT_EVENT_SCHEMA_VERSION,
 ): EffectRequest {
   const item = object(value, label);
   const type = string(item.type, `${label}.type`);
@@ -849,6 +1524,22 @@ function parseEffect(
     throw new SchemaValidationError(`${label}.attempt must be positive`);
   }
   const input = object(item.input, `${label}.input`);
+  const allowLegacyModelMode = eventSchemaVersion < 7;
+  const allowLegacyModelCapabilities = eventSchemaVersion === 8;
+
+  if (type === "context.compact") {
+    assertContextCompactionInput(
+      input,
+      `${label}.input`,
+      allowLegacyModelCapabilities,
+    );
+    if (input.sourceThreadId !== threadId) {
+      throw new SchemaValidationError(
+        `${label}.input.sourceThreadId does not match the Event`,
+      );
+    }
+    return cloneJson(item) as unknown as EffectRequest;
+  }
 
   if (type === "model.generate") {
     if (input.activePlan !== null) {
@@ -888,7 +1579,29 @@ function parseEffect(
       assertContextManifest(
         input.contextManifest,
         `${label}.input.contextManifest`,
+        allowLegacyModelCapabilities,
       );
+      const manifest = object(
+        input.contextManifest,
+        `${label}.input.contextManifest`,
+      );
+      if (manifest.schemaVersion === CONTEXT_MANIFEST_SCHEMA_VERSION) {
+        if (input.continuityHandoff === undefined) {
+          throw new SchemaValidationError(
+            `${label}.input.continuityHandoff is required by Context Manifest v2`,
+          );
+        }
+        if (input.continuityHandoff !== null) {
+          assertContinuityHandoff(
+            input.continuityHandoff,
+            `${label}.input.continuityHandoff`,
+          );
+        }
+      } else if (input.continuityHandoff !== undefined) {
+        throw new SchemaValidationError(
+          `${label}.input.continuityHandoff requires Context Manifest v2`,
+        );
+      }
     }
     const model = object(input.model, `${label}.input.model`);
     string(model.model, `${label}.input.model.model`);
@@ -937,10 +1650,29 @@ function parseEffect(
       );
       const expectedDigest = jsonDigest({
         activePlan: input.activePlan,
+        ...(manifest.schemaVersion === CONTEXT_MANIFEST_SCHEMA_VERSION
+          ? {
+              continuityHandoff: input.continuityHandoff ?? null,
+              contextPolicy: contextPolicyFromManifest(
+                manifest,
+                `${label}.input.contextManifest`,
+                allowLegacyModelCapabilities,
+              ),
+            }
+          : {}),
         instructions: input.instructions,
         messages: input.messages,
         ...(input.mode === undefined ? {} : { mode: input.mode }),
         model: input.model,
+        ...(manifest.schemaVersion === CONTEXT_MANIFEST_SCHEMA_VERSION &&
+          manifest.modelCapabilities !== undefined
+          ? {
+              modelCapabilities: modelCapabilityProfile(
+                manifest.modelCapabilities,
+                `${label}.input.contextManifest.modelCapabilities`,
+              ),
+            }
+          : {}),
         planControl: input.planControl,
         planRejectionFeedback: input.planRejectionFeedback ?? null,
         progressControl: input.progressControl,
@@ -952,7 +1684,11 @@ function parseEffect(
           `${label}.input.contextManifest.logicalRequestDigest does not match input`,
         );
       }
-      assertContextManifestMatchesInput(input, `${label}.input`);
+      assertContextManifestMatchesInput(
+        input,
+        `${label}.input`,
+        allowLegacyModelCapabilities,
+      );
     }
     return cloneJson(item) as unknown as EffectRequest;
   }
@@ -990,6 +1726,9 @@ const eventTypes = new Set<ThreadEventType>([
   "approval.decided",
   "approval.requested",
   "context.cleared",
+  "context.compacted",
+  "context.compaction_failed",
+  "context.compaction_requested",
   "input.received",
   "model.completed",
   "model.failed",
@@ -1037,6 +1776,38 @@ function assertEventPayload(
     }
     case "thread.created":
       assertAgentSnapshot(payload.agent, "payload.agent");
+      if (
+        schemaVersion < 8 &&
+        object(payload.agent, "payload.agent").contextPolicy !== undefined
+      ) {
+        throw new SchemaValidationError(
+          "Event schema versions 5 through 7 cannot contain Context Policy",
+        );
+      }
+      if (
+        schemaVersion < 8 &&
+        object(payload.agent, "payload.agent").modelCapabilities !== undefined
+      ) {
+        throw new SchemaValidationError(
+          "Event schema versions 5 through 7 cannot contain Model Capability Profile",
+        );
+      }
+      if (
+        schemaVersion === CURRENT_EVENT_SCHEMA_VERSION &&
+        object(payload.agent, "payload.agent").contextPolicy === undefined
+      ) {
+        throw new SchemaValidationError(
+          "Current Event schema thread.created requires Context Policy",
+        );
+      }
+      if (
+        schemaVersion === CURRENT_EVENT_SCHEMA_VERSION &&
+        object(payload.agent, "payload.agent").modelCapabilities === undefined
+      ) {
+        throw new SchemaValidationError(
+          "Current Event schema thread.created requires Model Capability Profile",
+        );
+      }
       return;
     case "thread.forked":
       string(payload.parentThreadId, "payload.parentThreadId");
@@ -1056,6 +1827,56 @@ function assertEventPayload(
     case "thread.continued":
     case "context.cleared":
       assertEmptyPayload(payload, "payload");
+      return;
+    case "context.compaction_requested": {
+      if (schemaVersion < 8) {
+        throw new SchemaValidationError(
+          "Event schema versions 5 through 7 cannot contain Context compaction",
+        );
+      }
+      const effect = parseEffect(
+        payload.effect,
+        "payload.effect",
+        threadId,
+        schemaVersion,
+      );
+      if (effect.type !== "context.compact") {
+        throw new SchemaValidationError(
+          "context.compaction_requested contains the wrong Effect type",
+        );
+      }
+      return;
+    }
+    case "context.compacted":
+      if (schemaVersion < 8) {
+        throw new SchemaValidationError(
+          "Event schema versions 5 through 7 cannot contain Context compaction",
+        );
+      }
+      parseModelAccounting(payload.accounting, "payload.accounting");
+      string(payload.effectId, "payload.effectId");
+      assertArtifactReferenceValue(
+        payload.artifact,
+        "payload.artifact",
+        CONTINUITY_HANDOFF_MEDIA_TYPE,
+      );
+      assertContinuityHandoff(payload.handoff, "payload.handoff");
+      return;
+    case "context.compaction_failed":
+      if (schemaVersion < 8) {
+        throw new SchemaValidationError(
+          "Event schema versions 5 through 7 cannot contain Context compaction",
+        );
+      }
+      parseModelAccounting(payload.accounting, "payload.accounting");
+      string(payload.effectId, "payload.effectId");
+      assertDriverError(payload.error, "payload.error");
+      if (
+        payload.disposition !== "failed" &&
+        payload.disposition !== "indeterminate"
+      ) {
+        throw new SchemaValidationError("payload.disposition is unsupported");
+      }
       return;
     case "thread.waiting":
       string(payload.effectId, "payload.effectId");
@@ -1087,6 +1908,27 @@ function assertEventPayload(
             "Event schema versions 5 and 6 model.requested cannot contain mode",
           );
         }
+        if (
+          schemaVersion < 8 &&
+          (effectInput.continuityHandoff !== undefined ||
+            (isJsonObject(effectInput.contextManifest) &&
+              effectInput.contextManifest.schemaVersion ===
+                CONTEXT_MANIFEST_SCHEMA_VERSION))
+        ) {
+          throw new SchemaValidationError(
+            "Event schema versions 5 through 7 model.requested cannot contain bounded Context fields",
+          );
+        }
+        if (
+          schemaVersion === CURRENT_EVENT_SCHEMA_VERSION &&
+          (!isJsonObject(effectInput.contextManifest) ||
+            effectInput.contextManifest.schemaVersion !==
+              CONTEXT_MANIFEST_SCHEMA_VERSION)
+        ) {
+          throw new SchemaValidationError(
+            "Current Event schema model.requested requires bounded Context fields",
+          );
+        }
         if (schemaVersion === 5) {
           array(effectInput.messages, "payload.effect.input.messages").forEach(
             (message, index) => {
@@ -1107,7 +1949,7 @@ function assertEventPayload(
         payload.effect,
         "payload.effect",
         threadId,
-        schemaVersion < 7,
+        schemaVersion,
       );
       if (
         (type === "model.requested" && effect.type !== "model.generate") ||

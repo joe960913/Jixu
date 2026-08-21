@@ -423,17 +423,23 @@ export class ThreadExecution implements Thread {
     const prepared: PreparedEffect[] = [];
     for (const effect of effects) {
       const committed =
-        effect.type === "model.generate"
+        effect.type === "context.compact"
           ? await this.#commit(
-              "model.requested",
+              "context.compaction_requested",
               { effect },
               effect.requestedByEventId,
             )
-          : await this.#commit(
-              "tool.requested",
-              { effect },
-              effect.requestedByEventId,
-            );
+          : effect.type === "model.generate"
+            ? await this.#commit(
+                "model.requested",
+                { effect },
+                effect.requestedByEventId,
+              )
+            : await this.#commit(
+                "tool.requested",
+                { effect },
+                effect.requestedByEventId,
+              );
       prepared.push({ effect, requestEventId: committed.event.id });
     }
 
@@ -443,7 +449,7 @@ export class ThreadExecution implements Thread {
       readonly requestEventId: string;
     }> = [];
     for (const item of prepared) {
-      if (item.effect.type === "model.generate") {
+      if (item.effect.type !== "tool.execute") {
         dispatchable.push(item);
         continue;
       }
@@ -494,7 +500,37 @@ export class ThreadExecution implements Thread {
     proposal: OutcomeProposal,
     causationId: string,
   ): Promise<void> {
+    try {
+      for (const artifact of proposal.artifacts ?? []) {
+        await this.#store.putArtifact(artifact.reference, artifact.bytes);
+      }
+    } catch {
+      if (proposal.type !== "context.compacted") throw new InvalidTransitionError(
+        "Outcome Artifact could not be stored",
+      );
+      await this.#commit(
+        "context.compaction_failed",
+        {
+          accounting: proposal.payload.accounting,
+          disposition: "failed",
+          effectId: proposal.payload.effectId,
+          error: {
+            code: "context_handoff_artifact_write_failed",
+            message: "Continuity Handoff Artifact could not be stored",
+            retryable: true,
+          },
+        },
+        causationId,
+      );
+      return;
+    }
     switch (proposal.type) {
+      case "context.compacted":
+        await this.#commit(proposal.type, proposal.payload, causationId);
+        return;
+      case "context.compaction_failed":
+        await this.#commit(proposal.type, proposal.payload, causationId);
+        return;
       case "model.completed": {
         await this.#commit(proposal.type, proposal.payload, causationId);
         return;

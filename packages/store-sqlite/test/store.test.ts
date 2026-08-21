@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { createThreadEvent } from "../../core/src/index.ts";
+import {
+  createThreadEvent,
+  DEFAULT_CONTEXT_POLICY,
+} from "../../core/src/index.ts";
 import { defineStoreContract } from "../../testkit/src/store-contract.ts";
 import { SqliteEventStore } from "../src/index.ts";
 
@@ -32,8 +35,16 @@ test("JX-AC-003 SqliteEventStore survives adapter reconstruction", async () => {
       id: "durable-sqlite-event",
       payload: {
         agent: {
+          contextPolicy: DEFAULT_CONTEXT_POLICY,
           instructions: "persist",
           model: { model: "deterministic", provider: "mock" },
+          modelCapabilities: {
+            contextWindowTokens: 32_768,
+            maxOutputTokens: 4_096,
+            resolvedModel: "deterministic",
+            schemaVersion: 1,
+            source: { kind: "explicit", name: "sqlite-store-test" },
+          },
           tools: [],
         },
       },

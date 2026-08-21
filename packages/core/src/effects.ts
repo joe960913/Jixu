@@ -12,6 +12,9 @@ import type { ModelAccounting } from "./metrics.ts";
 import type { PlanControlDescriptor, PlanSnapshot } from "./plan.ts";
 import type { ProgressControlDescriptor } from "./progress.ts";
 import type {
+  ContextCompactionInput,
+  ContinuityHandoff,
+  ContinuityHandoffBody,
   ModelContextManifest,
   ModelRuntimeContext,
 } from "./context.ts";
@@ -29,6 +32,7 @@ export interface EffectEnvelope<TType extends string, TInput> {
 export interface ModelGenerateInput {
   readonly activePlan: PlanSnapshot | null;
   readonly contextManifest?: ModelContextManifest;
+  readonly continuityHandoff?: ContinuityHandoff | null;
   readonly instructions: string;
   readonly messages: readonly ModelMessage[];
   readonly mode: ThreadMode;
@@ -52,9 +56,17 @@ export type ModelGenerateEffect = EffectEnvelope<
   ModelGenerateInput
 >;
 
+export type ContextCompactEffect = EffectEnvelope<
+  "context.compact",
+  ContextCompactionInput
+>;
+
 export type ToolExecuteEffect = EffectEnvelope<"tool.execute", ToolExecuteInput>;
 
-export type EffectRequest = ModelGenerateEffect | ToolExecuteEffect;
+export type EffectRequest =
+  | ContextCompactEffect
+  | ModelGenerateEffect
+  | ToolExecuteEffect;
 
 export interface DriverSuccess<T> {
   readonly status: "succeeded";
@@ -79,4 +91,8 @@ export type DriverOutcome<T> =
 export type ModelOutcome = DriverOutcome<ModelResponse> & {
   readonly accounting?: ModelAccounting;
   readonly planRejections?: readonly DriverError[];
+};
+
+export type ContextCompactionOutcome = DriverOutcome<ContinuityHandoffBody> & {
+  readonly accounting?: ModelAccounting;
 };

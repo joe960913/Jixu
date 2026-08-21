@@ -145,6 +145,7 @@ export class ThreadController {
     activePlan: null,
     activity: Object.freeze([]),
     busy: false,
+    contextBudget: null,
     currentThreadId: null,
     inspection: null,
     metrics: null,
@@ -751,13 +752,18 @@ export class ThreadController {
 
   #projection(): Pick<
     ThreadControllerSnapshot,
-    "activePlan" | "activity" | "toolOperations" | "transcript"
+    | "activePlan"
+    | "activity"
+    | "contextBudget"
+    | "toolOperations"
+    | "transcript"
   > {
     const projected = projectThread(this.#events);
     this.#nextId = projected.nextId;
     return {
       activePlan: projected.activePlan,
       activity: projected.activity.slice(-200),
+      contextBudget: projected.contextBudget,
       toolOperations: projected.toolOperations,
       transcript: projected.transcript.slice(-200),
     };

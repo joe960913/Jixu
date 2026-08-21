@@ -6,12 +6,13 @@ import type {
 } from "./domain.ts";
 import { createInitialThreadState } from "./domain.ts";
 import type {
+  ContextCompactEffect,
   EffectRequest,
   ModelGenerateEffect,
   ToolExecuteEffect,
 } from "./effects.ts";
 import {
-  compileModelContext,
+  compileContext,
   MAX_PLAN_REPAIR_ATTEMPTS,
 } from "./context.ts";
 import type { ModelContinuation } from "./context.ts";
@@ -34,7 +35,7 @@ import {
   samePlan,
 } from "./plan.ts";
 
-export const REDUCER_VERSION = 14;
+export const REDUCER_VERSION = 15;
 
 export interface TransitionResult {
   readonly effects: readonly EffectRequest[];
@@ -186,12 +187,19 @@ function sameReadyEffect(
       jsonEquals(expected.input, persisted.input)
     );
   }
+  if (expected.type === "context.compact") {
+    return (
+      persisted.type === "context.compact" &&
+      jsonEquals(expected.input, persisted.input)
+    );
+  }
   if (persisted.type !== "model.generate") {
     return false;
   }
 
   const expectedBase = {
     activePlan: expected.input.activePlan,
+    continuityHandoff: expected.input.continuityHandoff ?? null,
     instructions: expected.input.instructions,
     messages: expected.input.messages,
     mode: expected.input.mode ?? "standard",
@@ -203,6 +211,7 @@ function sameReadyEffect(
   };
   const persistedBase = {
     activePlan: persisted.input.activePlan,
+    continuityHandoff: persisted.input.continuityHandoff ?? null,
     instructions: persisted.input.instructions,
     messages: persisted.input.messages,
     mode: persisted.input.mode ?? "standard",
@@ -242,17 +251,29 @@ function sameReadyEffect(
   );
 }
 
-function createModelEffect(
+function createContextEffect(
   state: ThreadState,
   continuation: ModelContinuation,
   index: number,
-): ModelGenerateEffect {
+): ContextCompactEffect | ModelGenerateEffect {
   const id = `${continuation.eventId}:effect:${index}`;
+  const compiled = compileContext(state, continuation, index + 1);
+  if (compiled.kind === "compaction") {
+    return {
+      attempt: 1,
+      id,
+      idempotencyKey: id,
+      input: compiled.input,
+      requestedByEventId: continuation.eventId,
+      threadId: state.threadId,
+      type: "context.compact",
+    };
+  }
   return {
     attempt: 1,
     id,
     idempotencyKey: id,
-    input: compileModelContext(state, continuation),
+    input: compiled.input,
     requestedByEventId: continuation.eventId,
     threadId: state.threadId,
     type: "model.generate",
@@ -363,13 +384,17 @@ function settleTurn(
         role: "user",
       },
     ],
+    messageSources: [
+      ...state.messageSources,
+      { eventId: next.eventId, sequence: next.sequence },
+    ],
     planRepairAttempts: 0,
     result: null,
     status: "running",
     waitingReason: null,
   });
   const effects = [
-    createModelEffect(
+    createContextEffect(
       nextState,
       { eventId: next.eventId, reason: "input_received" },
       0,
@@ -458,6 +483,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
               {
                 content: event.payload.content,
                 eventId: event.id,
+                sequence: event.sequence,
                 ...(event.payload.parts === undefined
                   ? {}
                   : { parts: event.payload.parts }),
@@ -480,12 +506,16 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
             role: "user",
           },
         ],
+        messageSources: [
+          ...state.messageSources,
+          { eventId: event.id, sequence: event.sequence },
+        ],
         result: null,
         planRepairAttempts: 0,
         status: "running",
       });
       const effects = [
-        createModelEffect(
+        createContextEffect(
           nextState,
           { eventId: event.id, reason: "input_received" },
           0,
@@ -501,8 +531,15 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         state: advance(state, event.sequence, {
           error: null,
           inputQueue: [],
+          acceptedHandoff: null,
+          contextClearBoundary: {
+            eventId: event.id,
+            sequence: event.sequence,
+          },
           messages: [],
+          messageSources: [],
           activePlan: null,
+          activePlanSource: null,
           planRepairAttempts: 0,
           pendingPlanRejections: [],
           pendingPlanUpdates: [],
@@ -511,6 +548,100 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           waitingReason: null,
         }),
       };
+    }
+
+    case "context.compaction_requested": {
+      requireStatus(state, event.type, "running");
+      const retry = state.pendingEffects[event.payload.effect.id] !== undefined;
+      const accepted = acceptRequest(state, event.payload.effect);
+      return {
+        effects: [],
+        state: advance(state, event.sequence, {
+          ...accepted,
+          metrics: recordEffectRequest(state.metrics, "model", retry),
+        }),
+      };
+    }
+
+    case "context.compacted": {
+      requireStatus(state, event.type, "running");
+      const effect = state.pendingEffects[event.payload.effectId];
+      if (effect === undefined || effect.type !== "context.compact") {
+        throw new InvalidTransitionError(
+          `Effect ${event.payload.effectId} is not pending as context.compact`,
+        );
+      }
+      const expectedSource = {
+        clearBoundary: effect.input.clearBoundary,
+        compilerVersion: 2,
+        eventIds: effect.input.sourceEventIds,
+        fromSequence: effect.input.sourceFromSequence,
+        messageThroughSequence: effect.input.sourceMessageThroughSequence,
+        threadId: effect.input.sourceThreadId,
+        throughSequence: effect.input.sourceThroughSequence,
+      };
+      if (
+        event.payload.artifact.mediaType !==
+          "application/vnd.jixu.continuity-handoff+json" ||
+        event.payload.handoff.schemaVersion !== 1 ||
+        !jsonEquals(event.payload.handoff.source, expectedSource) ||
+        !jsonEquals(event.payload.handoff.activePlan, effect.input.activePlan) ||
+        !jsonEquals(event.payload.handoff.model, effect.input.model) ||
+        event.payload.handoff.previousHandoffDigest !==
+          (effect.input.previousHandoff?.artifact.digest ?? null)
+      ) {
+        throw new InvalidTransitionError(
+          `Continuity Handoff for Effect ${effect.id} does not match its durable request`,
+        );
+      }
+      const remaining = removePending(
+        state,
+        event.payload.effectId,
+        "context.compact",
+      );
+      const nextState = advance(state, event.sequence, {
+        acceptedHandoff: {
+          artifact: event.payload.artifact,
+          handoff: event.payload.handoff,
+        },
+        error: null,
+        metrics: recordModelAccounting(
+          recordEffectOutcome(state.metrics, "model", "succeeded"),
+          event.payload.accounting,
+        ),
+        pendingEffects: remaining,
+      });
+      return withReadyEffects(nextState, event.sequence, [
+        createContextEffect(
+          nextState,
+          effect.input.continuation,
+          effect.input.nextEffectIndex,
+        ),
+      ]);
+    }
+
+    case "context.compaction_failed": {
+      requireStatus(state, event.type, "running");
+      const remaining = removePending(
+        state,
+        event.payload.effectId,
+        "context.compact",
+      );
+      return settleTurn(
+        advance(state, event.sequence, {
+          metrics: recordModelAccounting(
+            recordEffectOutcome(
+              state.metrics,
+              "model",
+              event.payload.disposition,
+            ),
+            event.payload.accounting,
+          ),
+          pendingEffects: remaining,
+        }),
+        event.sequence,
+        { error: event.payload.error, result: null },
+      );
     }
 
     case "thread.pause_requested": {
@@ -751,6 +882,12 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
                 toolCalls: response.toolCalls,
               },
             ],
+        messageSources: planOnlyControl
+          ? state.messageSources
+          : [
+              ...state.messageSources,
+              { eventId: event.id, sequence: event.sequence },
+            ],
         metrics,
         pendingEffects: remaining,
         pendingPlanRejections,
@@ -794,6 +931,10 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
       const nextState = advance(state, event.sequence, {
         activePlan:
           event.payload.plan.status === "active" ? event.payload.plan : null,
+        activePlanSource:
+          event.payload.plan.status === "active"
+            ? { eventId: event.id, sequence: event.sequence }
+            : null,
         pendingPlanUpdates,
       });
       if (
@@ -804,7 +945,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         state.readyEffects.length === 0
       ) {
         const effects = [
-          createModelEffect(
+          createContextEffect(
             nextState,
             {
               eventId: event.id,
@@ -878,7 +1019,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         });
       }
       const effects = [
-        createModelEffect(
+        createContextEffect(
           nextState,
           {
             error: event.payload.error,
@@ -945,6 +1086,10 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
             toolCallId: event.payload.toolCallId,
           },
         ],
+        messageSources: [
+          ...state.messageSources,
+          { eventId: event.id, sequence: event.sequence },
+        ],
         metrics: recordEffectOutcome(state.metrics, "tools", "succeeded"),
         pendingEffects: remaining,
         ...withoutApproval(state, event.payload.effectId),
@@ -962,7 +1107,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         });
       }
       const effects = [
-        createModelEffect(
+        createContextEffect(
           nextState,
           {
             eventId: event.id,

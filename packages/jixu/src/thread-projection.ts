@@ -6,6 +6,7 @@ import {
 } from "./work-status.ts";
 import type {
   ActivityEntry,
+  ContextBudgetEstimate,
   ToolOperation,
   TranscriptEntry,
 } from "./tui-model.ts";
@@ -57,6 +58,29 @@ export function eventActivity(
       return { ...base, kind: "runtime", label: "Input committed", tone: "info" };
     case "context.cleared":
       return { ...base, kind: "control", label: "Context cleared", tone: "info" };
+    case "context.compaction_requested":
+      return {
+        ...base,
+        kind: "model",
+        label: "Compacting context",
+        tone: "warning",
+      };
+    case "context.compacted":
+      return {
+        ...base,
+        detail: event.payload.artifact.digest,
+        kind: "runtime",
+        label: "Context compacted",
+        tone: "success",
+      };
+    case "context.compaction_failed":
+      return {
+        ...base,
+        detail: event.payload.error.code,
+        kind: "model",
+        label: "Context compaction failed",
+        tone: "danger",
+      };
     case "model.requested":
       return {
         ...base,
@@ -158,9 +182,32 @@ export function eventActivity(
 export interface ProjectedThread {
   readonly activePlan: PlanSnapshot | null;
   readonly activity: readonly ActivityEntry[];
+  readonly contextBudget: ContextBudgetEstimate | null;
   readonly nextId: number;
   readonly toolOperations: readonly ToolOperation[];
   readonly transcript: readonly TranscriptEntry[];
+}
+
+function contextBudgetFor(
+  event: Extract<AnyThreadEvent, { readonly type: "model.requested" }>,
+): ContextBudgetEstimate | null {
+  const manifest = event.payload.effect.input.contextManifest;
+  if (manifest === undefined || manifest.inputBudgetTokens <= 0) return null;
+  const remainingTokens = Math.max(
+    0,
+    manifest.inputBudgetTokens - manifest.estimatedInputTokens,
+  );
+  return Object.freeze({
+    estimatedInputTokens: manifest.estimatedInputTokens,
+    inputBudgetTokens: manifest.inputBudgetTokens,
+    remainingPercent: Math.max(
+      0,
+      Math.min(
+        100,
+        Math.round((remainingTokens / manifest.inputBudgetTokens) * 100),
+      ),
+    ),
+  });
 }
 
 export function projectThread(
@@ -170,6 +217,7 @@ export function projectThread(
   const toolOperations: ToolOperation[] = [];
   const transcript: TranscriptEntry[] = [];
   let activePlan: PlanSnapshot | null = null;
+  let contextBudget: ContextBudgetEstimate | null = null;
   let nextId = 1;
 
   for (const event of events) {
@@ -177,6 +225,10 @@ export function projectThread(
       transcript.splice(0);
       toolOperations.splice(0);
       activePlan = null;
+      contextBudget = null;
+    }
+    if (event.type === "model.requested") {
+      contextBudget = contextBudgetFor(event);
     }
     if (event.type === "plan.updated") {
       activePlan = event.payload.plan.status === "active" ? event.payload.plan : null;
@@ -264,6 +316,7 @@ export function projectThread(
   return {
     activePlan,
     activity: Object.freeze(activity),
+    contextBudget,
     nextId,
     toolOperations: Object.freeze(toolOperations),
     transcript: Object.freeze(transcript),

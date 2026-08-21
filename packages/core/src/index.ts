@@ -23,12 +23,26 @@ export {
   parseModelResponse,
 } from "./domain.ts";
 export {
+  compileContext,
   compileModelContext,
   CONTEXT_COMPILER_VERSION,
+  CONTEXT_ESTIMATOR_VERSION,
+  CONTEXT_MANIFEST_SCHEMA_VERSION,
+  CONTINUITY_HANDOFF_SCHEMA_VERSION,
+  createContinuityHandoff,
+  estimateContextTokens,
   MAX_PLAN_REPAIR_ATTEMPTS,
   MODEL_CONTEXT_SCHEMA_VERSION,
+  parseContinuityHandoffBody,
 } from "./context.ts";
 export type {
+  AcceptedContinuityHandoff,
+  ContextBoundary,
+  ContextCompactionInput,
+  ContextCompilation,
+  ContinuityHandoff,
+  ContinuityHandoffBody,
+  ContinuityHandoffFact,
   ModelContextManifest,
   ModelContextObligation,
   ModelContextProhibition,
@@ -37,8 +51,31 @@ export type {
   ModelContextSourceManifest,
   ModelContinuation,
   ModelContinuationReason,
+  ModelMessageSource,
   ModelRuntimeContext,
 } from "./context.ts";
+export {
+  CONTEXT_POLICY_SCHEMA_VERSION,
+  contextPolicyFor,
+  DEFAULT_CONTEXT_POLICY,
+  defineContextPolicy,
+} from "./context-policy.ts";
+export type {
+  ContextPolicy,
+  ContextPolicyConfig,
+} from "./context-policy.ts";
+export {
+  defineModelCapabilityProfile,
+  LEGACY_MODEL_CAPABILITY_PROFILE,
+  MODEL_CAPABILITY_PROFILE_SCHEMA_VERSION,
+  modelCapabilityProfileFor,
+} from "./model-capabilities.ts";
+export type {
+  ModelCapabilityProfile,
+  ModelCapabilityProfileConfig,
+  ModelCapabilitySource,
+  ModelCapabilitySourceKind,
+} from "./model-capabilities.ts";
 export type {
   AgentSnapshot,
   AssistantMessage,
@@ -69,6 +106,8 @@ export type {
   DriverIndeterminate,
   DriverOutcome,
   DriverSuccess,
+  ContextCompactEffect,
+  ContextCompactionOutcome,
   EffectEnvelope,
   EffectRequest,
   ModelGenerateEffect,
@@ -94,6 +133,7 @@ export {
   artifactDigest,
   assertArtifactBytes,
   assertArtifactReference,
+  CONTINUITY_HANDOFF_MEDIA_TYPE,
   MAX_INPUT_IMAGE_BYTES,
   MAX_INPUT_IMAGE_PLACEHOLDER_LENGTH,
   MAX_INPUT_IMAGES,
@@ -102,7 +142,9 @@ export {
 } from "./input.ts";
 export type {
   AcceptedInput,
+  ArtifactMediaType,
   ArtifactReference,
+  ImageArtifactReference,
   ImageMediaType,
   ImageThreadInputPart,
   StoredImageInputPart,

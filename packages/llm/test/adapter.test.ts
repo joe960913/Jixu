@@ -10,6 +10,9 @@ import {
   PROGRESS_CONTROL,
 } from "jixu-core";
 import type {
+  ContextCompactEffect,
+  ContinuityHandoff,
+  ContinuityHandoffBody,
   ModelDriverContext,
   ModelGenerateEffect,
   PlanSnapshot,
@@ -26,6 +29,21 @@ import type {
   AnthropicMessagesRequest,
   OpenAIChatCompletionsClient,
 } from "../src/index.ts";
+
+const TEST_MODEL_CAPABILITIES = {
+  contextWindowTokens: 32_768,
+  maxOutputTokens: 16_384,
+  resolvedModel: "fixture",
+  source: { kind: "explicit", name: "llm-adapter-test" },
+} as const;
+
+const COMPACTION_MODEL_CAPABILITIES = {
+  contextWindowTokens: 4_096,
+  maxOutputTokens: 1_024,
+  resolvedModel: "fixture-model",
+  schemaVersion: 1,
+  source: { kind: "explicit", name: "llm-compaction-test" },
+} as const;
 
 const planProposal = {
   acceptanceCriteria: ["SPEC is understood"],
@@ -196,6 +214,16 @@ class FakeAnthropicClient implements AnthropicMessagesClient {
   }
 }
 
+function assertRequestFieldsOmitted(
+  body: unknown,
+  fields: readonly string[],
+): void {
+  assert.ok(typeof body === "object" && body !== null);
+  for (const field of fields) {
+    assert.equal(Object.hasOwn(body, field), false, `${field} must be omitted`);
+  }
+}
+
 function chatChunks(): readonly unknown[] {
   return [
     {
@@ -348,6 +376,241 @@ function anthropicEvents(): readonly unknown[] {
     { type: "message_stop" },
   ];
 }
+
+const handoffBody: ContinuityHandoffBody = {
+  acceptanceCriteria: [],
+  artifacts: [],
+  attemptedApproaches: [],
+  blockers: [],
+  completedEvidence: [],
+  constraints: [],
+  currentState: [],
+  decisions: [
+    { sourceEventIds: ["event-source"], text: "Keep the accepted decision." },
+  ],
+  doNotRetry: [],
+  failures: [],
+  nextAction: null,
+  objective: {
+    sourceEventIds: ["event-source"],
+    text: "Continue the bounded Context task.",
+  },
+  pendingEffects: [],
+  permissions: [],
+  rejectedAlternatives: [],
+  relevantFiles: [],
+  scope: [],
+  summary: [
+    { sourceEventIds: ["event-source"], text: "The source was compacted." },
+  ],
+  unresolvedQuestions: [],
+  validation: [],
+  waitsAndApprovals: [],
+};
+
+const acceptedHandoff: ContinuityHandoff = {
+  activePlan: null,
+  body: handoffBody,
+  model: { model: "fixture-model", provider: "fixture-provider" },
+  previousHandoffDigest: null,
+  schemaVersion: 1,
+  source: {
+    clearBoundary: null,
+    compilerVersion: 2,
+    eventIds: ["event-source"],
+    fromSequence: 2,
+    messageThroughSequence: 2,
+    threadId: "thread-1",
+    throughSequence: 2,
+  },
+};
+
+function compactionEffect(
+  provider: string,
+  model = "fixture-model",
+): ContextCompactEffect {
+  return {
+    attempt: 1,
+    id: "effect-compact",
+    idempotencyKey: "effect-compact",
+    input: {
+      activePlan: null,
+      clearBoundary: null,
+      continuation: { eventId: "event-source", reason: "input_received" },
+      model: { model, provider },
+      modelCapabilities: COMPACTION_MODEL_CAPABILITIES,
+      minimumInputTokens: 700,
+      nextEffectIndex: 1,
+      policy: {
+        contextWindowTokens: 4_096,
+        rawTailTokens: 512,
+        reservedOutputTokens: 512,
+        safetyMarginTokens: 256,
+        schemaVersion: 1,
+      },
+      previousHandoff: null,
+      sourceEventIds: ["event-source"],
+      sourceFromSequence: 2,
+      sourceManifest: [],
+      sourceMessageThroughSequence: 2,
+      sourceMessages: [{ content: "Preserve this source", role: "user" }],
+      sourceThreadId: "thread-1",
+      sourceThroughSequence: 2,
+      targetTokens: 512,
+    },
+    requestedByEventId: "event-source",
+    threadId: "thread-1",
+    type: "context.compact",
+  };
+}
+
+function chatCompactionChunks(): readonly unknown[] {
+  return [
+    {
+      choices: [
+        {
+          delta: { content: JSON.stringify(handoffBody) },
+          finish_reason: "stop",
+          index: 0,
+        },
+      ],
+    },
+    {
+      choices: [],
+      usage: { completion_tokens: 30, prompt_tokens: 70, total_tokens: 100 },
+    },
+  ];
+}
+
+function anthropicCompactionEvents(): readonly unknown[] {
+  return [
+    {
+      message: { content: [], usage: { input_tokens: 70, output_tokens: 1 } },
+      type: "message_start",
+    },
+    {
+      content_block: { text: "", type: "text" },
+      index: 0,
+      type: "content_block_start",
+    },
+    {
+      delta: { text: JSON.stringify(handoffBody), type: "text_delta" },
+      index: 0,
+      type: "content_block_delta",
+    },
+    {
+      delta: { stop_reason: "end_turn" },
+      type: "message_delta",
+      usage: { output_tokens: 30 },
+    },
+    { type: "message_stop" },
+  ];
+}
+
+test("JX-PROV-009 JX-PROV-011 JX-AC-023 JX-AC-025 JX-AC-055 protocols compact once with native defaults and render accepted Handoff context", async () => {
+  const chatCompactionClient = new FakeOpenAIChatClient(chatCompactionChunks());
+  const chatDriver = createLLMModelDriver({
+    api: "openai-chat-completions",
+    baseURL: "https://chat.example/v1",
+    openAIChatCompletionsClient: chatCompactionClient,
+    provider: "chat-provider",
+  });
+  assert.equal(typeof chatDriver.compact, "function");
+  const chatCompaction = await chatDriver.compact!(
+    compactionEffect("chat-provider"),
+    context(),
+  );
+  assert.equal(chatCompaction.status, "succeeded");
+  assertRequestFieldsOmitted(chatCompactionClient.body, [
+    "max_completion_tokens",
+    "max_tokens",
+    "temperature",
+    "top_p",
+  ]);
+  assert.deepEqual(chatCompactionClient.body?.tools, []);
+  assert.match(JSON.stringify(chatCompactionClient.body?.messages), /sourceEventIds/u);
+
+  const anthropicCompactionClient = new FakeAnthropicClient(
+    anthropicCompactionEvents(),
+  );
+  const anthropicDriver = createLLMModelDriver({
+    anthropicMessagesClient: anthropicCompactionClient,
+    api: "anthropic-messages",
+    baseURL: "https://anthropic.example",
+    provider: "anthropic-provider",
+  });
+  assert.equal(typeof anthropicDriver.compact, "function");
+  const anthropicCompaction = await anthropicDriver.compact!(
+    compactionEffect("anthropic-provider"),
+    context(),
+  );
+  assert.equal(anthropicCompaction.status, "succeeded");
+  assert.equal(anthropicCompactionClient.body?.max_tokens, 1_024);
+  assertRequestFieldsOmitted(anthropicCompactionClient.body, [
+    "temperature",
+    "top_p",
+  ]);
+  assert.deepEqual(anthropicCompactionClient.body?.tools, []);
+  assert.match(JSON.stringify(anthropicCompactionClient.body?.system), /sourceEventIds/u);
+
+  const openRouterMessagesCompactionClient = new FakeAnthropicClient(
+    anthropicCompactionEvents(),
+  );
+  const openRouterMessagesCompaction = await createLLMModelDriver({
+    anthropicMessagesClient: openRouterMessagesCompactionClient,
+    api: "anthropic-messages",
+    baseURL: "https://openrouter.ai/api/v1",
+    provider: "openrouter",
+  }).compact!(compactionEffect("openrouter"), context());
+  assert.equal(openRouterMessagesCompaction.status, "succeeded");
+  assertRequestFieldsOmitted(openRouterMessagesCompactionClient.body, [
+    "max_tokens",
+    "temperature",
+    "top_p",
+  ]);
+
+  const chatGenerationClient = new FakeOpenAIChatClient(chatChunks());
+  await createLLMModelDriver({
+    api: "openai-chat-completions",
+    baseURL: "https://chat.example/v1",
+    openAIChatCompletionsClient: chatGenerationClient,
+    provider: "chat-provider",
+  }).generate(
+    {
+      ...effect("chat-provider", "fixture-model", null),
+      input: {
+        ...effect("chat-provider", "fixture-model", null).input,
+        continuityHandoff: acceptedHandoff,
+      },
+    },
+    context(),
+  );
+  assert.match(
+    JSON.stringify(chatGenerationClient.body?.messages),
+    /accepted Continuity Handoff/u,
+  );
+
+  const anthropicGenerationClient = new FakeAnthropicClient(anthropicEvents());
+  await createLLMModelDriver({
+    anthropicMessagesClient: anthropicGenerationClient,
+    api: "anthropic-messages",
+    baseURL: "https://anthropic.example",
+    provider: "anthropic-provider",
+  }).generate(
+    {
+      ...effect("anthropic-provider", "fixture-model", null),
+      input: {
+        ...effect("anthropic-provider", "fixture-model", null).input,
+        continuityHandoff: acceptedHandoff,
+      },
+    },
+    context(),
+  );
+  assert.match(
+    JSON.stringify(anthropicGenerationClient.body?.system),
+    /accepted Continuity Handoff/u,
+  );
+});
 
 test("JX-PROV-002 JX-PROV-003 JX-AC-016 OpenAI Chat Completions normalizes controls, Tools, Signals, and usage", async () => {
   const client = new FakeOpenAIChatClient(chatChunks());
@@ -764,7 +1027,7 @@ test("JX-PLAN-009 JX-AC-031 malformed Plan control preserves public text and Too
   );
 });
 
-test("JX-PROV-002 JX-PROV-004 JX-PROV-005 JX-AC-016 Anthropic Messages groups Tool results and normalizes streaming usage", async () => {
+test("JX-PROV-002 JX-PROV-004 JX-PROV-005 JX-PROV-011 JX-AC-016 JX-AC-055 Anthropic Messages groups Tool results and normalizes streaming usage", async () => {
   const client = new FakeAnthropicClient(anthropicEvents());
   const signals: Signal[] = [];
   const outcome = await createLLMModelDriver({
@@ -777,6 +1040,7 @@ test("JX-PROV-002 JX-PROV-004 JX-PROV-005 JX-AC-016 Anthropic Messages groups To
       source: "calculator",
       usdNanos: usage.totalTokens * 10_000,
     }),
+    maxOutputTokens: 8_192,
     provider: "anthropic",
   }).generate(
     effect(
@@ -813,7 +1077,8 @@ test("JX-PROV-002 JX-PROV-004 JX-PROV-005 JX-AC-016 Anthropic Messages groups To
       { arguments: { path: "SPEC.md" }, id: "call-next", name: "read" },
     ],
   });
-  assert.equal(client.body?.max_tokens, 4096);
+  assert.equal(client.body?.max_tokens, 8_192);
+  assertRequestFieldsOmitted(client.body, ["temperature", "top_p"]);
   assert.equal(client.body?.thinking, undefined);
   assert.equal(client.body?.output_config, undefined);
   assert.deepEqual(client.body?.messages.map((message) => message.role), [
@@ -943,7 +1208,7 @@ function progressOnlyAnthropicClient(): FakeAnthropicClient {
   ]);
 }
 
-test("JX-SIG-005 JX-AC-034 both protocols fail closed on progress-only output and persist model.failed", async () => {
+test("JX-SIG-005 JX-PROV-011 JX-AC-034 JX-AC-055 both protocols use native defaults and fail closed on progress-only output", async () => {
   for (const [api, driver] of [
     [
       "openai-chat-completions",
@@ -972,17 +1237,19 @@ test("JX-SIG-005 JX-AC-034 both protocols fail closed on progress-only output an
     }
   }
 
+  const harnessClient = progressOnlyChatClient();
   const harness = createHarness({
     agent: defineAgent({
       instructions: "Answer directly.",
       model: { model: "fixture", provider: "chat" },
+      modelCapabilities: TEST_MODEL_CAPABILITIES,
       tools: [],
     }),
     modelDrivers: {
       chat: createLLMModelDriver({
         api: "openai-chat-completions",
         baseURL: "https://chat.example/v1",
-        openAIChatCompletionsClient: progressOnlyChatClient(),
+        openAIChatCompletionsClient: harnessClient,
         provider: "chat",
       }),
     },
@@ -990,10 +1257,294 @@ test("JX-SIG-005 JX-AC-034 both protocols fail closed on progress-only output an
   const thread = await harness.createThread();
   const state = await thread.send("Answer the question");
   const events = await thread.events();
+  assertRequestFieldsOmitted(harnessClient.body, [
+    "max_completion_tokens",
+    "max_tokens",
+    "temperature",
+    "top_p",
+  ]);
   assert.equal(state.status, "idle");
   assert.equal(state.error?.code, "chat_progress_only");
   assert.equal(events.filter((event) => event.type === "model.completed").length, 0);
   assert.equal(events.filter((event) => event.type === "model.failed").length, 1);
+
+  const anthropicHarnessClient = progressOnlyAnthropicClient();
+  const anthropicThread = await createHarness({
+    agent: defineAgent({
+      instructions: "Answer directly.",
+      model: { model: "fixture", provider: "anthropic" },
+      modelCapabilities: TEST_MODEL_CAPABILITIES,
+    }),
+    modelDrivers: {
+      anthropic: createLLMModelDriver({
+        anthropicMessagesClient: anthropicHarnessClient,
+        api: "anthropic-messages",
+        baseURL: "https://anthropic.example",
+        provider: "anthropic",
+      }),
+    },
+  }).createThread();
+  await anthropicThread.send("Answer the question");
+  assert.equal(anthropicHarnessClient.body?.max_tokens, 16_384);
+  assertRequestFieldsOmitted(anthropicHarnessClient.body, [
+    "temperature",
+    "top_p",
+  ]);
+});
+
+test("JX-PROV-010 JX-AC-054 resolves official catalog and provider Models API capacities", async () => {
+  const openAI = await llm.resolveLLMModelCapabilities({
+    api: "openai-chat-completions",
+    baseURL: "https://api.openai.com/v1",
+    model: "gpt-5.6-sol",
+  });
+  assert.equal(openAI.contextWindowTokens, 1_050_000);
+  assert.equal(openAI.maxOutputTokens, 128_000);
+  assert.equal(openAI.source.kind, "catalog");
+
+  const deepSeek = await llm.resolveLLMModelCapabilities({
+    api: "openai-chat-completions",
+    baseURL: "https://api.deepseek.com",
+    model: "deepseek-v4-pro",
+  });
+  assert.equal(deepSeek.contextWindowTokens, 1_000_000);
+  assert.equal(deepSeek.maxOutputTokens, 384_000);
+
+  const anthropicRequests: { init: RequestInit | undefined; url: string }[] = [];
+  const anthropic = await llm.resolveLLMModelCapabilities({
+    api: "anthropic-messages",
+    apiKey: "anthropic-secret-fixture",
+    baseURL: "https://api.anthropic.com",
+    fetch: async (input, init) => {
+      anthropicRequests.push({ init, url: String(input) });
+      return new Response(JSON.stringify({
+        id: "claude-sonnet-4-5-20250929",
+        max_input_tokens: 1_000_000,
+        max_tokens: 128_000,
+      }));
+    },
+    model: "claude-sonnet-4-5",
+  });
+  assert.equal(anthropic.contextWindowTokens, 1_000_000);
+  assert.equal(anthropic.resolvedModel, "claude-sonnet-4-5-20250929");
+  assert.equal(
+    anthropicRequests[0]?.url,
+    "https://api.anthropic.com/v1/models/claude-sonnet-4-5",
+  );
+  assert.equal(
+    new Headers(anthropicRequests[0]?.init?.headers).get("x-api-key"),
+    "anthropic-secret-fixture",
+  );
+
+  const openRouter = await llm.resolveLLMModelCapabilities({
+    api: "openai-chat-completions",
+    baseURL: "https://openrouter.ai/api/v1",
+    fetch: async (input) => {
+      assert.equal(
+        String(input),
+        "https://openrouter.ai/api/v1/models?q=vendor%2Fone-million",
+      );
+      return new Response(JSON.stringify({
+        data: [{
+          context_length: 1_000_000,
+          id: "vendor/one-million",
+          top_provider: { max_completion_tokens: 64_000 },
+        }],
+      }));
+    },
+    model: "vendor/one-million",
+  });
+  assert.equal(openRouter.contextWindowTokens, 1_000_000);
+  assert.equal(openRouter.maxOutputTokens, 64_000);
+
+  const openRouterContextBound = await llm.resolveLLMModelCapabilities({
+    api: "openai-chat-completions",
+    baseURL: "https://openrouter.ai/api/v1",
+    fetch: async (input) => {
+      assert.equal(
+        String(input),
+        "https://openrouter.ai/api/v1/models?q=x-ai%2Fgrok-4.6",
+      );
+      return new Response(JSON.stringify({
+        data: [{
+          canonical_slug: "x-ai/grok-4.6-20260810",
+          context_length: 500_000,
+          id: "x-ai/grok-4.6",
+          supported_parameters: ["max_tokens", "tools"],
+          top_provider: {
+            context_length: 500_000,
+            max_completion_tokens: null,
+          },
+        }],
+      }));
+    },
+    model: "x-ai/grok-4.6",
+  });
+  assert.equal(openRouterContextBound.contextWindowTokens, 500_000);
+  assert.equal(openRouterContextBound.maxOutputTokens, 500_000);
+
+  const groq = await llm.resolveLLMModelCapabilities({
+    api: "openai-chat-completions",
+    baseURL: "https://api.groq.com/openai/v1",
+    fetch: async (input) => {
+      assert.equal(
+        String(input),
+        "https://api.groq.com/openai/v1/models/groq-model",
+      );
+      return new Response(JSON.stringify({
+        context_window: 131_072,
+        id: "groq-model",
+        max_completion_tokens: 32_768,
+      }));
+    },
+    model: "groq-model",
+  });
+  assert.equal(groq.contextWindowTokens, 131_072);
+  assert.equal(groq.maxOutputTokens, 32_768);
+});
+
+test("JX-PROV-010 JX-AC-054 explicit limits bypass discovery and unknown official models fail closed", async () => {
+  const explicit = await llm.resolveLLMModelCapabilities({
+    api: "openai-chat-completions",
+    baseURL: "https://custom.example/v1",
+    explicit: { contextWindowTokens: 2_000_000, maxOutputTokens: 256_000 },
+    fetch: async () => {
+      throw new Error("must not dispatch");
+    },
+    model: "custom/two-million",
+  });
+  assert.equal(explicit.contextWindowTokens, 2_000_000);
+  assert.equal(explicit.source.kind, "explicit");
+
+  await assert.rejects(
+    llm.resolveLLMModelCapabilities({
+      api: "openai-chat-completions",
+      baseURL: "https://api.openai.com/v1",
+      model: "gpt-future-unknown",
+    }),
+    (error: unknown) =>
+      error instanceof llm.ModelCapabilityResolutionError &&
+      error.code === "model_capability_unknown",
+  );
+
+  await assert.rejects(
+    llm.resolveLLMModelCapabilities({
+      api: "openai-chat-completions",
+      baseURL: "https://custom.example/v1",
+      explicit: { contextWindowTokens: 4_096, maxOutputTokens: 8_192 },
+      model: "invalid-explicit-model",
+    }),
+    /must not exceed contextWindowTokens/,
+  );
+
+  const invalidCases = [
+    {
+      fetch: async () => new Response(JSON.stringify({
+        context_window: 32_768,
+        id: "fixture-model",
+      })),
+      code: "model_capability_metadata_invalid",
+      label: "partial",
+    },
+    {
+      fetch: async () => new Response(JSON.stringify({
+        context_window: 32_768,
+        id: "different-model",
+        max_completion_tokens: 4_096,
+      })),
+      code: "model_capability_metadata_invalid",
+      label: "mismatched",
+    },
+    {
+      fetch: async () => new Response("not-json"),
+      code: "model_capability_metadata_invalid",
+      label: "malformed",
+    },
+    {
+      fetch: async () => new Response("service unavailable", { status: 503 }),
+      code: "model_capability_metadata_failed",
+      label: "failed",
+    },
+  ] as const;
+  for (const invalid of invalidCases) {
+    await assert.rejects(
+      llm.resolveLLMModelCapabilities({
+        api: "openai-chat-completions",
+        baseURL: "https://provider.example/v1",
+        fetch: invalid.fetch,
+        model: "fixture-model",
+      }),
+      (error: unknown) =>
+        error instanceof llm.ModelCapabilityResolutionError &&
+        error.code === invalid.code,
+      invalid.label,
+    );
+  }
+
+  await assert.rejects(
+    llm.resolveLLMModelCapabilities({
+      api: "openai-chat-completions",
+      apiKey: "request-secret-fixture",
+      baseURL: "https://provider.example/v1",
+      fetch: async () => new Response("response-secret-fixture", { status: 503 }),
+      model: "fixture-model",
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof llm.ModelCapabilityResolutionError);
+      assert.doesNotMatch(error.message, /request-secret|response-secret/u);
+      return error.code === "model_capability_metadata_failed";
+    },
+  );
+
+  await assert.rejects(
+    llm.resolveLLMModelCapabilities({
+      api: "openai-chat-completions",
+      baseURL: "https://provider.example/v1",
+      fetch: async () => new Response("x".repeat(256 * 1_024 + 1)),
+      model: "fixture-model",
+    }),
+    (error: unknown) =>
+      error instanceof llm.ModelCapabilityResolutionError &&
+      error.code === "model_capability_metadata_invalid",
+  );
+
+  await assert.rejects(
+    llm.resolveLLMModelCapabilities({
+      api: "openai-chat-completions",
+      baseURL: "https://openrouter.ai/api/v1",
+      fetch: async () => new Response(JSON.stringify({
+        data: [{
+          context_length: 500_000,
+          id: "x-ai/grok-4.6",
+          supported_parameters: ["tools"],
+          top_provider: {
+            context_length: 500_000,
+            max_completion_tokens: null,
+          },
+        }],
+      })),
+      model: "x-ai/grok-4.6",
+    }),
+    (error: unknown) =>
+      error instanceof llm.ModelCapabilityResolutionError &&
+      error.code === "model_capability_metadata_invalid",
+  );
+
+  await assert.rejects(
+    llm.resolveLLMModelCapabilities({
+      api: "openai-chat-completions",
+      baseURL: "https://provider.example/v1",
+      fetch: async (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+      model: "fixture-model",
+      timeoutMs: 1,
+    }),
+    (error: unknown) =>
+      error instanceof llm.ModelCapabilityResolutionError &&
+      error.code === "model_capability_metadata_failed",
+  );
 });
 
 function sse(events: readonly unknown[]): string {
@@ -1002,7 +1553,7 @@ function sse(events: readonly unknown[]): string {
     .join("");
 }
 
-test("JX-PROV-003 JX-PROV-006 JX-AC-016 native Anthropic client targets /v1/messages with required headers and parses SSE", async () => {
+test("JX-PROV-003 JX-PROV-006 JX-PROV-011 JX-AC-016 JX-AC-055 native Anthropic client sends only its required verified output maximum", async () => {
   let requestUrl = "";
   let requestInit: RequestInit | undefined;
   let calls = 0;
@@ -1041,6 +1592,7 @@ test("JX-PROV-003 JX-PROV-006 JX-AC-016 native Anthropic client targets /v1/mess
     apiKey: "anthropic-secret",
     baseURL: "https://gateway.example/v1/",
     fetch: fetchFixture,
+    maxOutputTokens: 16_384,
   }).generate(effect("anthropic", "claude-fixture", null), context());
 
   assert.equal(outcome.status, "succeeded");
@@ -1052,15 +1604,24 @@ test("JX-PROV-003 JX-PROV-006 JX-AC-016 native Anthropic client targets /v1/mess
     "content-type": "application/json",
     "x-api-key": "anthropic-secret",
   });
+  assert.equal(typeof requestInit?.body, "string");
+  const requestBody = JSON.parse(String(requestInit?.body)) as Record<
+    string,
+    unknown
+  >;
+  assert.equal(requestBody.max_tokens, 16_384);
+  assertRequestFieldsOmitted(requestBody, ["temperature", "top_p"]);
   if (outcome.status === "succeeded") {
     assert.equal(outcome.value.content, "hello");
   }
 });
 
-test("JX-PROV-006 recognized OpenRouter Messages endpoint uses Bearer auth without duplicating the secret", async () => {
+test("JX-PROV-006 JX-PROV-011 JX-AC-055 OpenRouter Messages uses Bearer auth and native generation defaults", async () => {
   let headers: HeadersInit | undefined;
+  let requestBody: unknown;
   const fetchFixture: typeof fetch = async (_input, init) => {
     headers = init?.headers;
+    requestBody = JSON.parse(String(init?.body));
     return Response.json(
       { error: { message: "fixture rejection" } },
       { status: 401 },
@@ -1078,6 +1639,12 @@ test("JX-PROV-006 recognized OpenRouter Messages endpoint uses Bearer auth witho
     authorization: "Bearer openrouter-secret",
     "content-type": "application/json",
   });
+  assertRequestFieldsOmitted(requestBody, [
+    "max_completion_tokens",
+    "max_tokens",
+    "temperature",
+    "top_p",
+  ]);
 });
 
 test("JX-PROV-003 JX-SEC-001 JX-AC-016 provider clients dispatch once and redact credentials on HTTP failure", async () => {

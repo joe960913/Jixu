@@ -34,6 +34,13 @@ import { KeyCodes, setRendererCapabilities } from "@opentui/core/testing";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 
+const TEST_MODEL_CAPABILITIES = {
+  contextWindowTokens: 32_768,
+  maxOutputTokens: 4_096,
+  resolvedModel: "fixture-model",
+  source: { kind: "explicit", name: "tui-smoke-test" },
+} as const;
+
 import {
   DEFAULT_JIXU_TOOL_SETTINGS,
   type JixuConnectionConfig,
@@ -636,6 +643,7 @@ const edit = defineTool({
 const agent = defineAgent({
   instructions: "Be useful.",
   model: { model: "vendor/model-example", provider: "openai-compatible" },
+  modelCapabilities: TEST_MODEL_CAPABILITIES,
   tools: [bash, edit],
 });
 const harness = createHarness({
@@ -986,6 +994,21 @@ try {
   let connectedFrame = "";
   await act(async () => {
     setup.mockInput.pressEnter();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.match(setup.captureCharFrame(), /MODEL LIMITS/);
+  await act(async () => {
+    await setup.mockInput.typeText("1000000/128000");
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  await act(async () => {
+    setup.mockInput.pressEnter();
     await new Promise((resolve) => setTimeout(resolve, 10));
   });
   await act(async () => {
@@ -1002,6 +1025,10 @@ try {
     apiKey: secret,
     baseUrl: "https://router.example/v1",
     model: "vendor/model-example",
+    modelCapabilities: {
+      contextWindowTokens: 1_000_000,
+      maxOutputTokens: 128_000,
+    },
     tools: DEFAULT_JIXU_TOOL_SETTINGS,
   });
   // JX-AC-030 JX-AC-037: the wide surface keeps chat beside the attention rail.
@@ -1018,6 +1045,7 @@ try {
   assert.match(connectedFrame, /VERIFIED/);
   assert.match(connectedFrame, /NEEDS YOU/);
   assert.match(connectedFrame, /TOOLS\s+read write edit bash/);
+  assert.match(connectedFrame, /CTX\s+—/);
   assert.match(connectedFrame, /MODE\s+STANDARD/);
   assert.match(connectedFrame, /FILES workspace/);
   assert.match(connectedFrame, /BASH process/);
@@ -1210,6 +1238,8 @@ try {
   assert.match(thinkingFrame, /Thinking task/);
   assert.match(thinkingFrame, /Following every ripple \.\.\./);
   assert.match(thinkingFrame, /MODEL\s+vendor\/model-example/);
+  // JX-AC-027: the footer exposes the latest durable Context Manifest estimate.
+  assert.match(thinkingFrame, /CTX\s+~\d+% LEFT/);
   assert.match(thinkingFrame, /FILES workspace/);
 
   await act(async () => {
@@ -2128,6 +2158,7 @@ try {
   assert.match(compactConfigFrame, /BASE URL/);
   assert.match(compactConfigFrame, /API KEY/);
   assert.match(compactConfigFrame, /MODEL ID/);
+  assert.match(compactConfigFrame, /MODEL LIMITS/);
   assert.match(compactConfigFrame, /CONNECT/);
   assert.doesNotMatch(compactConfigFrame, /SETTINGS settings\.json/);
   assert.doesNotMatch(compactConfigFrame, /API KEY auth\.json/);
@@ -2208,6 +2239,7 @@ const approvalSnapshot = {
   activePlan: null,
   activity: [],
   busy: false,
+  contextBudget: null,
   currentThreadId: "approval-thread",
   inspection: null,
   metrics: null,
@@ -2290,6 +2322,35 @@ const restoredSetup = await testRender(
 
 try {
   await act(async () => {
+    await restoredSetup.renderOnce();
+    await Promise.resolve();
+    await restoredSetup.flush();
+  });
+  const connectingFrame = restoredSetup.captureCharFrame();
+  // JX-TUI-037 JX-AC-057: auto-connect keeps the ordinary workspace visible.
+  assert.match(connectingFrame, /CONNECTING/);
+  assert.match(connectingFrame, /vendor\/model-example/);
+  assert.match(connectingFrame, /Connecting to model/);
+  assert.match(connectingFrame, /Type \/ to view commands\./);
+  assert.doesNotMatch(connectingFrame, /Loading saved endpoint configuration/);
+  const connectingComposer = restoredSetup.renderer.root.findDescendantById(
+    "composer-editor",
+  ) as TextareaRenderable | undefined;
+  assert.notEqual(connectingComposer, undefined);
+  await act(async () => {
+    await restoredSetup.mockInput.typeText("preserve this draft");
+    restoredSetup.mockInput.pressEnter();
+  });
+  await act(async () => {
+    await restoredSetup.renderOnce();
+    await restoredSetup.flush();
+  });
+  assert.equal(connectingComposer?.plainText, "preserve this draft");
+  act(() => {
+    connectingComposer?.setText("");
+  });
+
+  await act(async () => {
     releaseRestore();
     await restoredSetup.renderOnce();
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -2354,6 +2415,49 @@ try {
 } finally {
   act(() => {
     restoredSetup.renderer.destroy();
+  });
+}
+
+const failedRestoreSetup = await testRender(
+  <JixuApp
+    connect={async () => {
+      throw new Error("Store readiness fixture failed");
+    }}
+    initial={{
+      api: "openai-chat-completions",
+      apiKey: secret,
+      autoConnect: true,
+      baseUrl: "https://router.example/v1",
+      model: "vendor/model-example",
+    }}
+    onQuit={() => undefined}
+    workspace="/workspace"
+  />,
+  { height: 30, width: 120 },
+);
+
+try {
+  await act(async () => {
+    await failedRestoreSetup.renderOnce();
+    await Promise.resolve();
+    await failedRestoreSetup.flush();
+  });
+  await act(async () => {
+    await Promise.resolve();
+    await failedRestoreSetup.renderOnce();
+    await failedRestoreSetup.flush();
+  });
+  const failedRestoreFrame = failedRestoreSetup.captureCharFrame();
+  assert.match(failedRestoreFrame, /CONNECTION FAILED/);
+  assert.match(failedRestoreFrame, /Store readiness fixture failed/);
+  assert.match(failedRestoreFrame, /vendor\/model-example/);
+  assert.doesNotMatch(
+    failedRestoreFrame,
+    /Loading saved endpoint configuration/,
+  );
+} finally {
+  act(() => {
+    failedRestoreSetup.renderer.destroy();
   });
 }
 
@@ -2888,6 +2992,7 @@ const multimodalHarness = createHarness({
   agent: defineAgent({
     instructions: "Describe pasted images.",
     model: { model: "multimodal-fixture", provider: "mock" },
+    modelCapabilities: TEST_MODEL_CAPABILITIES,
   }),
   modelDrivers: {
     mock: {

@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   artifactDigest,
   createThreadEvent,
+  DEFAULT_CONTEXT_POLICY,
   jsonDigest,
   REDUCER_VERSION,
   replayEvents,
@@ -23,8 +24,16 @@ export type StoreContractFactory = () =>
   | StoreContractFixture;
 
 const snapshot = {
+  contextPolicy: DEFAULT_CONTEXT_POLICY,
   instructions: "Be precise.",
   model: { model: "deterministic", provider: "mock" },
+  modelCapabilities: {
+    contextWindowTokens: 32_768,
+    maxOutputTokens: 4_096,
+    resolvedModel: "deterministic",
+    schemaVersion: 1,
+    source: { kind: "explicit", name: "store-contract" },
+  },
   tools: [],
 } as const;
 

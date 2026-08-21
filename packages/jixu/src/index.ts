@@ -20,6 +20,7 @@ export type {
 } from "./thread-controller.ts";
 export type {
   ActivityEntry,
+  ContextBudgetEstimate,
   JixuTone,
   ThreadControllerSnapshot,
   ThreadInspection,

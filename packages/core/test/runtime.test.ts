@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  CURRENT_EVENT_SCHEMA_VERSION,
   createHarness,
   defineAgent,
   defineSchema,
@@ -25,6 +26,13 @@ import {
   succeed,
 } from "../../testkit/src/index.ts";
 
+const TEST_MODEL_CAPABILITIES = {
+  contextWindowTokens: 32_768,
+  maxOutputTokens: 4_096,
+  resolvedModel: "deterministic",
+  source: { kind: "explicit", name: "runtime-test" },
+} as const;
+
 const objectSchema = defineSchema<JsonObject>({
   jsonSchema: { type: "object" },
   parse(value: unknown): JsonObject {
@@ -47,6 +55,7 @@ function agentWith(driverTools: NonNullable<AgentConfig["tools"]> = []) {
   return defineAgent({
     instructions: "Be precise.",
     model: { model: "deterministic", provider: "mock" },
+    modelCapabilities: TEST_MODEL_CAPABILITIES,
     tools: driverTools,
   });
 }
@@ -618,7 +627,7 @@ test("JX-AC-031 Plan-only control commits before a model-generated public contin
   );
   assert.deepEqual(
     model.effects[1]?.input.contextManifest?.sources.map((source) => source.kind),
-    ["agent", "messages", "active_plan", "tools", "runtime"],
+    ["agent", "tools", "active_plan", "handoff", "message", "runtime"],
   );
   assert.deepEqual(model.effects[1]?.input.messages, [
     { content: "Create a Plan", role: "user" },
@@ -958,7 +967,7 @@ test("JX-AC-020 JX-AC-052 queued multimodal input is durable and starts in Event
     "first",
     "帮我看看这个 [pasted image 1] 是啥， 这个 [pasted image 2] 又是啥",
   ]);
-  assert.equal(accepted[1]?.schemaVersion, 7);
+  assert.equal(accepted[1]?.schemaVersion, CURRENT_EVENT_SCHEMA_VERSION);
   assert.doesNotMatch(JSON.stringify(accepted[1]), /iVBOR|\/9j/u);
   const structuredParts = accepted[1]?.payload.parts;
   assert.equal(structuredParts?.filter((part) => part.type === "image").length, 2);

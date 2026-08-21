@@ -9,7 +9,7 @@ import {
   JixuConfigStore,
 } from "../src/config.ts";
 
-test("JX-AC-048 model, Tool, and Jina BYOK settings persist in one schema v5 file", async () => {
+test("JX-AC-048 JX-AC-054 model limits, Tool, and Jina BYOK settings persist in schema v6", async () => {
   const parent = await mkdtemp(join(tmpdir(), "jixu-config-"));
   const directory = join(parent, ".jixu");
   const store = new JixuConfigStore(directory);
@@ -20,6 +20,10 @@ test("JX-AC-048 model, Tool, and Jina BYOK settings persist in one schema v5 fil
       apiKey: "model-secret-fixture",
       baseUrl: "https://api.anthropic.example",
       model: "claude-model",
+      modelCapabilities: {
+        contextWindowTokens: 1_000_000,
+        maxOutputTokens: 128_000,
+      },
       tools: {
         enabled: ["read", "bash", "web_search"],
         fileScope: "workspace",
@@ -36,6 +40,10 @@ test("JX-AC-048 model, Tool, and Jina BYOK settings persist in one schema v5 fil
       apiKey: "model-secret-fixture",
       baseUrl: "https://api.anthropic.example",
       model: "claude-model",
+      modelCapabilities: {
+        contextWindowTokens: 1_000_000,
+        maxOutputTokens: 128_000,
+      },
       tools: {
         enabled: ["read", "bash", "web_search"],
         fileScope: "workspace",
@@ -50,7 +58,9 @@ test("JX-AC-048 model, Tool, and Jina BYOK settings persist in one schema v5 fil
     const settings = await readFile(store.settingsPath, "utf8");
     assert.match(settings, /model-secret-fixture/);
     assert.match(settings, /jina-secret-fixture/);
-    assert.match(settings, /"version": 5/);
+    assert.match(settings, /"version": 6/);
+    assert.match(settings, /"contextWindowTokens": 1000000/);
+    assert.match(settings, /"maxOutputTokens": 128000/);
     assert.match(settings, /"webSearch"/);
     assert.match(settings, /"effect": "deny"/);
     assert.deepEqual(await readdir(directory), ["settings.json"]);
@@ -71,11 +81,37 @@ test("JX-PROV-001 JX-TUI-002C pre-release configuration schemas v1 and v2 fail c
       await writeFile(store.settingsPath, JSON.stringify({ connection: {}, version }), "utf8");
       await assert.rejects(
         store.load(),
-        /settings\.json must use Jixu settings schema version 3, 4, or 5/,
+        /settings\.json must use Jixu settings schema version 3, 4, 5, or 6/,
       );
     } finally {
       await rm(parent, { force: true, recursive: true });
     }
+  }
+});
+
+test("JX-AC-054 schema v5 loads for automatic resolution and is not rewritten before save", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "jixu-config-v5-"));
+  const store = new JixuConfigStore(join(parent, ".jixu"));
+  try {
+    await store.load();
+    const legacy = JSON.stringify({
+      connection: {
+        api: "openai-chat-completions",
+        apiKey: "fixture",
+        baseUrl: "https://api.openai.com/v1",
+        model: "gpt-5.6-sol",
+      },
+      tools: DEFAULT_JIXU_TOOL_SETTINGS,
+      version: 5,
+    });
+    await writeFile(store.settingsPath, legacy, "utf8");
+
+    const loaded = await store.load();
+    assert.equal(loaded.model, "gpt-5.6-sol");
+    assert.equal(loaded.modelCapabilities, undefined);
+    assert.equal(await readFile(store.settingsPath, "utf8"), legacy);
+  } finally {
+    await rm(parent, { force: true, recursive: true });
   }
 });
 
@@ -156,7 +192,7 @@ test("JX-AC-048 schema v3 and legacy auth migrate in place without a backup", as
       webSearch: { provider: "jina" },
     });
     const settings = await readFile(store.settingsPath, "utf8");
-    assert.match(settings, /"version": 5/);
+    assert.match(settings, /"version": 6/);
     assert.match(settings, /legacy-model-secret/);
     assert.deepEqual(await readdir(directory), ["settings.json"]);
   } finally {

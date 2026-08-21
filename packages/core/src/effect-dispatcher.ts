@@ -2,13 +2,20 @@ import type { AgentDefinition, ExecutableTool } from "./agent.ts";
 import { parseModelResponse } from "./domain.ts";
 import type { DriverError } from "./domain.ts";
 import type {
+  ContextCompactEffect,
+  ContextCompactionOutcome,
   EffectRequest,
   ModelGenerateEffect,
   ModelOutcome,
   ToolExecuteEffect,
 } from "./effects.ts";
+import {
+  createContinuityHandoff,
+  estimateContextTokens,
+  parseContinuityHandoffBody,
+} from "./context.ts";
 import { InvalidTransitionError, ToolExecutionError } from "./errors.ts";
-import { assertJsonValue, cloneJson } from "./json.ts";
+import { assertJsonValue, canonicalJson, cloneJson } from "./json.ts";
 import type { JsonValue } from "./json.ts";
 import {
   EMPTY_MODEL_ACCOUNTING,
@@ -16,11 +23,16 @@ import {
 } from "./metrics.ts";
 import type { ModelAccounting } from "./metrics.ts";
 import type {
-  ArtifactReader,
+  ArtifactStore,
   ModelDriver,
   Signal,
   SignalSink,
 } from "./ports.ts";
+import {
+  artifactDigest,
+  CONTINUITY_HANDOFF_MEDIA_TYPE,
+} from "./input.ts";
+import type { PreparedArtifact } from "./input.ts";
 import type { ThreadEventPayloads } from "./events.ts";
 import type { ObservationBroker } from "./observation.ts";
 import {
@@ -36,14 +48,19 @@ import type {
 
 export type OutcomeProposal = {
   [TType in
+    | "context.compacted"
+    | "context.compaction_failed"
     | "model.completed"
     | "model.failed"
     | "tool.completed"
     | "tool.failed"]: {
+    readonly artifacts?: readonly PreparedArtifact[];
     readonly payload: ThreadEventPayloads[TType];
     readonly type: TType;
   };
 }[
+  | "context.compacted"
+  | "context.compaction_failed"
   | "model.completed"
   | "model.failed"
   | "tool.completed"
@@ -51,7 +68,7 @@ export type OutcomeProposal = {
 
 export interface EffectDispatcherConfig {
   readonly agent: AgentDefinition;
-  readonly artifacts: ArtifactReader;
+  readonly artifacts: ArtifactStore;
   readonly modelDrivers: Readonly<Record<string, ModelDriver>>;
   readonly observations: ObservationBroker;
   readonly signals: SignalSink;
@@ -92,7 +109,7 @@ function parseDriverError(value: unknown, label: string): DriverError {
 
 export class EffectDispatcher {
   readonly #agent: AgentDefinition;
-  readonly #artifacts: ArtifactReader;
+  readonly #artifacts: ArtifactStore;
   readonly #modelDrivers: Readonly<Record<string, ModelDriver>>;
   readonly #observations: ObservationBroker;
   readonly #signals: SignalSink;
@@ -110,9 +127,14 @@ export class EffectDispatcher {
   }
 
   dispatch(effect: EffectRequest): Promise<OutcomeProposal> {
-    return effect.type === "model.generate"
-      ? this.#dispatchModel(effect)
-      : this.#dispatchTool(effect);
+    switch (effect.type) {
+      case "context.compact":
+        return this.#dispatchCompaction(effect);
+      case "model.generate":
+        return this.#dispatchModel(effect);
+      case "tool.execute":
+        return this.#dispatchTool(effect);
+    }
   }
 
   inspectToolPermission(
@@ -247,6 +269,132 @@ export class EffectDispatcher {
     }
   }
 
+  async #dispatchCompaction(
+    effect: ContextCompactEffect,
+  ): Promise<OutcomeProposal> {
+    const driver = this.#modelDrivers[effect.input.model.provider];
+    if (driver?.compact === undefined) {
+      return this.#compactionFailure(
+        effect,
+        "failed",
+        driverError(
+          "context_compaction_driver_missing",
+          `No compatible Context compaction Driver is registered for ${effect.input.model.provider}`,
+          false,
+        ),
+      );
+    }
+    if (
+      effect.input.minimumInputTokens >=
+        effect.input.policy.contextWindowTokens -
+          effect.input.policy.reservedOutputTokens -
+          effect.input.policy.safetyMarginTokens ||
+      effect.input.sourceMessages.length === 0 &&
+      effect.input.previousHandoff === null
+    ) {
+      return this.#compactionFailure(
+        effect,
+        "failed",
+        driverError(
+          "context_budget_uncompactable",
+          "Immutable Agent and capability context exceeds the declared model input budget",
+          false,
+        ),
+      );
+    }
+
+    let outcome: ContextCompactionOutcome;
+    try {
+      outcome = await driver.compact(cloneJson(effect), {
+        artifacts: this.#artifacts,
+        cancellation: new AbortController().signal,
+        signals: this.#signalsFor(effect.threadId),
+      });
+    } catch (error) {
+      outcome = {
+        error: driverError(
+          "context_compaction_driver_exception",
+          messageFrom(error),
+          true,
+        ),
+        status: "indeterminate",
+      };
+    }
+
+    let accounting: ModelAccounting;
+    try {
+      accounting = parseModelAccounting(
+        outcome.accounting ?? EMPTY_MODEL_ACCOUNTING,
+      );
+    } catch (error) {
+      return this.#compactionFailure(
+        effect,
+        "failed",
+        driverError("model_accounting_invalid", messageFrom(error), false),
+      );
+    }
+    if (outcome.status !== "succeeded") {
+      return this.#compactionFailure(
+        effect,
+        outcome.status,
+        outcome.error,
+        accounting,
+      );
+    }
+
+    try {
+      const body = parseContinuityHandoffBody(
+        outcome.value,
+        effect.input.sourceEventIds,
+      );
+      if (
+        effect.input.sourceMessages.length === 0 &&
+        effect.input.sourceManifest.every(
+          (source) => source.kind === "handoff",
+        ) &&
+        effect.input.previousHandoff !== null &&
+        estimateContextTokens(body) >=
+          estimateContextTokens(effect.input.previousHandoff.handoff.body)
+      ) {
+        throw new TypeError(
+          "Continuity Handoff replacement does not reduce the previous Handoff",
+        );
+      }
+      if (estimateContextTokens(body) > effect.input.targetTokens) {
+        throw new TypeError(
+          `Continuity Handoff exceeds its ${effect.input.targetTokens}-token target`,
+        );
+      }
+      const handoff = createContinuityHandoff(effect.input, body);
+      assertJsonValue(handoff, "Continuity Handoff");
+      const bytes = new TextEncoder().encode(
+        canonicalJson(handoff as unknown as JsonValue),
+      );
+      const artifact = {
+        byteLength: bytes.byteLength,
+        digest: await artifactDigest(bytes),
+        mediaType: CONTINUITY_HANDOFF_MEDIA_TYPE,
+      } as const;
+      return {
+        artifacts: [{ bytes, reference: artifact }],
+        payload: {
+          accounting,
+          artifact,
+          effectId: effect.id,
+          handoff,
+        },
+        type: "context.compacted",
+      };
+    } catch (error) {
+      return this.#compactionFailure(
+        effect,
+        "failed",
+        driverError("context_handoff_invalid", messageFrom(error), false),
+        accounting,
+      );
+    }
+  }
+
   async #dispatchTool(effect: ToolExecuteEffect): Promise<OutcomeProposal> {
     const tool = this.#agent.tools.find(
       (candidate) => candidate.descriptor.name === effect.input.name,
@@ -356,6 +504,23 @@ export class EffectDispatcher {
         toolCallId: effect.input.toolCallId,
       },
       type: "tool.failed",
+    };
+  }
+
+  #compactionFailure(
+    effect: ContextCompactEffect,
+    disposition: "failed" | "indeterminate",
+    error: DriverError,
+    accounting: ModelAccounting = EMPTY_MODEL_ACCOUNTING,
+  ): OutcomeProposal {
+    return {
+      payload: {
+        accounting,
+        disposition,
+        effectId: effect.id,
+        error,
+      },
+      type: "context.compaction_failed",
     };
   }
 }

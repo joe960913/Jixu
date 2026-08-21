@@ -10,7 +10,6 @@ import {
 } from "./config.ts";
 import type { ThreadController } from "./thread-controller.ts";
 import {
-  Booting,
   Setup,
   type JixuInitialConfiguration,
 } from "./tui-setup.tsx";
@@ -46,6 +45,7 @@ function completeInitial(
   const apiKey = initial?.apiKey;
   const baseUrl = initial?.baseUrl;
   const model = initial?.model;
+  const modelCapabilities = initial?.modelCapabilities;
   const tools = initial?.tools ?? DEFAULT_JIXU_TOOL_SETTINGS;
 
   return api === undefined ||
@@ -53,7 +53,14 @@ function completeInitial(
     baseUrl === undefined ||
     model === undefined
     ? null
-    : { api, apiKey, baseUrl, model, tools };
+    : {
+        api,
+        apiKey,
+        baseUrl,
+        model,
+        ...(modelCapabilities === undefined ? {} : { modelCapabilities }),
+        tools,
+      };
 }
 
 export function JixuApp({
@@ -68,7 +75,7 @@ export function JixuApp({
   const [active, setActive] = useState<JixuActiveConnection | null>(null);
   const [configuration, setConfiguration] =
     useState<JixuInitialConfiguration | undefined>(initial);
-  const [booting, setBooting] = useState(initial?.autoConnect === true);
+  const [connecting, setConnecting] = useState(initial?.autoConnect === true);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [view, setView] = useState<"config" | "workspace">("workspace");
   const attempted = useRef(false);
@@ -77,7 +84,7 @@ export function JixuApp({
     async (config: JixuConnectionConfig) => {
       const controller = await connect(config, {
         onConfigure: () => {
-          setBooting(false);
+          setConnecting(false);
           setView("config");
         },
         onQuit,
@@ -89,10 +96,13 @@ export function JixuApp({
         autoConnect: true,
         baseUrl: config.baseUrl,
         model: config.model,
+        ...(config.modelCapabilities === undefined
+          ? {}
+          : { modelCapabilities: config.modelCapabilities }),
         tools: config.tools,
       });
       setActive({ config, controller });
-      setBooting(false);
+      setConnecting(false);
       setConnectionError(null);
       setView("workspace");
     },
@@ -105,16 +115,16 @@ export function JixuApp({
 
     const saved = completeInitial(initial);
     if (initial?.autoConnect !== true || saved === null) {
-      setBooting(false);
+      setConnecting(false);
       return;
     }
 
     void activate(saved).catch((error) => {
-      setBooting(false);
+      setConnecting(false);
       setConnectionError(
         error instanceof Error
           ? error.message
-          : "Could not load saved configuration.",
+          : "Could not establish the saved model connection.",
       );
     });
   }, [activate, initial]);
@@ -124,8 +134,6 @@ export function JixuApp({
     key.preventDefault();
     onQuit();
   });
-
-  if (booting) return <Booting workspace={workspace} />;
 
   if (view === "config") {
     return (
@@ -144,12 +152,14 @@ export function JixuApp({
     <AgentWorkspace
       active={active}
       clipboard={clipboard}
+      connecting={connecting}
       connectionError={connectionError}
       motion={motion}
       onConfigure={() => {
         setView("config");
       }}
       onQuit={onQuit}
+      pendingModel={configuration?.model ?? null}
       workspace={workspace}
     />
   );

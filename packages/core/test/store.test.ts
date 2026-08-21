@@ -4,8 +4,11 @@ import { test } from "node:test";
 import {
   createInitialThreadState,
   createThreadEvent,
+  CURRENT_EVENT_SCHEMA_VERSION,
   decodeThreadEvent,
+  DEFAULT_CONTEXT_POLICY,
   InMemoryEventStore,
+  jsonDigest,
   reduce,
   SchemaValidationError,
   UnsupportedEventError,
@@ -13,8 +16,16 @@ import {
 import type { AnyThreadEvent } from "../src/index.ts";
 
 const snapshot = {
+  contextPolicy: DEFAULT_CONTEXT_POLICY,
   instructions: "Be precise.",
   model: { model: "deterministic", provider: "mock" },
+  modelCapabilities: {
+    contextWindowTokens: 32_768,
+    maxOutputTokens: 4_096,
+    resolvedModel: "deterministic",
+    schemaVersion: 1,
+    source: { kind: "explicit", name: "core-store-test" },
+  },
   tools: [],
 } as const;
 
@@ -155,6 +166,7 @@ test("JX-AC-053 schema 7 requires mode while schema 6 remains readable as Standa
   if (effect?.type !== "model.generate") return;
   const {
     contextManifest: _contextManifest,
+    continuityHandoff: _continuityHandoff,
     mode: _mode,
     runtimeContext: _runtimeContext,
     ...legacyInput
@@ -172,7 +184,17 @@ test("JX-AC-053 schema 7 requires mode while schema 6 remains readable as Standa
   assert.equal(decodeThreadEvent(legacyRequested).type, "model.requested");
   let legacyState = reduce(
     createInitialThreadState(threadId),
-    decodeThreadEvent({ ...created, schemaVersion: 6 }),
+    decodeThreadEvent({
+      ...created,
+      payload: {
+        agent: {
+          instructions: snapshot.instructions,
+          model: snapshot.model,
+          tools: snapshot.tools,
+        },
+      },
+      schemaVersion: 6,
+    }),
   ).state;
   legacyState = reduce(
     legacyState,
@@ -198,6 +220,143 @@ test("JX-AC-053 schema 7 requires mode while schema 6 remains readable as Standa
   });
   assert.throws(
     () => decodeThreadEvent({ ...modeChanged, schemaVersion: 6 }),
+    SchemaValidationError,
+  );
+});
+
+test("JX-AC-056 schema 8 Context drafts remain readable while schema 9 requires capability metadata", () => {
+  assert.equal(CURRENT_EVENT_SCHEMA_VERSION, 9);
+  const threadId = "thread-schema-8-context";
+  const created = createThreadEvent({
+    id: "event-created",
+    payload: { agent: snapshot },
+    threadId,
+    sequence: 1,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type: "thread.created",
+  });
+  const legacyAgent = {
+    contextPolicy: snapshot.contextPolicy,
+    instructions: snapshot.instructions,
+    model: snapshot.model,
+    tools: snapshot.tools,
+  };
+  assert.equal(
+    decodeThreadEvent({
+      ...created,
+      payload: { agent: legacyAgent },
+      schemaVersion: 8,
+    }).type,
+    "thread.created",
+  );
+  assert.equal(
+    decodeThreadEvent({
+      ...created,
+      payload: {
+        agent: {
+          instructions: snapshot.instructions,
+          model: snapshot.model,
+          tools: snapshot.tools,
+        },
+      },
+      schemaVersion: 8,
+    }).type,
+    "thread.created",
+  );
+  assert.throws(
+    () => decodeThreadEvent({
+      ...created,
+      payload: { agent: legacyAgent },
+    }),
+    SchemaValidationError,
+  );
+
+  const state = reduce(createInitialThreadState(threadId), created).state;
+  const input = createThreadEvent({
+    id: "event-input",
+    payload: { content: "Continue the historical Thread" },
+    threadId,
+    sequence: 2,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type: "input.received",
+  });
+  const effect = reduce(state, input).effects[0];
+  assert.equal(effect?.type, "model.generate");
+  if (effect?.type !== "model.generate" || effect.input.contextManifest === undefined) {
+    return;
+  }
+  const manifest = effect.input.contextManifest;
+  const agentDigest = jsonDigest({
+    contextPolicy: snapshot.contextPolicy,
+    instructions: effect.input.instructions,
+    model: effect.input.model,
+    tools: effect.input.tools,
+  });
+  const sources = manifest.sources.map((source) =>
+    source.kind === "agent"
+      ? { ...source, digest: agentDigest, id: `agent:${agentDigest}` }
+      : source,
+  );
+  const legacyManifest = {
+    ...manifest,
+    logicalRequestDigest: jsonDigest({
+      activePlan: effect.input.activePlan,
+      continuityHandoff: effect.input.continuityHandoff ?? null,
+      contextPolicy: snapshot.contextPolicy,
+      instructions: effect.input.instructions,
+      messages: effect.input.messages,
+      mode: effect.input.mode,
+      model: effect.input.model,
+      planControl: effect.input.planControl,
+      planRejectionFeedback: effect.input.planRejectionFeedback ?? null,
+      progressControl: effect.input.progressControl,
+      runtime: effect.input.runtimeContext,
+      tools: effect.input.tools,
+    }),
+    sources,
+  };
+  const {
+    modelCapabilities: _modelCapabilities,
+    ...boundedSchema8Manifest
+  } = legacyManifest;
+  const schema8Requested = {
+    id: "event-requested",
+    payload: {
+      effect: {
+        ...effect,
+        input: {
+          ...effect.input,
+          contextManifest: boundedSchema8Manifest,
+        },
+      },
+    },
+    schemaVersion: 8,
+    sequence: 3,
+    threadId,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type: "model.requested",
+  };
+  assert.equal(decodeThreadEvent(schema8Requested).type, "model.requested");
+  const {
+    contextManifest: _contextManifest,
+    continuityHandoff: _continuityHandoff,
+    runtimeContext: _runtimeContext,
+    ...earlySchema8Input
+  } = effect.input;
+  assert.equal(
+    decodeThreadEvent({
+      ...schema8Requested,
+      payload: {
+        effect: { ...effect, input: earlySchema8Input },
+      },
+    }).type,
+    "model.requested",
+  );
+  assert.throws(
+    () => decodeThreadEvent({
+      ...schema8Requested,
+      schemaVersion: CURRENT_EVENT_SCHEMA_VERSION,
+    }),
     SchemaValidationError,
   );
 });

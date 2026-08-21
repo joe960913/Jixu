@@ -4,6 +4,10 @@ import type {
   ToolDescriptor,
   ToolIdempotency,
 } from "./domain.ts";
+import { defineContextPolicy } from "./context-policy.ts";
+import type { ContextPolicyConfig } from "./context-policy.ts";
+import { defineModelCapabilityProfile } from "./model-capabilities.ts";
+import type { ModelCapabilityProfileConfig } from "./model-capabilities.ts";
 import { SchemaValidationError } from "./errors.ts";
 import { cloneFrozenJson } from "./json.ts";
 import type { JsonObject, JsonValue } from "./json.ts";
@@ -139,8 +143,10 @@ export interface AgentDefinition {
 }
 
 export interface AgentConfig {
+  readonly context?: ContextPolicyConfig;
   readonly instructions: string;
   readonly model: ModelRef;
+  readonly modelCapabilities: ModelCapabilityProfileConfig;
   readonly tools?: readonly ExecutableTool[];
 }
 
@@ -163,9 +169,24 @@ export function defineAgent(config: AgentConfig): AgentDefinition {
     tools.set(tool.descriptor.name, tool);
   }
 
+  if (config.context?.contextWindowTokens !== undefined) {
+    throw new SchemaValidationError(
+      "Agent contextWindowTokens belongs in modelCapabilities, not Context Policy",
+    );
+  }
+  const modelCapabilities = defineModelCapabilityProfile(
+    config.modelCapabilities,
+  );
+  if (modelCapabilities.source.kind === "legacy") {
+    throw new SchemaValidationError(
+      "Legacy Model Capability Profiles are reserved for historical Event recovery",
+    );
+  }
   const snapshot: AgentSnapshot = Object.freeze({
+    contextPolicy: defineContextPolicy(config.context, modelCapabilities),
     instructions: config.instructions,
     model: Object.freeze({ ...config.model }),
+    modelCapabilities,
     tools: Object.freeze([...tools.values()].map((tool) => tool.descriptor)),
   });
 

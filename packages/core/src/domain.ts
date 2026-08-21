@@ -1,4 +1,11 @@
 import type { EffectRequest } from "./effects.ts";
+import type { ContextPolicy } from "./context-policy.ts";
+import type { ModelCapabilityProfile } from "./model-capabilities.ts";
+import type {
+  AcceptedContinuityHandoff,
+  ContextBoundary,
+  ModelMessageSource,
+} from "./context.ts";
 import { cloneJson, isJsonObject } from "./json.ts";
 import type { JsonObject, JsonValue } from "./json.ts";
 import { createInitialThreadMetrics } from "./metrics.ts";
@@ -37,8 +44,10 @@ export interface ToolDescriptor {
 }
 
 export interface AgentSnapshot {
+  readonly contextPolicy?: ContextPolicy;
   readonly instructions: string;
   readonly model: ModelRef;
+  readonly modelCapabilities?: ModelCapabilityProfile;
   readonly tools: readonly ToolDescriptor[];
 }
 
@@ -159,6 +168,7 @@ export interface QueuedInput {
   readonly content: string;
   readonly eventId: string;
   readonly parts?: readonly StoredInputPart[];
+  readonly sequence: number;
 }
 
 export interface PendingPlanRejection {
@@ -169,12 +179,16 @@ export interface PendingPlanRejection {
 }
 
 export interface ThreadState {
+  readonly acceptedHandoff: AcceptedContinuityHandoff | null;
   readonly activePlan: PlanSnapshot | null;
+  readonly activePlanSource: ContextBoundary | null;
   readonly agent: AgentSnapshot | null;
+  readonly contextClearBoundary: ContextBoundary | null;
   readonly error: DriverError | null;
   readonly inputQueue: readonly QueuedInput[];
   readonly lineage: ForkLineage | null;
   readonly messages: readonly ModelMessage[];
+  readonly messageSources: readonly ModelMessageSource[];
   readonly metrics: ThreadMetrics;
   readonly mode: ThreadMode;
   readonly pauseRequested: boolean;
@@ -203,12 +217,16 @@ export interface Checkpoint {
 
 export function createInitialThreadState(threadId: string): ThreadState {
   return {
+    acceptedHandoff: null,
     activePlan: null,
+    activePlanSource: null,
     agent: null,
+    contextClearBoundary: null,
     error: null,
     inputQueue: [],
     lineage: null,
     messages: [],
+    messageSources: [],
     metrics: createInitialThreadMetrics(),
     mode: "standard",
     pauseRequested: false,

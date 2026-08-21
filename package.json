@@ -31,7 +31,5 @@
     "publint": "0.3.23",
     "typescript": "6.0.3"
   },
-  "workspaces": [
-    "packages/*"
-  ]
+  "workspaces": ["packages/*"]
 }

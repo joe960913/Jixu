@@ -28,6 +28,7 @@ export interface JixuInitialConfiguration {
   readonly autoConnect?: boolean;
   readonly baseUrl?: string;
   readonly model?: string;
+  readonly modelCapabilities?: JixuConnectionConfig["modelCapabilities"];
   readonly tools?: JixuToolSettings;
 }
 
@@ -40,8 +41,8 @@ interface SetupProps {
   readonly workspace: string;
 }
 
-type SetupFocus = 0 | 1 | 2 | 3 | 4;
-type SetupStep = 0 | 1 | 2 | 3;
+type SetupFocus = 0 | 1 | 2 | 3 | 4 | 5;
+type SetupStep = 0 | 1 | 2 | 3 | 4;
 
 interface EndpointPreset {
   readonly baseUrl: string | null;
@@ -201,7 +202,7 @@ interface SetupFieldProps {
   readonly labelActive?: boolean;
   readonly label: string;
   readonly maxLength?: number;
-  readonly number: 1 | 2 | 3;
+  readonly number: 1 | 2 | 3 | 4;
   readonly onFocus: () => void;
   readonly onInput: (value: string) => void;
   readonly onSubmit: (event: string | SubmitEvent) => void;
@@ -323,6 +324,11 @@ export function Setup({
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "");
   const [apiKey, setApiKey] = useState(initial?.apiKey ?? "");
   const [model, setModel] = useState(initial?.model ?? "");
+  const [modelLimits, setModelLimits] = useState(
+    initial?.modelCapabilities === undefined
+      ? ""
+      : `${initial.modelCapabilities.contextWindowTokens}/${initial.modelCapabilities.maxOutputTokens}`,
+  );
   const [tools, setTools] = useState(
     initial?.tools ?? DEFAULT_JIXU_TOOL_SETTINGS,
   );
@@ -339,9 +345,10 @@ export function Setup({
   const baseUrlInput = useRef<InputRenderable>(null);
   const apiKeyInput = useRef<InputRenderable>(null);
   const modelInput = useRef<InputRenderable>(null);
+  const modelLimitsInput = useRef<InputRenderable>(null);
   const { height, width } = useTerminalDimensions();
   const compact = width < 80;
-  const compactHeight = height < 28;
+  const compactHeight = height < 34;
   const wideChrome = width >= 110;
   const workspaceLabel = truncatePathStart(
     workspace,
@@ -352,9 +359,11 @@ export function Setup({
     if (focus !== 2) baseUrlInput.current?.blur();
     if (focus !== 3) apiKeyInput.current?.blur();
     if (focus !== 4) modelInput.current?.blur();
+    if (focus !== 5) modelLimitsInput.current?.blur();
   }, [focus]);
 
   const selectApi = (next: JixuApi) => {
+    if (next !== api) setModelLimits("");
     setApi(next);
     setPresetCursor(selectedEndpointPresetIndex(next, baseUrl));
     setError(null);
@@ -369,7 +378,12 @@ export function Setup({
     const preset = ENDPOINT_PRESETS[api][index];
     if (preset === undefined) return;
     setPresetCursor(index);
-    if (preset.baseUrl !== null) setBaseUrl(preset.baseUrl);
+    if (preset.baseUrl !== null) {
+      if (comparableBaseUrl(preset.baseUrl) !== comparableBaseUrl(baseUrl)) {
+        setModelLimits("");
+      }
+      setBaseUrl(preset.baseUrl);
+    }
     setError(null);
     setFocus(2);
   };
@@ -399,6 +413,30 @@ export function Setup({
       setFocus(4);
       return;
     }
+    const cleanLimits = modelLimits.trim();
+    let modelCapabilities: JixuConnectionConfig["modelCapabilities"];
+    if (cleanLimits.length > 0) {
+      const match = /^(\d[\d_]*)\s*[\/,]\s*(\d[\d_]*)$/u.exec(cleanLimits);
+      if (match === null) {
+        setError("Model limits must use CONTEXT/MAX_OUTPUT, for example 1000000/128000.");
+        setFocus(5);
+        return;
+      }
+      const contextWindowTokens = Number(match[1]?.replaceAll("_", ""));
+      const maxOutputTokens = Number(match[2]?.replaceAll("_", ""));
+      if (
+        !Number.isSafeInteger(contextWindowTokens) ||
+        contextWindowTokens <= 0 ||
+        !Number.isSafeInteger(maxOutputTokens) ||
+        maxOutputTokens <= 0 ||
+        maxOutputTokens > contextWindowTokens
+      ) {
+        setError("Model limits must be positive safe integers and output cannot exceed context.");
+        setFocus(5);
+        return;
+      }
+      modelCapabilities = { contextWindowTokens, maxOutputTokens };
+    }
     if (connecting) return;
 
     setConnecting(true);
@@ -409,6 +447,7 @@ export function Setup({
         apiKey: cleanKey,
         baseUrl: cleanBaseUrl,
         model: cleanModel,
+        ...(modelCapabilities === undefined ? {} : { modelCapabilities }),
         tools,
       });
     } catch (connectionError) {
@@ -432,8 +471,8 @@ export function Setup({
     if (key.name === "tab") {
       key.preventDefault();
       setFocus((current) => {
-        if (key.shift) return current === 0 ? 4 : ((current - 1) as SetupFocus);
-        return current === 4 ? 0 : ((current + 1) as SetupFocus);
+        if (key.shift) return current === 0 ? 5 : ((current - 1) as SetupFocus);
+        return current === 5 ? 0 : ((current + 1) as SetupFocus);
       });
       return;
     }
@@ -503,13 +542,16 @@ export function Setup({
       return;
     }
 
-    if (focus === 4 && key.name === "return") {
+    if (focus === 5 && key.name === "return") {
       key.preventDefault();
       void connect();
     }
   });
 
-  const submitModel = (_event: string | SubmitEvent) => void connect();
+  const submitModel = (_event: string | SubmitEvent) => {
+    modelInput.current?.blur();
+    setFocus(5);
+  };
 
   return (
     <box
@@ -658,6 +700,7 @@ export function Setup({
           number={1}
           onFocus={() => setFocus(2)}
           onInput={(value) => {
+            if (value !== baseUrl) setModelLimits("");
             setBaseUrl(value);
             setPresetCursor(selectedEndpointPresetIndex(api, value));
           }}
@@ -686,18 +729,72 @@ export function Setup({
           value={apiKey}
         />
 
-        <SetupField
-          active={focus === 4}
-          hint="VENDOR / MODEL"
-          inputRef={modelInput}
-          label="MODEL ID"
-          number={3}
-          onFocus={() => setFocus(4)}
-          onInput={setModel}
-          onSubmit={submitModel}
-          placeholder="e.g. vendor/model-name"
-          value={model}
-        />
+        {compactHeight ? (
+          <box style={{ flexDirection: "row", gap: 1, width: "100%" }}>
+            <box style={{ flexDirection: "column", flexGrow: 1, flexBasis: 0 }}>
+              <SetupField
+                active={focus === 4}
+                hint="MODEL"
+                inputRef={modelInput}
+                label="MODEL ID"
+                number={3}
+                onFocus={() => setFocus(4)}
+                onInput={(value) => {
+                  if (value !== model) setModelLimits("");
+                  setModel(value);
+                }}
+                onSubmit={submitModel}
+                placeholder="vendor/model-name"
+                value={model}
+              />
+            </box>
+            <box style={{ flexDirection: "column", flexGrow: 1, flexBasis: 0 }}>
+              <SetupField
+                active={focus === 5}
+                hint="AUTO IF BLANK"
+                inputRef={modelLimitsInput}
+                label="MODEL LIMITS"
+                number={4}
+                onFocus={() => setFocus(5)}
+                onInput={setModelLimits}
+                onSubmit={() => void connect()}
+                placeholder="1000000/128000"
+                value={modelLimits}
+              />
+            </box>
+          </box>
+        ) : (
+          <>
+            <SetupField
+              active={focus === 4}
+              hint="VENDOR / MODEL"
+              inputRef={modelInput}
+              label="MODEL ID"
+              number={3}
+              onFocus={() => setFocus(4)}
+              onInput={(value) => {
+                if (value !== model) setModelLimits("");
+                setModel(value);
+              }}
+              onSubmit={submitModel}
+              placeholder="e.g. vendor/model-name"
+              value={model}
+            />
+
+            <SetupField
+              active={focus === 5}
+              hint="CONTEXT / MAX OUTPUT — AUTO IF BLANK"
+              inputRef={modelLimitsInput}
+              label="MODEL LIMITS"
+              number={4}
+              onFocus={() => setFocus(5)}
+              onInput={setModelLimits}
+              onSubmit={() => void connect()}
+              placeholder="Auto, or e.g. 1000000/128000"
+              value={modelLimits}
+            />
+          </>
+        )}
 
         <box
           style={{
@@ -744,25 +841,6 @@ export function Setup({
           {!wideChrome && <KeyAction action="Quit" keyName="Ctrl+C" />}
         </box>
       </box>
-    </box>
-  );
-}
-
-export function Booting({ workspace }: { readonly workspace: string }) {
-  return (
-    <box
-      style={{
-        alignItems: "center",
-        backgroundColor: jixuTheme.canvas,
-        flexDirection: "column",
-        height: "100%",
-        justifyContent: "center",
-        width: "100%",
-      }}
-    >
-      <text fg={jixuTheme.brand}><strong>JIXU</strong></text>
-      <text fg={jixuTheme.text}>Loading saved endpoint configuration…</text>
-      <text fg={jixuTheme.secondary}>{workspace}</text>
     </box>
   );
 }

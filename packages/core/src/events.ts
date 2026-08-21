@@ -7,18 +7,27 @@ import type {
   ToolApprovalDecision,
 } from "./domain.ts";
 import type {
+  ContextCompactEffect,
   ModelGenerateEffect,
   ToolExecuteEffect,
 } from "./effects.ts";
+import type { ContinuityHandoff } from "./context.ts";
+import type { ArtifactReference } from "./input.ts";
 import type { JsonValue } from "./json.ts";
 import type { ModelAccounting } from "./metrics.ts";
 import type { PlanSnapshot, PlanUpdateProposal } from "./plan.ts";
 import type { AcceptedInput } from "./input.ts";
 
-export const CURRENT_EVENT_SCHEMA_VERSION = 7;
+export const CURRENT_EVENT_SCHEMA_VERSION = 9;
 
 export function isSupportedEventSchemaVersion(value: number): boolean {
-  return value === 5 || value === 6 || value === CURRENT_EVENT_SCHEMA_VERSION;
+  return (
+    value === 5 ||
+    value === 6 ||
+    value === 7 ||
+    value === 8 ||
+    value === CURRENT_EVENT_SCHEMA_VERSION
+  );
 }
 
 export interface ThreadEvent<TType extends string, TPayload> {
@@ -46,6 +55,21 @@ export interface ThreadEventPayloads {
     readonly toolCallId: string;
   };
   readonly "context.cleared": Record<string, never>;
+  readonly "context.compacted": {
+    readonly accounting: ModelAccounting;
+    readonly artifact: ArtifactReference;
+    readonly effectId: string;
+    readonly handoff: ContinuityHandoff;
+  };
+  readonly "context.compaction_failed": {
+    readonly accounting: ModelAccounting;
+    readonly disposition: "failed" | "indeterminate";
+    readonly effectId: string;
+    readonly error: DriverError;
+  };
+  readonly "context.compaction_requested": {
+    readonly effect: ContextCompactEffect;
+  };
   readonly "input.received": AcceptedInput;
   readonly "model.completed": {
     readonly accounting: ModelAccounting;

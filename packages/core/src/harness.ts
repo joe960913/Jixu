@@ -1,8 +1,16 @@
 import type { AgentDefinition } from "./agent.ts";
+import { contextPolicyFor } from "./context-policy.ts";
+import { modelCapabilityProfileFor } from "./model-capabilities.ts";
 import { decodeThreadEvent } from "./codec.ts";
-import { copyModelContextForFork } from "./context.ts";
+import {
+  copyContextCompactionForFork,
+  copyContinuityHandoffForFork,
+  copyModelContextForFork,
+} from "./context.ts";
+import type { AcceptedContinuityHandoff } from "./context.ts";
 import { createInitialThreadState } from "./domain.ts";
 import type { ThreadState } from "./domain.ts";
+import type { AgentSnapshot } from "./domain.ts";
 import { EffectDispatcher } from "./effect-dispatcher.ts";
 import {
   AgentMismatchError,
@@ -12,9 +20,18 @@ import {
 } from "./errors.ts";
 import { createThreadEvent } from "./events.ts";
 import type { AnyThreadEvent } from "./events.ts";
-import { assertJsonValue, isJsonObject, jsonEquals } from "./json.ts";
-import type { JsonObject } from "./json.ts";
-import { prepareThreadInput } from "./input.ts";
+import {
+  assertJsonValue,
+  canonicalJson,
+  isJsonObject,
+  jsonEquals,
+} from "./json.ts";
+import type { JsonObject, JsonValue } from "./json.ts";
+import {
+  artifactDigest,
+  CONTINUITY_HANDOFF_MEDIA_TYPE,
+  prepareThreadInput,
+} from "./input.ts";
 import { ObservationBroker } from "./observation.ts";
 import type {
   Clock,
@@ -46,6 +63,15 @@ class RandomIdGenerator implements IdGenerator {
 
 class NoopSignalSink implements SignalSink {
   emit(): void {}
+}
+
+function comparableAgentSnapshot(agent: AgentSnapshot): AgentSnapshot {
+  const modelCapabilities = modelCapabilityProfileFor(agent.modelCapabilities);
+  return {
+    ...agent,
+    contextPolicy: contextPolicyFor(agent.contextPolicy, modelCapabilities),
+    modelCapabilities,
+  };
 }
 
 export interface HarnessConfig {
@@ -112,7 +138,10 @@ export class Harness {
       const created = events[0];
       if (
         created?.type === "thread.created" &&
-        jsonEquals(created.payload.agent, this.#agent.snapshot)
+        jsonEquals(
+          comparableAgentSnapshot(created.payload.agent),
+          comparableAgentSnapshot(this.#agent.snapshot),
+        )
       ) {
         threads.push(await this.#open(threadId, false));
       }
@@ -150,7 +179,13 @@ export class Harness {
     const events = await this.#store.read(threadId);
     if (events.length === 0) throw new ThreadNotFoundError(threadId);
     const state = await restoreThreadState(this.#store, threadId, events);
-    if (state.agent === null || !jsonEquals(state.agent, this.#agent.snapshot)) {
+    if (
+      state.agent === null ||
+      !jsonEquals(
+        comparableAgentSnapshot(state.agent),
+        comparableAgentSnapshot(this.#agent.snapshot),
+      )
+    ) {
       throw new AgentMismatchError(threadId);
     }
     return this.#execution(state);
@@ -183,7 +218,7 @@ export class Harness {
     }
 
     const childThreadId = this.#ids.next("thread");
-    const copied = this.#copyPrefix(
+    const copied = await this.#copyPrefix(
       parentEvents.slice(0, forkIndex + 1),
       childThreadId,
     );
@@ -228,15 +263,19 @@ export class Harness {
     return child;
   }
 
-  #copyPrefix(
+  async #copyPrefix(
     parentEvents: readonly AnyThreadEvent[],
     childThreadId: string,
-  ): readonly AnyThreadEvent[] {
+  ): Promise<readonly AnyThreadEvent[]> {
     const eventIds = new Map<string, string>();
     const effectIds = new Map<string, string>();
     for (const event of parentEvents) {
       eventIds.set(event.id, this.#ids.next("event"));
-      if (event.type === "model.requested" || event.type === "tool.requested") {
+      if (
+        event.type === "context.compaction_requested" ||
+        event.type === "model.requested" ||
+        event.type === "tool.requested"
+      ) {
         const effect = event.payload.effect;
         if (effectIds.has(effect.id)) continue;
         const requestedByEventId = eventIds.get(effect.requestedByEventId);
@@ -249,18 +288,21 @@ export class Harness {
       }
     }
 
-    return parentEvents.map((event) => {
+    const handoffs = new Map<string, AcceptedContinuityHandoff>();
+    const copied: AnyThreadEvent[] = [];
+    for (const event of parentEvents) {
       const id = eventIds.get(event.id);
       if (id === undefined) {
         throw new InvalidTransitionError(`Fork could not map Event ${event.id}`);
       }
-      return decodeThreadEvent({
+      copied.push(decodeThreadEvent({
         id,
-        payload: this.#copyPayload(
+        payload: await this.#copyPayload(
           event,
           childThreadId,
           eventIds,
           effectIds,
+          handoffs,
         ),
         threadId: childThreadId,
         schemaVersion: event.schemaVersion,
@@ -273,17 +315,23 @@ export class Harness {
         ...(event.correlationId === undefined
           ? {}
           : { correlationId: event.correlationId }),
-      });
-    });
+      }));
+    }
+    return copied;
   }
 
-  #copyPayload(
+  async #copyPayload(
     event: AnyThreadEvent,
     childThreadId: string,
     eventIds: ReadonlyMap<string, string>,
     effectIds: ReadonlyMap<string, string>,
-  ): JsonObject {
-    if (event.type === "model.requested" || event.type === "tool.requested") {
+    handoffs: Map<string, AcceptedContinuityHandoff>,
+  ): Promise<JsonObject> {
+    if (
+      event.type === "context.compaction_requested" ||
+      event.type === "model.requested" ||
+      event.type === "tool.requested"
+    ) {
       const effect = event.payload.effect;
       const id = effectIds.get(effect.id);
       if (id === undefined) {
@@ -294,20 +342,83 @@ export class Harness {
           ...effect,
           id,
           idempotencyKey: id,
-          input:
-            effect.type === "model.generate"
-              ? copyModelContextForFork(
-                  effect.input,
-                  (eventId) => eventIds.get(eventId) ?? eventId,
-                )
-              : effect.input,
+          input: (() => {
+            const mapEventId = (eventId: string) =>
+              eventIds.get(eventId) ?? eventId;
+            if (effect.type === "model.generate") {
+              const digest = effect.input.contextManifest?.acceptedHandoffDigest;
+              return copyModelContextForFork(
+                effect.input,
+                mapEventId,
+                digest === null || digest === undefined
+                  ? undefined
+                  : handoffs.get(digest),
+              );
+            }
+            if (effect.type === "context.compact") {
+              const digest = effect.input.previousHandoff?.artifact.digest;
+              const previous =
+                digest === undefined ? null : handoffs.get(digest);
+              if (digest !== undefined && previous === undefined) {
+                throw new InvalidTransitionError(
+                  `Fork could not map Continuity Handoff ${digest}`,
+                );
+              }
+              return copyContextCompactionForFork(
+                effect.input,
+                mapEventId,
+                childThreadId,
+                previous ?? null,
+              );
+            }
+            return effect.input;
+          })(),
           requestedByEventId:
             eventIds.get(effect.requestedByEventId) ?? effect.requestedByEventId,
           threadId: childThreadId,
         },
       });
     }
+    if (event.type === "context.compacted") {
+      const effectId = effectIds.get(event.payload.effectId);
+      if (effectId === undefined) {
+        throw new InvalidTransitionError(
+          `Fork Event ${event.id} has no copied Context Effect request`,
+        );
+      }
+      const previousDigest = event.payload.handoff.previousHandoffDigest;
+      const copiedPrevious =
+        previousDigest === null ? undefined : handoffs.get(previousDigest);
+      if (previousDigest !== null && copiedPrevious === undefined) {
+        throw new InvalidTransitionError(
+          `Fork could not map previous Continuity Handoff ${previousDigest}`,
+        );
+      }
+      const handoff = copyContinuityHandoffForFork(
+        event.payload.handoff,
+        (eventId) => eventIds.get(eventId) ?? eventId,
+        childThreadId,
+        copiedPrevious?.artifact.digest ?? null,
+      );
+      const bytes = new TextEncoder().encode(
+        canonicalJson(handoff as unknown as JsonValue),
+      );
+      const artifact = {
+        byteLength: bytes.byteLength,
+        digest: await artifactDigest(bytes),
+        mediaType: CONTINUITY_HANDOFF_MEDIA_TYPE,
+      } as const;
+      await this.#store.putArtifact(artifact, bytes);
+      handoffs.set(event.payload.artifact.digest, { artifact, handoff });
+      return toJsonObject({
+        ...event.payload,
+        artifact,
+        effectId,
+        handoff,
+      });
+    }
     if (
+      event.type === "context.compaction_failed" ||
       event.type === "model.completed" ||
       event.type === "model.failed" ||
       event.type === "approval.requested" ||

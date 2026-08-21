@@ -4,6 +4,7 @@ import { createHarness, defineAgent } from "jixu-core";
 import {
   createLLMAdapter,
   createLLMModelDriver,
+  resolveLLMModelCapabilities,
 } from "jixu-llm";
 import { JsonlEventStore } from "jixu-store-jsonl";
 import { createJinaWebSearchTool } from "jixu-tools-jina";
@@ -219,7 +220,15 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
     config: JixuConnectionConfig,
     controls: { readonly onConfigure: () => void; readonly onQuit: () => void },
   ) => {
-    await configStore.saveConnection(config);
+    const modelCapabilities = await resolveLLMModelCapabilities({
+      api: config.api,
+      apiKey: config.apiKey,
+      baseURL: config.baseUrl,
+      ...(config.modelCapabilities === undefined
+        ? {}
+        : { explicit: config.modelCapabilities }),
+      model: config.model,
+    });
     const availableTools = createToolCatalogue(config.tools);
     const toolsByName = new Map(
       availableTools.map((tool) => [tool.descriptor.name, tool] as const),
@@ -235,14 +244,17 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
       api: config.api,
       apiKey: config.apiKey,
       baseURL: config.baseUrl,
+      maxOutputTokens: modelCapabilities.maxOutputTokens,
       provider: MODEL_DRIVER_ID,
     });
+    await configStore.saveConnection(config);
     const agent = defineAgent({
       instructions: createJixuReferenceAgentInstructions({
         fileScope: config.tools.fileScope,
         tools: enabledTools,
       }),
       model: { model: config.model, provider: MODEL_DRIVER_ID },
+      modelCapabilities,
       tools: enabledTools,
     });
     const harness = createHarness({
@@ -251,6 +263,7 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
       store: new JsonlEventStore(resolve(options.root, ".jixu")),
       toolPermissionPolicy: jixuToolPermissionPolicy(config.tools),
     });
+    await harness.listThreads();
     return createThreadController({ harness, ...controls });
   };
   const renderer = await createCliRenderer({
@@ -281,6 +294,9 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
           ...(apiKey === undefined ? {} : { apiKey }),
           ...(baseUrl === undefined ? {} : { baseUrl }),
           ...(model === undefined ? {} : { model }),
+          ...(stored.modelCapabilities === undefined
+            ? {}
+            : { modelCapabilities: stored.modelCapabilities }),
           tools: stored.tools,
         }}
         motion={process.env.JIXU_MOTION !== "off"}

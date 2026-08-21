@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { createThreadEvent } from "../../core/src/index.ts";
+import {
+  createThreadEvent,
+  DEFAULT_CONTEXT_POLICY,
+} from "../../core/src/index.ts";
 import { defineStoreContract } from "../../testkit/src/store-contract.ts";
 import { JsonlEventStore } from "../src/index.ts";
 
@@ -25,8 +28,16 @@ test("JX-AC-003 JsonlEventStore survives adapter reconstruction", async () => {
       id: "durable-jsonl-event",
       payload: {
         agent: {
+          contextPolicy: DEFAULT_CONTEXT_POLICY,
           instructions: "persist",
           model: { model: "deterministic", provider: "mock" },
+          modelCapabilities: {
+            contextWindowTokens: 32_768,
+            maxOutputTokens: 4_096,
+            resolvedModel: "deterministic",
+            schemaVersion: 1,
+            source: { kind: "explicit", name: "jsonl-store-test" },
+          },
           tools: [],
         },
       },
@@ -39,6 +50,36 @@ test("JX-AC-003 JsonlEventStore survives adapter reconstruction", async () => {
 
     const reopened = new JsonlEventStore(directory);
     assert.deepEqual(await reopened.read("durable-jsonl"), [event]);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("JX-STORE-010 JX-AC-057 constructor validation stays observed until Store readiness is awaited", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "jixu-jsonl-readiness-"));
+  try {
+    const threads = join(directory, "threads");
+    await mkdir(threads, { recursive: true });
+    await writeFile(
+      join(threads, "incompatible.jsonl"),
+      `${JSON.stringify({
+        id: "incompatible-event",
+        payload: {},
+        schemaVersion: 99,
+        sequence: 1,
+        threadId: "incompatible",
+        timestamp: "2026-01-01T00:00:00.000Z",
+        type: "thread.created",
+      })}\n`,
+      "utf8",
+    );
+
+    const store = new JsonlEventStore(directory);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await assert.rejects(
+      store.listThreads(),
+      /Event uses unsupported schema version 99/,
+    );
   } finally {
     await rm(directory, { force: true, recursive: true });
   }

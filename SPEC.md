@@ -1,8 +1,8 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.40
+**Version:** 0.4.44
 **Status:** normative, pre-1.0
-**Last updated:** 2026-08-21
+**Last updated:** 2026-08-22
 
 ## 1. Product definition
 
@@ -293,14 +293,21 @@ interface ThreadEvent<TType extends string, TPayload> {
 - **JX-EVT-004.** Events MUST be immutable after append.
 - **JX-EVT-005.** Correlation metadata MAY group work but MUST NOT replace
   Thread or Event identity.
-- **JX-EVT-006.** Event schema version 7 is the current Thread schema. Versions 5
-  and 6 remain readable for their historical Event shapes so existing Threads
-  can continue by appending version 7 Events. Version 5 MUST reject structured
-  input fields introduced by version 6, and versions 5 and 6 MUST reject mode
-  fields and `thread.mode_changed` introduced by version 7 instead of silently
-  discarding them. Every other Event schema version MUST fail closed. This
-  narrow decoder compatibility is not an upcaster and MUST NOT rewrite stored
-  Events.
+- **JX-EVT-006.** Event schema version 9 is the current Thread schema. Versions 5
+  through 8 remain readable for their historical Event shapes so existing
+  Threads can continue by appending version 9 Events. Version 5 MUST reject
+  structured input fields introduced by version 6; versions 5 and 6 MUST reject
+  mode fields and `thread.mode_changed` introduced by version 7; and versions 5
+  through 7 MUST reject bounded Context fields and compaction Events introduced
+  by version 8 instead of silently discarding them. Schema 8 is the bounded
+  Context compatibility boundary: its Agent snapshot, bounded Context Manifest,
+  and compaction Effect MAY omit the later Model Capability Profile, and its
+  earliest pre-release Agent snapshots and model requests MAY omit bounded
+  Context fields. Those known omissions are interpreted with the frozen
+  32,768/4,096 portable profile and derived default Context Policy without
+  rewriting stored Events. Schema 9 requires both immutable Agent fields and a
+  capability-bearing bounded Context Manifest. Every other Event schema version
+  MUST fail closed.
 
 The v0.4 families are:
 
@@ -471,6 +478,39 @@ routing authority.
   cause a model, provider, or protocol fallback. A provider rejection follows the
   ordinary typed model-failure path. Neither mode may add hidden prompt text or
   expose private chain-of-thought.
+- **JX-PROV-009.** A first-party Driver that supports semantic Context
+  compaction MUST use the same configured model and wire protocol as ordinary
+  generation unless the application explicitly supplies a different compatible
+  compaction Driver. It MUST disable SDK retries, perform no model or protocol
+  fallback, request one bounded structured Continuity Handoff body, preserve
+  canonical accounting, and fail closed when the body is malformed or cites a
+  source outside the requested compaction range.
+- **JX-PROV-010.** A first-party model-capability resolver MUST resolve the exact
+  configured protocol, Base URL, and model before Agent creation. It MUST prefer
+  authoritative endpoint metadata when that endpoint publishes context and
+  output limits, use a versioned built-in entry only for a recognized direct
+  endpoint whose official Models API omits those fields, and accept a complete
+  explicit application declaration for custom deployments. Metadata requests
+  MUST be bounded, perform no model generation, use no hidden retry or fallback,
+  redact credentials and response errors, and reject malformed, partial,
+  mismatched, or unknown capability data. Recognized OpenRouter metadata that
+  explicitly reports a null top-provider completion limit while declaring a
+  supported output-token control has no separate output cap; the verified total
+  context window MUST become the profile's output hard bound. A missing limit or
+  a null limit without that capability declaration remains partial metadata. The
+  accepted profile becomes immutable Agent data; later provider changes MUST NOT
+  mutate an existing Thread.
+- **JX-PROV-011.** First-party Drivers MUST leave model-native generation
+  defaults in control. Ordinary generation and semantic compaction requests
+  MUST omit optional output-token caps and sampling controls, including
+  `max_completion_tokens`, optional `max_tokens`, `temperature`, and `top_p`.
+  A direct Anthropic Messages endpoint is the sole first-party exception because
+  its protocol requires `max_tokens`; that field MUST use the immutable verified
+  model maximum, not the Context Policy output reservation. A historical Effect
+  without a Context Manifest MAY use the Driver's frozen compatibility maximum.
+  Required streaming, Tool, structured-output, and explicit `ultra` effort
+  controls are not sampling defaults and remain governed by `JX-PROV-008` and
+  `JX-PROV-009`.
 
 ## 9. Continuity operations
 
@@ -593,17 +633,60 @@ Handoff after that boundary, activated Skills, exposed Tool schemas, immutable
 Artifacts or workspace snapshots, and external knowledge already materialized
 through an Effect.
 
+Every Agent snapshot contains one immutable, schema-versioned
+`ModelCapabilityProfile` and one immutable, schema-versioned `ContextPolicy`.
+The profile records the exact configured endpoint/model capacity used by Jixu:
+its resolved model identity, total context window, maximum output, and redacted
+capability source. The policy records compilation choices inside those hard
+limits. Its current defaults reserve 4,096 tokens of planning headroom for a
+possible model output and 2,048 tokens for estimation safety, and target an
+8,192-token complete raw tail. The reservation is a Context Compiler budget,
+not a provider generation control, and MUST NOT be translated automatically
+into a request-level output cap. Defaults are reduced only when a smaller
+verified capability cannot admit them.
+An application MAY choose smaller policy budgets but MUST NOT declare a policy
+larger than the frozen capability profile. Opening a Thread under a different
+profile or policy remains an Agent-snapshot mismatch.
+
+Model capacity MUST be resolved before the immutable Agent is created. The
+resolution order is: a complete explicit application declaration; authoritative
+model metadata from the exact configured endpoint; then a versioned first-party
+catalogue only for a recognized first-party endpoint whose Models API does not
+publish capacity. A model slug alone is never portable evidence: gateways,
+deployments, aliases, and compatible endpoints may expose different effective
+limits for the same leaf name. If none of those sources can establish both the
+context window and maximum output, Agent construction MUST fail closed instead
+of silently applying a small fallback or speculating that a large window exists.
+An authoritative OpenRouter null completion limit accompanied by an output-token
+control is an explicit absence of a separate cap rather than an unknown limit;
+the total context window is then the only published output hard bound. Historical
+Event schemas 5 through 7 retain the versioned 32,768/4,096 portable profile
+described in §18 solely for compatibility. Schema 8 uses the same frozen profile
+only when its pre-release snapshot or bounded Context fields omit capability
+metadata. It is not the default for a new current-schema Agent.
+
 - **JX-CTX-001.** Compilation MUST be deterministic for the same Agent revision,
   Thread State and source revisions, model capability profile, Context Policy,
-  token budget, and compiler version.
+  token budget, estimator version, and compiler version. The Reducer MUST consume
+  only the Model Capability Profile and Context Policy already present in the
+  immutable Agent snapshot; it MUST NOT query a Driver or provider while
+  compiling.
 - **JX-CTX-002.** Every candidate source MUST carry provenance, version or
   digest, trust and sensitivity metadata, priority, estimated cost, and causal
-  source. Secret values MUST NOT be context metadata.
+  source. Secret values MUST NOT be context metadata. Token cost is an estimate,
+  not provider-reported usage: the current estimator MUST be deterministic,
+  versioned, based on canonical UTF-8 source bytes with an explicit conservative
+  image-byte charge, and recorded in the Manifest so a later estimator cannot
+  silently reinterpret a historical request.
 - **JX-CTX-003.** Every `model.requested` Event MUST contain a redacted Context
   Manifest that records included and excluded source identities and reasons,
   active clear boundary, Agent and compiler versions, active Plan revision,
   accepted Handoff digest, recent raw-tail boundary, activated Skills, exposed
-  Tool schemas, input and output budgets, and a logical request digest.
+  Tool schemas, estimator version, estimated assembled input, input, output, and
+  safety budgets, raw-tail budget, Context Policy schema version, resolved model
+  identity, model-capability schema and redacted source, verified context window
+  and maximum output, and a logical request digest. A transformed source MUST remain
+  distinguishable from both a raw inclusion and an exclusion.
 - **JX-CTX-004.** Deterministic hygiene MAY deduplicate content, omit stale
   capability metadata, or replace large Tool output with an Artifact reference.
   It MUST NOT mutate or delete the source Event or Artifact.
@@ -643,15 +726,28 @@ continue safely without treating the compacted text as Thread authority.
   output, and a safety margin against the model context limit. If the budget is
   at risk after hygiene, it MUST request compaction at the next safe boundary.
   It MAY compact at a completed phase boundary when expected savings justify
-  the cost.
+  the cost. Reserved output is planning headroom only and MUST NOT become an
+  optional provider output-token field. Context Policy MUST NOT silently
+  truncate a source or dispatch an over-budget request merely because no
+  compatible compaction Driver is registered.
 - **JX-CTX-006.** A compaction boundary MUST NOT split a model item, Tool
   call/result pair, approval, or other causally complete operation.
 - **JX-CTX-007.** `context.compaction_requested` MUST durably request a typed
   compaction Effect before Driver dispatch. Success or failure MUST be recorded
-  as `context.compacted` or `context.compaction_failed`.
+  as `context.compacted` or `context.compaction_failed`. The Effect MUST retain
+  the original model continuation, source range, previous accepted Handoff,
+  target budget, and stable idempotency identity so recovery cannot invent a
+  different compaction request.
 - **JX-CTX-008.** A Continuity Handoff MUST be immutable, schema-versioned,
   redacted, source-linked, and validated before acceptance. Its Artifact MUST
-  exist and verify by digest before `context.compacted` references it.
+  exist and verify by digest before `context.compacted` references it. To keep
+  Event reduction I/O-free, `context.compacted` MUST also contain the same
+  bounded validated Handoff projection whose canonical JSON bytes produced that
+  Artifact digest; the Event remains State authority while the Artifact is the
+  immutable portable representation. Handoff source metadata MUST distinguish
+  the complete source range from the highest message sequence actually
+  represented by the Handoff, so later non-message facts such as a Plan update
+  cannot hide a raw-tail message.
 - **JX-CTX-009.** An accepted Handoff MUST preserve the current objective and
   acceptance criteria; scope, constraints, and permissions; active Plan and
   completed-step evidence; current State, pending Effects, waits, approvals,
@@ -664,7 +760,9 @@ continue safely without treating the compacted text as Thread authority.
 - **JX-CTX-010.** Context after compaction MUST contain immutable Agent material,
   the latest accepted Handoff, the active Plan, and a bounded tail of recent
   complete raw operations, plus other currently relevant sources. The raw tail
-  MUST preserve complete Tool call/result pairs.
+  MUST preserve complete Tool call/result pairs. The model-facing messages on a
+  new `model.generate` Effect MUST contain only that selected raw tail rather
+  than the full message projection retained in Thread State.
 - **JX-CTX-011.** A failed, invalid, missing, or digest-mismatched Handoff MUST
   leave the previous context projection active. Compaction MUST NOT delete or
   rewrite raw Events or Artifacts.
@@ -788,6 +886,14 @@ The Store contract supports:
   historical request facts rather than Thread authority: compatible evolution
   of those descriptors MUST NOT invalidate Event replay. A retry of an already
   pending Effect MUST still preserve the exact original request input.
+- **JX-STORE-010.** A Store adapter that begins asynchronous validation during
+  construction MUST retain the same rejecting readiness promise for later
+  operations and MUST attach a rejection observer immediately so the failure
+  cannot surface as an unhandled process or renderer-console error. The
+  reference application MUST await Store readiness before publishing an active
+  model connection. A typed validation failure remains fail-closed and visible
+  through the ordinary application error surface; it MUST NOT be swallowed,
+  delete data, or leave a half-connected workspace.
 
 ## 13. Public API
 
@@ -797,6 +903,15 @@ The target API is intentionally small:
 const agent = defineAgent({
   instructions: "Be precise.",
   model: { provider: "provider", model: "model-name" },
+  modelCapabilities: {
+    contextWindowTokens: 1_050_000,
+    maxOutputTokens: 128_000,
+    resolvedModel: "model-name",
+    source: { kind: "explicit", name: "application-declaration" },
+  },
+  context: {
+    reservedOutputTokens: 8_192,
+  },
   tools: [readFile],
 });
 
@@ -1165,6 +1280,15 @@ not own execution truth.
   its canonical motion label MUST be `Following every ripple ...`. Standard
   retains `Thinking ...`, and provider-generated public progress remains
   unchanged rather than being rewritten by the UI.
+- **JX-TUI-037.** Restoring a complete saved endpoint MUST render the ordinary
+  workspace immediately. While capability resolution, Driver construction, and
+  Store validation are in flight, the normal status surface MUST show
+  `CONNECTING`; the reference TUI MUST NOT replace the workspace with a full-page
+  loading view or claim that already-read configuration is still loading. The
+  Composer MUST preserve user input and reject submission until activation is
+  complete. Success replaces the transient status with the configured model;
+  failure remains in the workspace as an actionable connection inspection and
+  MUST NOT open or receive a renderer Console overlay.
 
 Configuration uses one local BYOK settings file with restrictive POSIX
 permissions and never records secrets in Thread data.
@@ -1625,6 +1749,47 @@ implement another TUI, Harness, or Thread lifecycle.
   Effect mode. The reference TUI shows the selected mode and uses
   `Following every ripple ...` only for live Ultra requests while retaining one
   immutable Agent and zero Agent routing or handoff concepts.
+- **JX-AC-054 — Verified model capacity.** Direct Anthropic, OpenRouter, and
+  Groq fixtures resolve an exact selected model from authoritative Models API
+  metadata; recognized direct OpenAI and DeepSeek fixtures resolve from the
+  versioned first-party catalogue because their Models APIs do not expose the
+  required limits. An OpenRouter fixture with a verified context window, an
+  explicit null top-provider completion limit, and declared output-token control
+  resolves that context window as its output hard bound; the same null without
+  that capability declaration remains partial. A 1,050,000-token or
+  1,000,000-token profile produces the corresponding Context Manifest input
+  budget rather than the historical 32,768-token fallback. A custom endpoint
+  with a complete explicit declaration produces the declared immutable profile.
+  Unknown, partial, mismatched, malformed, failed, and timed-out metadata
+  produces no Agent or Thread and no model generation. Replay and Fork preserve
+  the frozen profile, and provider usage does not mutate it. The accepted
+  Context Policy output reservation remains compiler planning headroom rather
+  than a request-level output cap.
+- **JX-AC-055 — Provider-native generation defaults.** Ordinary and compaction
+  OpenAI-compatible Chat requests omit `max_completion_tokens`, `max_tokens`,
+  `temperature`, and `top_p`. OpenRouter Anthropic Messages requests omit the
+  same optional output and sampling controls. Direct Anthropic Messages
+  requests omit sampling controls but include the protocol-required
+  `max_tokens` equal to the immutable verified model maximum rather than the
+  Context Policy reservation. Standard mode still omits effort controls;
+  `ultra` changes only the explicit effort mapping required by `JX-PROV-008`.
+- **JX-AC-056 — Explicit schema 8 compatibility.** A historical schema 8
+  Thread whose Agent and bounded Context Manifest contain Context Policy but no
+  Model Capability Profile replays under the frozen 32,768/4,096 profile without
+  rewriting its JSONL Events. The earliest schema 8 Agent and model-request
+  shapes without bounded Context fields also remain readable under the same
+  legacy interpretation. New Events use schema 9; schema 9 rejects a missing
+  Context Policy, Model Capability Profile, or capability-bearing bounded
+  Context Manifest, and every unknown version still fails closed.
+- **JX-AC-057 — Non-blocking safe auto-connect.** With a complete saved
+  endpoint and a deliberately pending connection, the first rendered frame is
+  the ordinary workspace, contains `CONNECTING`, preserves the configured model
+  identity, and contains neither `Loading saved endpoint configuration` nor a
+  full-page loading surface. Submission while pending preserves the Composer.
+  After success the normal ready model status replaces `CONNECTING`. A typed
+  Store-readiness rejection is observed before activation and becomes the
+  ordinary in-workspace connection inspection without an unhandled rejection or
+  renderer Console overlay.
 
 The minimum validation for a code change is targeted tests, typecheck, lint, and
 `git diff --check`. Release work also runs the complete acceptance suite and
@@ -1659,8 +1824,9 @@ never an accepted architectural requirement and MUST NOT be implemented.
 Version 0.4 adds `plan.updated` and the `context.compaction_*` Event family,
 Context Manifests, immutable Handoff Artifacts, and running-input queue semantics
 to the pre-release design. These are not aliases for old Run or Session data.
-Persisted pre-release drafts using any non-current Event schema MUST fail closed;
-no automatic migration is provided before the first stable release.
+Persisted pre-release drafts outside the explicitly supported Event schemas 5
+through 8 MUST fail closed; no automatic migration is provided before the first
+stable release.
 
 Within the Thread model, Event schema version 5 derives the exposed Plan control
 from State, adds `plan.rejected`, records the reserved progress-control
@@ -2044,6 +2210,70 @@ macOS ad-hoc-signing trust boundary. This changes package versions, native
 bytes, registry metadata, and public release assets only; it adds no new
 runtime semantics, Event schema, Reducer version, configuration, Replay, or
 stored-data migration beyond the already specified `0.4.36`–`0.4.39` changes.
+
+Version 0.4.41 completes the bounded Context path that Version 0.4.27 began.
+An immutable Context Policy now travels with the Agent snapshot; Context
+Compiler version 2 inventories individual sources, estimates their cost,
+records complete inclusion decisions and budgets, and selects a causally
+complete raw tail. Budget pressure durably requests a semantic compaction
+Effect. A compatible Driver returns a bounded source-linked Continuity Handoff;
+the coordinator writes its canonical JSON Artifact before accepting
+`context.compacted`, while the same validated projection in the Event keeps
+Replay I/O-free. Failure records `context.compaction_failed`, retains the
+previous accepted projection, and dispatches no over-budget model request.
+Event schema version 8 adds the Context Policy and compaction family. Historical
+versions 5 through 7 remain readable under the specified portable default
+policy without rewriting their Events; Reducer version 15 invalidates disposable
+Checkpoints. The first-party OpenAI Chat Completions and Anthropic Messages
+Drivers implement the same provider-neutral compaction contract without hidden
+retry or fallback. This adds no Memory object, provider Session, model routing,
+Skill lifecycle, or second Thread authority.
+
+Version 0.4.42 separates verified model capacity from Context compilation
+policy. Every current Agent snapshot now freezes a schema-versioned
+Model Capability Profile before Thread creation. First-party resolution uses
+authoritative endpoint metadata where available, a versioned official catalogue
+for recognized direct endpoints whose Models API omits capacity, or a complete
+explicit declaration for a custom deployment; unknown capacity fails closed.
+Recognized OpenRouter metadata may explicitly publish no separate completion cap
+as null while still supporting an output-token control; in that case the
+verified context window is frozen as the output hard bound, while absent or
+otherwise ambiguous limits still fail closed.
+Context Policy derives its window from that profile, so million-token models no
+longer inherit the historical 32,768-token compatibility budget. Context
+Manifests record the resolved identity, hard limits, and redacted source. The
+reference configuration adds optional explicit capacity fields and advances to
+schema version 6; schema version 5 loads with automatic capability resolution
+and is rewritten only on the ordinary accepted save path. Event schema version
+8 and Reducer version 15 remain unchanged because the profile is additive
+current-schema Agent data and is already part of Agent compatibility. OpenAI
+Chat Completions now receives the same output budget already enforced by
+Anthropic Messages. This adds no model routing, runtime catalogue authority,
+provider Session, or live mutation of an existing Agent.
+
+Version 0.4.43 corrects the boundary between Context planning and provider
+generation parameters. The default 4,096-token output reservation remains
+deterministic compiler headroom but is no longer injected into ordinary or
+compaction OpenAI-compatible requests. OpenRouter Messages likewise omits its
+optional output cap. First-party Drivers do not add `temperature`, `top_p`, or
+other sampling defaults. Direct Anthropic Messages retains only its
+protocol-required `max_tokens`, sourced from the immutable verified model
+maximum instead of the policy reservation; historical Effects without a
+Context Manifest retain the configured compatibility maximum. This changes no
+Event schema, Context Manifest, capability profile, Reducer, replay behavior,
+or provider-routing boundary.
+
+Version 0.4.44 corrects two startup compatibility failures exposed by a real
+development workspace. Model Capability Profile changes no longer reuse Event
+schema 8: current Events advance to schema 9, while the known pre-release schema
+8 Agent, Manifest, and Effect omissions replay under the frozen portable
+profile without rewriting JSONL history. Jsonl Store validation remains
+fail-closed but its readiness rejection is observed immediately and awaited by
+the reference CLI before activation. Saved-endpoint auto-connect now renders the
+ordinary workspace at once with a transient `CONNECTING` status instead of the
+misleading full-page `Loading saved endpoint configuration` view; success and
+failure settle through the same workspace. This changes no provider request,
+Thread authority, secret storage, model routing, or destructive data policy.
 
 ## 19. Implementation order
 

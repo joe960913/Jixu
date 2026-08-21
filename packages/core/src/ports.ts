@@ -1,4 +1,9 @@
-import type { ModelOutcome, ModelGenerateEffect } from "./effects.ts";
+import type {
+  ContextCompactEffect,
+  ContextCompactionOutcome,
+  ModelOutcome,
+  ModelGenerateEffect,
+} from "./effects.ts";
 import type { Checkpoint } from "./domain.ts";
 import type { AnyThreadEvent } from "./events.ts";
 import type { ArtifactReference } from "./input.ts";
@@ -37,6 +42,10 @@ export interface ModelDriverContext {
 }
 
 export interface ModelDriver {
+  compact?(
+    effect: ContextCompactEffect,
+    context: ModelDriverContext,
+  ): Promise<ContextCompactionOutcome>;
   generate(
     effect: ModelGenerateEffect,
     context: ModelDriverContext,

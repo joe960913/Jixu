@@ -21,7 +21,14 @@ import { createNodeTools } from "jixu-tools-node";
 import { createThreadController } from "../src/thread-controller.ts";
 import type { ThreadControllerSnapshot } from "../src/tui-model.ts";
 
-test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 JX-AC-040 JX-AC-041 TUI keeps public text, Tool progress, and durable receipts continuous", { timeout: 10_000 }, async () => {
+const TEST_MODEL_CAPABILITIES = {
+  contextWindowTokens: 32_768,
+  maxOutputTokens: 4_096,
+  resolvedModel: "deterministic",
+  source: { kind: "explicit", name: "session-test" },
+} as const;
+
+test("JX-AC-015 JX-AC-018 JX-AC-027 JX-AC-034 JX-AC-036 JX-AC-040 JX-AC-041 TUI keeps public text, Tool progress, and durable receipts continuous", { timeout: 10_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "jixu-controller-"));
   try {
     await writeFile(join(root, "note.txt"), "durable hello", "utf8");
@@ -129,6 +136,7 @@ test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 JX-AC-040 JX-AC-041 TUI keeps publ
     const agent = defineAgent({
       instructions: "Use the available tools.",
       model: { model: "deterministic", provider: "mock" },
+      modelCapabilities: TEST_MODEL_CAPABILITIES,
       tools: tools.all,
     });
     const store = new InMemoryEventStore();
@@ -241,6 +249,19 @@ test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 JX-AC-040 JX-AC-041 TUI keeps publ
     assert.equal(first.metrics?.model.succeeded, 2);
     assert.equal(first.metrics?.tools.calls, 1);
     assert.equal(first.metrics?.cost.unpricedOutcomes, 2);
+    const latestManifest = effects[1]?.input.contextManifest;
+    assert.notEqual(latestManifest, undefined);
+    if (latestManifest === undefined) return;
+    assert.deepEqual(first.contextBudget, {
+      estimatedInputTokens: latestManifest.estimatedInputTokens,
+      inputBudgetTokens: latestManifest.inputBudgetTokens,
+      remainingPercent: Math.round(
+        ((latestManifest.inputBudgetTokens -
+          latestManifest.estimatedInputTokens) /
+          latestManifest.inputBudgetTokens) *
+          100,
+      ),
+    });
     const originalThreadId = first.currentThreadId;
     assert.notEqual(originalThreadId, null);
     if (originalThreadId === null) return;
@@ -289,6 +310,7 @@ test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 JX-AC-040 JX-AC-041 TUI keeps publ
     await controller.submit("/clear");
     assert.deepEqual(controller.getSnapshot().transcript, []);
     assert.equal(controller.getSnapshot().activePlan, null);
+    assert.equal(controller.getSnapshot().contextBudget, null);
     assert.equal(controller.getSnapshot().metrics?.model.calls, 3);
     assert.equal(controller.getSnapshot().metrics?.cost.unpricedOutcomes, 3);
     await controller.submit("Fresh start");
@@ -296,6 +318,7 @@ test("JX-AC-015 JX-AC-018 JX-AC-034 JX-AC-036 JX-AC-040 JX-AC-041 TUI keeps publ
     assert.deepEqual(effects[3]?.input.messages, [
       { content: "Fresh start", role: "user" },
     ]);
+    assert.notEqual(controller.getSnapshot().contextBudget, null);
 
     await controller.submit("/new");
     const emptyThreadId = controller.getSnapshot().currentThreadId;
@@ -376,6 +399,7 @@ test("JX-AC-041 Tool-only model decisions retain causal batches and bounded live
       agent: defineAgent({
         instructions: "Use the available tools.",
         model: { model: "deterministic", provider: "mock" },
+        modelCapabilities: TEST_MODEL_CAPABILITIES,
         tools: tools.all,
       }),
       modelDrivers: { mock: driver },

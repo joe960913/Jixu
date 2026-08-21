@@ -120,7 +120,7 @@ export function jsonEquals(left: unknown, right: unknown): boolean {
   return leftKeys.every((key) => jsonEquals(left[key], right[key]));
 }
 
-function canonicalJson(value: JsonValue): string {
+export function canonicalJson(value: JsonValue): string {
   if (value === null || typeof value !== "object") {
     return JSON.stringify(value);
   }

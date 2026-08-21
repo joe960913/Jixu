@@ -115,10 +115,17 @@ export interface ThreadSummary {
   readonly updatedAt: string;
 }
 
+export interface ContextBudgetEstimate {
+  readonly estimatedInputTokens: number;
+  readonly inputBudgetTokens: number;
+  readonly remainingPercent: number;
+}
+
 export interface ThreadControllerSnapshot {
   readonly activePlan: PlanSnapshot | null;
   readonly activity: readonly ActivityEntry[];
   readonly busy: boolean;
+  readonly contextBudget: ContextBudgetEstimate | null;
   readonly currentThreadId: string | null;
   readonly inspection: ThreadInspection | null;
   readonly metrics: ThreadMetrics | null;

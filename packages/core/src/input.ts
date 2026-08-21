@@ -11,9 +11,20 @@ export type ImageMediaType =
   | "image/png"
   | "image/webp";
 
+export const CONTINUITY_HANDOFF_MEDIA_TYPE =
+  "application/vnd.jixu.continuity-handoff+json" as const;
+
+export type ArtifactMediaType =
+  | ImageMediaType
+  | typeof CONTINUITY_HANDOFF_MEDIA_TYPE;
+
 export interface ArtifactReference {
   readonly byteLength: number;
   readonly digest: string;
+  readonly mediaType: ArtifactMediaType;
+}
+
+export interface ImageArtifactReference extends ArtifactReference {
   readonly mediaType: ImageMediaType;
 }
 
@@ -43,7 +54,7 @@ export interface StoredTextInputPart {
 }
 
 export interface StoredImageInputPart {
-  readonly artifact: ArtifactReference;
+  readonly artifact: ImageArtifactReference;
   readonly placeholder: string;
   readonly type: "image";
 }
@@ -142,7 +153,10 @@ export async function assertArtifactBytes(
       `Image Artifact ${reference.digest} byte length does not match its reference`,
     );
   }
-  if (!hasImageSignature(bytes, reference.mediaType)) {
+  if (
+    reference.mediaType !== CONTINUITY_HANDOFF_MEDIA_TYPE &&
+    !hasImageSignature(bytes, reference.mediaType)
+  ) {
     throw new ArtifactError(
       "artifact_media_mismatch",
       `Image Artifact ${reference.digest} does not match ${reference.mediaType}`,
@@ -160,7 +174,9 @@ export async function assertArtifactBytes(
 export function assertArtifactReference(
   reference: ArtifactReference,
 ): void {
-  assertImageMediaType(reference.mediaType);
+  if (reference.mediaType !== CONTINUITY_HANDOFF_MEDIA_TYPE) {
+    assertImageMediaType(reference.mediaType);
+  }
   if (!/^sha256:[a-f0-9]{64}$/u.test(reference.digest)) {
     throw new ArtifactError(
       "artifact_digest_invalid",
@@ -174,7 +190,7 @@ export function assertArtifactReference(
   ) {
     throw new ArtifactError(
       "artifact_size_invalid",
-      `Image Artifact byte length must be between 1 and ${MAX_INPUT_IMAGE_BYTES}`,
+      `Artifact byte length must be between 1 and ${MAX_INPUT_IMAGE_BYTES}`,
     );
   }
 }
@@ -209,7 +225,7 @@ async function prepareImage(
   const placeholder = validatePlaceholder(
     part.placeholder ?? `image ${imageNumber}`,
   );
-  const reference: ArtifactReference = {
+  const reference: ImageArtifactReference = {
     byteLength: bytes.byteLength,
     digest: await artifactDigest(bytes),
     mediaType: part.mediaType,

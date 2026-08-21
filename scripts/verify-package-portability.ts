@@ -82,6 +82,12 @@ try {
   const agent = defineAgent({
     instructions: "Prove the installed package can execute.",
     model: { provider: "fixture", model: "deterministic" },
+    modelCapabilities: {
+      contextWindowTokens: 32_768,
+      maxOutputTokens: 4_096,
+      resolvedModel: "deterministic",
+      source: { kind: "explicit", name: "package-portability-smoke" },
+    },
     tools: [],
   });
   const harness = createHarness({ agent, modelDrivers: { fixture: model } });
@@ -127,6 +133,12 @@ const fixture: ModelDriver = new SequenceModelDriver([]);
 const agent = defineAgent({
   instructions: "Type-check the installed public API.",
   model: { provider: "fixture", model: "deterministic" },
+  modelCapabilities: {
+    contextWindowTokens: 32_768,
+    maxOutputTokens: 4_096,
+    resolvedModel: "deterministic",
+    source: { kind: "explicit", name: "package-portability-typecheck" },
+  },
   tools: [],
 });
 const harness = createHarness({ agent, modelDrivers: { fixture } });

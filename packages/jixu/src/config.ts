@@ -35,7 +35,13 @@ export interface JixuConnectionConfig {
   readonly apiKey: string;
   readonly baseUrl: string;
   readonly model: string;
+  readonly modelCapabilities?: JixuModelCapabilityOverride;
   readonly tools: JixuToolSettings;
+}
+
+export interface JixuModelCapabilityOverride {
+  readonly contextWindowTokens: number;
+  readonly maxOutputTokens: number;
 }
 
 export type JixuFileScope = "process" | "workspace";
@@ -63,6 +69,7 @@ export interface JixuStoredConfiguration {
   readonly apiKey?: string;
   readonly baseUrl?: string;
   readonly model?: string;
+  readonly modelCapabilities?: JixuModelCapabilityOverride;
   readonly tools: JixuToolSettings;
 }
 
@@ -72,9 +79,10 @@ interface SettingsFile {
     readonly apiKey?: string;
     readonly baseUrl?: string;
     readonly model?: string;
+    readonly modelCapabilities?: JixuModelCapabilityOverride;
   };
   readonly tools: JixuToolSettings;
-  readonly version: 5;
+  readonly version: 6;
 }
 
 type LegacySettingsFile =
@@ -94,6 +102,16 @@ type LegacySettingsFile =
       };
       readonly tools: Omit<JixuToolSettings, "webSearch">;
       readonly version: 4;
+    }
+  | {
+      readonly connection: {
+        readonly api?: JixuApi;
+        readonly apiKey?: string;
+        readonly baseUrl?: string;
+        readonly model?: string;
+      };
+      readonly tools: JixuToolSettings;
+      readonly version: 5;
     };
 
 interface AuthFile {
@@ -330,16 +348,43 @@ function parseLegacyConnection(value: Record<string, unknown>): {
   };
 }
 
+function parseModelCapabilityOverride(
+  value: unknown,
+  label = "settings.json connection.modelCapabilities",
+): JixuModelCapabilityOverride {
+  if (!isRecord(value)) throw new TypeError(`${label} must contain an object`);
+  const contextWindowTokens = value.contextWindowTokens;
+  const maxOutputTokens = value.maxOutputTokens;
+  if (
+    !Number.isSafeInteger(contextWindowTokens) ||
+    (contextWindowTokens as number) <= 0 ||
+    !Number.isSafeInteger(maxOutputTokens) ||
+    (maxOutputTokens as number) <= 0
+  ) {
+    throw new TypeError(`${label} values must be positive safe integers`);
+  }
+  if ((maxOutputTokens as number) > (contextWindowTokens as number)) {
+    throw new TypeError(`${label}.maxOutputTokens exceeds the context window`);
+  }
+  return Object.freeze({
+    contextWindowTokens: contextWindowTokens as number,
+    maxOutputTokens: maxOutputTokens as number,
+  });
+}
+
 function parseSettings(value: unknown): LegacySettingsFile | SettingsFile {
   if (!isRecord(value)) {
     throw new TypeError("settings.json must contain an object");
   }
   if (
-    (value.version !== 3 && value.version !== 4 && value.version !== 5) ||
+    (value.version !== 3 &&
+      value.version !== 4 &&
+      value.version !== 5 &&
+      value.version !== 6) ||
     !isRecord(value.connection)
   ) {
     throw new TypeError(
-      "settings.json must use Jixu settings schema version 3, 4, or 5",
+      "settings.json must use Jixu settings schema version 3, 4, 5, or 6",
     );
   }
   if (value.version === 3) {
@@ -357,7 +402,7 @@ function parseSettings(value: unknown): LegacySettingsFile | SettingsFile {
       version: 4,
     };
   }
-  const connection: SettingsFile["connection"] = {
+  const connection = {
     ...(value.connection.api === undefined
       ? {}
       : isApi(value.connection.api)
@@ -386,12 +431,18 @@ function parseSettings(value: unknown): LegacySettingsFile | SettingsFile {
         : (() => {
             throw new TypeError("settings.json connection.model is invalid");
           })()),
+    ...(value.version < 6 || value.connection.modelCapabilities === undefined
+      ? {}
+      : {
+          modelCapabilities: parseModelCapabilityOverride(
+            value.connection.modelCapabilities,
+          ),
+        }),
   };
-  return {
-    connection,
-    tools: parseToolSettings(value.tools),
-    version: 5,
-  };
+  const tools = parseToolSettings(value.tools);
+  return value.version === 5
+    ? { connection, tools, version: 5 }
+    : { connection, tools, version: 6 };
 }
 
 function parseAuth(value: unknown): AuthFile {
@@ -472,6 +523,9 @@ function normalizeConfiguration(
           ...(settings.connection.model === undefined
             ? {}
             : { model: settings.connection.model }),
+          ...(settings.connection.modelCapabilities === undefined
+            ? {}
+            : { modelCapabilities: settings.connection.modelCapabilities }),
         }),
     tools: settings?.tools ?? DEFAULT_JIXU_TOOL_SETTINGS,
   };
@@ -486,17 +540,19 @@ function migrateSettings(
     ? DEFAULT_JIXU_TOOL_SETTINGS
     : settings.version === 3
       ? LEGACY_JIXU_TOOL_SETTINGS
-      : {
+      : settings.version === 4
+        ? {
           ...settings.tools,
           webSearch: { provider: "jina" as const },
-        };
+        }
+        : settings.tools;
   return {
     connection: {
       ...(settings === null ? {} : settings.connection),
       ...(auth === null ? {} : { apiKey: auth.connection.key }),
     },
     tools,
-    version: 5,
+    version: 6,
   };
 }
 
@@ -523,10 +579,10 @@ export class JixuConfigStore {
       readJson(this.settingsPath, "settings.json", parseSettings),
       readJson(this.#legacyAuthPath, "auth.json", parseAuth),
     ]);
-    let settings = loadedSettings?.version === 5
+    let settings = loadedSettings?.version === 6
       ? loadedSettings
       : migrateSettings(loadedSettings, auth);
-    if (loadedSettings?.version === 5 && auth !== null) {
+    if (loadedSettings?.version === 6 && auth !== null) {
       settings = {
         ...loadedSettings,
         connection: {
@@ -535,7 +591,12 @@ export class JixuConfigStore {
         },
       };
     }
-    if (settings !== null && (loadedSettings?.version !== 5 || auth !== null)) {
+    if (
+      settings !== null &&
+      (loadedSettings?.version === 3 ||
+        loadedSettings?.version === 4 ||
+        auth !== null)
+    ) {
       await atomicJsonWrite(
         this.directory,
         this.settingsPath,
@@ -557,6 +618,13 @@ export class JixuConfigStore {
     const apiKey = config.apiKey.trim();
     const baseUrl = normalizeJixuBaseUrl(config.baseUrl);
     const model = config.model.trim();
+    const modelCapabilities =
+      config.modelCapabilities === undefined
+        ? undefined
+        : parseModelCapabilityOverride(
+            config.modelCapabilities,
+            "Model capability override",
+          );
     const tools = parseToolSettings(config.tools);
     if (apiKey.length === 0) throw new TypeError("API Key must not be empty");
     if (model.length === 0) throw new TypeError("Model ID must not be empty");
@@ -564,9 +632,15 @@ export class JixuConfigStore {
     const operation = this.#writeTail.then(async () => {
       await this.#secureDirectory();
       await atomicJsonWrite(this.directory, this.settingsPath, {
-        connection: { api: config.api, apiKey, baseUrl, model },
+        connection: {
+          api: config.api,
+          apiKey,
+          baseUrl,
+          model,
+          ...(modelCapabilities === undefined ? {} : { modelCapabilities }),
+        },
         tools,
-        version: 5,
+        version: 6,
       } satisfies SettingsFile, 0o600);
       await unlink(this.#legacyAuthPath).catch((error) => {
         if (errorCode(error) !== "ENOENT") throw error;

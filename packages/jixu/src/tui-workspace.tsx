@@ -65,10 +65,12 @@ export interface JixuActiveConnection {
 interface AgentWorkspaceProps {
   readonly active: JixuActiveConnection | null;
   readonly clipboard: Pick<ClipboardService, "read"> | undefined;
+  readonly connecting: boolean;
   readonly connectionError: string | null;
   readonly motion: boolean;
   readonly onConfigure: () => void;
   readonly onQuit: () => void;
+  readonly pendingModel: string | null;
   readonly workspace: string;
 }
 
@@ -81,6 +83,7 @@ const inactiveSnapshot: ThreadControllerSnapshot = Object.freeze({
   activePlan: null,
   activity: Object.freeze([]),
   busy: false,
+  contextBudget: null,
   currentThreadId: null,
   inspection: null,
   metrics: null,
@@ -145,6 +148,9 @@ function costContext(snapshot: ThreadControllerSnapshot): {
 function ComposerStatus({
   compact,
   configured,
+  connecting,
+  connectionFailed,
+  contextBudget,
   enabledTools,
   fileScope,
   modelContext,
@@ -153,6 +159,9 @@ function ComposerStatus({
 }: {
   readonly compact: boolean;
   readonly configured: boolean;
+  readonly connecting: boolean;
+  readonly connectionFailed: boolean;
+  readonly contextBudget: ThreadControllerSnapshot["contextBudget"];
   readonly enabledTools: readonly string[];
   readonly fileScope: "process" | "workspace";
   readonly modelContext: string | null;
@@ -174,6 +183,14 @@ function ComposerStatus({
             <strong>MODEL</strong>
             <span fg={jixuTheme.text}>  {modelContext}</span>
           </text>
+        ) : connecting || connectionFailed ? (
+          <text fg={connecting ? jixuTheme.warning : jixuTheme.danger}>
+            <strong>MODEL</strong>
+            <span fg={jixuTheme.text}>
+              {modelContext === null ? "" : `  ${modelContext}`}
+            </span>
+            <span>  {connecting ? "CONNECTING" : "CONNECTION FAILED"}</span>
+          </text>
         ) : (
           <text fg={jixuTheme.secondary}>
             Model not configured · <span fg={jixuTheme.brand}>use /config</span>
@@ -182,6 +199,25 @@ function ComposerStatus({
         {configured ? (
           <>
             <box style={{ flexGrow: 1 }} />
+            <text fg={jixuTheme.secondary}>
+              <strong>CTX</strong>
+              <span
+                fg={
+                  contextBudget === null
+                    ? jixuTheme.secondary
+                    : contextBudget.remainingPercent <= 10
+                      ? jixuTheme.danger
+                      : contextBudget.remainingPercent <= 25
+                        ? jixuTheme.warning
+                        : jixuTheme.success
+                }
+              >
+                {contextBudget === null
+                  ? "  —"
+                  : `  ~${contextBudget.remainingPercent}% LEFT`}
+              </span>
+            </text>
+            <text fg={jixuTheme.secondary}>  </text>
             <text fg={mode === "ultra" ? jixuTheme.brand : jixuTheme.secondary}>
               <strong>MODE</strong>
               <span fg={jixuTheme.text}>  {mode.toUpperCase()}</span>
@@ -223,10 +259,12 @@ function ComposerStatus({
 export function AgentWorkspace({
   active,
   clipboard,
+  connecting,
   connectionError,
   motion,
   onConfigure,
   onQuit,
+  pendingModel,
   workspace,
 }: AgentWorkspaceProps) {
   const controllerSnapshot = useSyncExternalStore(
@@ -608,6 +646,15 @@ export function AgentWorkspace({
   const clearComposer = useCallback(() => setComposerValue(""), [setComposerValue]);
 
   const submit = () => {
+    if (connecting) {
+      setLocalInspection(
+        Object.freeze({
+          content: "Jixu is still establishing the saved model connection.",
+          title: "Connecting",
+        }),
+      );
+      return;
+    }
     void pasteTail.current.then(() => {
       const value = composer.current?.plainText ?? draft;
       const input = buildThreadInputFromComposer(value, pastedImages.current);
@@ -631,30 +678,41 @@ export function AgentWorkspace({
     [clearComposer, submitValue],
   );
 
-  const statusTone = !configured
+  const connectionFailed = !connecting && connectionError !== null;
+  const statusTone = connecting
     ? jixuTheme.warning
-    : snapshot.busy
-      ? jixuTheme.warning
-      : snapshot.threadStatus === "waiting" || snapshot.threadStatus === "paused"
-        ? jixuTheme.warning
-        : jixuTheme.success;
-  const status = !configured
-    ? "not configured"
-    : snapshot.busy
-      ? "working"
-      : snapshot.threadStatus === "none"
-        ? "ready"
-        : snapshot.threadStatus;
-  const modelContext = configured
-    ? truncate(
-        active.config.model,
+      : connectionFailed
+        ? jixuTheme.danger
+        : !configured
+          ? jixuTheme.warning
+          : snapshot.busy
+            ? jixuTheme.warning
+            : snapshot.threadStatus === "waiting" ||
+                snapshot.threadStatus === "paused"
+              ? jixuTheme.warning
+              : jixuTheme.success;
+  const status = connecting
+    ? "connecting"
+    : connectionFailed
+      ? "connection failed"
+      : !configured
+        ? "not configured"
+        : snapshot.busy
+          ? "working"
+          : snapshot.threadStatus === "none"
+            ? "ready"
+            : snapshot.threadStatus;
+  const modelIdentity = configured ? active.config.model : pendingModel;
+  const modelContext = modelIdentity === null
+    ? null
+    : truncate(
+        modelIdentity,
         compact
-          ? Math.max(16, chatWidth - 30)
+          ? Math.max(12, chatWidth - 44)
           : Math.max(24, Math.floor(chatWidth / 2)),
-      )
-    : null;
+      );
   const threadCost = costContext(snapshot);
-  const attention = createAttentionModel(snapshot, configured);
+  const attention = createAttentionModel(snapshot, configured || connecting);
   const currentThread = snapshot.threads.find((thread) => thread.current);
   const firstUser = snapshot.transcript.find(
     (entry): entry is TranscriptMessageEntry =>
@@ -731,7 +789,7 @@ export function AgentWorkspace({
               }}
             >
               <Transcript
-                configured={configured}
+                configured={configured || connecting}
                 emptyTop={emptyStateTop}
                 motion={motion}
                 creationMarkVariant={creationMarkVariant}
@@ -806,13 +864,15 @@ export function AgentWorkspace({
                   }}
                   onSubmit={submit}
                   placeholder={
-                    !configured
-                      ? "Use /config to connect a model…"
-                      : snapshot.toolApproval !== null
-                        ? "Use /approve, /deny, or the approval buttons…"
-                      : snapshot.busy
-                        ? "Queue a follow-up…"
-                        : "Ask Jixu anything…"
+                    connecting
+                      ? "Connecting to model…"
+                      : !configured
+                        ? "Use /config to connect a model…"
+                        : snapshot.toolApproval !== null
+                          ? "Use /approve, /deny, or the approval buttons…"
+                          : snapshot.busy
+                            ? "Queue a follow-up…"
+                            : "Ask Jixu anything…"
                   }
                   placeholderColor={jixuTheme.secondary}
                   style={{
@@ -832,6 +892,9 @@ export function AgentWorkspace({
           <ComposerStatus
             compact={compact}
             configured={configured}
+            connecting={connecting}
+            connectionFailed={connectionFailed}
+            contextBudget={snapshot.contextBudget}
             enabledTools={active?.config.tools.enabled ?? []}
             fileScope={active?.config.tools.fileScope ?? "workspace"}
             modelContext={modelContext}
