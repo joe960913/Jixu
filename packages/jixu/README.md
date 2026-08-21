@@ -5,7 +5,7 @@ Jixu is a durable single-Agent Harness for TypeScript. Install the TUI, run
 
 > Jixu is pre-release. The public API may change before 1.0.
 
-![Jixu terminal interface](https://raw.githubusercontent.com/joe960913/Jixu/main/docs/assets/jixu-tui.png)
+![Jixu terminal interface](https://raw.githubusercontent.com/joe960913/Jixu/main/assets/jixu-tui.png)
 
 ## Install
 
