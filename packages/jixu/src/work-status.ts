@@ -6,6 +6,7 @@ import type {
   ToolRequestDetail,
   WorkStatus,
 } from "./tui-model.ts";
+import { thinkingLabel } from "./tui-model.ts";
 
 const DETAIL_MAX_CHARACTERS = 12_000;
 const DETAIL_MAX_LINES = 120;
@@ -341,7 +342,7 @@ export function workStatusForEvent(
   switch (event.type) {
     case "model.requested":
       return {
-        label: "Thinking",
+        label: thinkingLabel(event.payload.effect.input.mode ?? "standard"),
         phase: "thinking",
         tone: "warning",
       };

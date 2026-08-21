@@ -9,6 +9,7 @@ import type {
   ToolOperation,
   TranscriptEntry,
 } from "./tui-model.ts";
+import { thinkingLabel } from "./tui-model.ts";
 
 export function eventActivity(
   event: AnyThreadEvent,
@@ -44,6 +45,14 @@ export function eventActivity(
         label: "Thread forked",
         tone: "brand",
       };
+    case "thread.mode_changed":
+      return {
+        ...base,
+        detail: event.payload.mode,
+        kind: "control",
+        label: "Mode changed",
+        tone: "brand",
+      };
     case "input.received":
       return { ...base, kind: "runtime", label: "Input committed", tone: "info" };
     case "context.cleared":
@@ -53,7 +62,7 @@ export function eventActivity(
         ...base,
         detail: event.payload.effect.input.model.model,
         kind: "model",
-        label: "Thinking",
+        label: thinkingLabel(event.payload.effect.input.mode ?? "standard"),
         tone: "warning",
       };
     case "model.completed":

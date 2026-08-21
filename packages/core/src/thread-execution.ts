@@ -3,6 +3,7 @@ import { MAX_PLAN_REPAIR_ATTEMPTS } from "./context.ts";
 import type {
   AgentSnapshot,
   Checkpoint,
+  ThreadMode,
   ThreadState,
   ToolApprovalDecision,
 } from "./domain.ts";
@@ -154,6 +155,20 @@ export class ThreadExecution implements Thread {
 
   replay(): Promise<ThreadState> {
     return this.#store.read(this.id).then((events) => replayEvents(this.id, events));
+  }
+
+  async setMode(mode: ThreadMode): Promise<ThreadState> {
+    if (mode !== "standard" && mode !== "ultra") {
+      throw new InvalidTransitionError(`Unknown Thread mode ${String(mode)}`);
+    }
+    if (this.#state.status !== "idle") {
+      throw new InvalidTransitionError(
+        `Thread ${this.id} cannot change mode while ${this.#state.status}`,
+      );
+    }
+    if (this.#state.mode === mode) return this.state();
+    await this.#commit("thread.mode_changed", { mode });
+    return this.state();
   }
 
   async send(input: ThreadInput): Promise<ThreadState> {

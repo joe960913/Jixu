@@ -3,6 +3,7 @@ import type {
   ModelMessage,
   ModelRef,
   ModelResponse,
+  ThreadMode,
   ToolDescriptor,
   ToolIdempotency,
 } from "./domain.ts";
@@ -30,6 +31,7 @@ export interface ModelGenerateInput {
   readonly contextManifest?: ModelContextManifest;
   readonly instructions: string;
   readonly messages: readonly ModelMessage[];
+  readonly mode: ThreadMode;
   readonly model: ModelRef;
   readonly planControl: PlanControlDescriptor;
   readonly planRejectionFeedback?: string;

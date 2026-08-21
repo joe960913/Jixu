@@ -6,6 +6,7 @@ import {
   createInitialThreadState,
   createHarness,
   createThreadEvent,
+  CURRENT_EVENT_SCHEMA_VERSION,
   defineAgent,
   defineSchema,
   defineTool,
@@ -463,36 +464,41 @@ test("JX-AC-004 JX-AC-049 historical unbounded Plan repair settles before redisp
   const apply = <TType extends ThreadEventType>(
     type: TType,
     payload: ThreadEventPayloads[TType],
+    schemaVersion = CURRENT_EVENT_SCHEMA_VERSION,
   ): TransitionResult => {
     sequence += 1;
-    const event = createThreadEvent({
-      id: `event-${sequence}`,
-      payload,
-      threadId,
-      sequence,
-      timestamp: "2026-01-01T00:00:00.000Z",
-      type,
-    }) as AnyThreadEvent;
+    const event = {
+      ...createThreadEvent({
+        id: `event-${sequence}`,
+        payload,
+        threadId,
+        sequence,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        type,
+      }),
+      schemaVersion,
+    } as AnyThreadEvent;
     const transition = reduce(state, event);
     state = transition.state;
     events.push(event);
     return transition;
   };
-  const legacyEffect = (effect: ModelGenerateEffect): ModelGenerateEffect => ({
-    ...effect,
-    input: {
-      activePlan: effect.input.activePlan,
-      instructions: effect.input.instructions,
-      messages: effect.input.messages,
-      model: effect.input.model,
-      planControl: effect.input.planControl,
-      ...(effect.input.planRejectionFeedback === undefined
-        ? {}
-        : { planRejectionFeedback: effect.input.planRejectionFeedback }),
-      progressControl: effect.input.progressControl,
-      tools: effect.input.tools,
-    },
-  });
+  const legacyEffect = (effect: ModelGenerateEffect): ModelGenerateEffect =>
+    ({
+      ...effect,
+      input: {
+        activePlan: effect.input.activePlan,
+        instructions: effect.input.instructions,
+        messages: effect.input.messages,
+        model: effect.input.model,
+        planControl: effect.input.planControl,
+        ...(effect.input.planRejectionFeedback === undefined
+          ? {}
+          : { planRejectionFeedback: effect.input.planRejectionFeedback }),
+        progressControl: effect.input.progressControl,
+        tools: effect.input.tools,
+      },
+    }) as unknown as ModelGenerateEffect;
   apply("thread.created", { agent: agent.snapshot });
   let next = apply("input.received", {
     content: "Create a Plan but do not execute it",
@@ -500,7 +506,7 @@ test("JX-AC-004 JX-AC-049 historical unbounded Plan repair settles before redisp
   assert.equal(next?.type, "model.generate");
   if (next?.type !== "model.generate") return;
   const initialRequest = legacyEffect(next);
-  apply("model.requested", { effect: initialRequest });
+  apply("model.requested", { effect: initialRequest }, 6);
   apply("model.completed", {
     accounting: EMPTY_MODEL_ACCOUNTING,
     effectId: initialRequest.id,
@@ -525,7 +531,7 @@ test("JX-AC-004 JX-AC-049 historical unbounded Plan repair settles before redisp
     assert.equal(next?.type, "model.generate");
     if (next?.type !== "model.generate") return;
     const persisted = legacyEffect(next);
-    apply("model.requested", { effect: persisted });
+    apply("model.requested", { effect: persisted }, 6);
     apply("model.completed", {
       accounting: EMPTY_MODEL_ACCOUNTING,
       effectId: persisted.id,
@@ -551,7 +557,7 @@ test("JX-AC-004 JX-AC-049 historical unbounded Plan repair settles before redisp
   assert.equal(next?.type, "model.generate");
   if (next?.type !== "model.generate") return;
   const historicalPendingEffect = legacyEffect(next);
-  apply("model.requested", { effect: historicalPendingEffect });
+  apply("model.requested", { effect: historicalPendingEffect }, 6);
   assert.equal(state.planRepairAttempts, 3);
   assert.equal(state.status, "running");
 

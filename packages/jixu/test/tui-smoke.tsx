@@ -25,6 +25,7 @@ import {
   SelectRenderable,
   TextRenderable,
   type BaseRenderable,
+  type CapturedFrame,
   type ClipboardService,
   type Renderable,
   type TextareaRenderable,
@@ -41,6 +42,7 @@ import { createThreadController } from "../src/thread-controller.ts";
 import type { ThreadController } from "../src/thread-controller.ts";
 import { jixuNipponColors, jixuTheme } from "../src/theme.ts";
 import { installJixuSelectionClipboard } from "../src/tui-clipboard.ts";
+import { ULTRA_COMPOSER_BORDER_CADENCE_MS } from "../src/tui-composer-frame.tsx";
 import { BUTTERFLY_MOTION_CADENCE_MS } from "../src/tui-creation-mark.tsx";
 import { CODE_BLOCK_MAX_CONTENT_HEIGHT } from "../src/tui-markdown.ts";
 import type { ThreadControllerSnapshot } from "../src/tui-model.ts";
@@ -701,6 +703,42 @@ function scrollAncestor(
   return undefined;
 }
 
+function capturedCellForeground(
+  frame: CapturedFrame,
+  x: number,
+  y: number,
+): RGBA | undefined {
+  const line = frame.lines[y];
+  if (line === undefined) return undefined;
+  let column = 0;
+  for (const span of line.spans) {
+    if (x < column + span.width) return span.fg;
+    column += span.width;
+  }
+  return undefined;
+}
+
+function composerPerimeterColors(
+  frame: CapturedFrame,
+  composer: BoxRenderable,
+): readonly RGBA[] {
+  const left = composer.screenX;
+  const top = composer.screenY;
+  const right = left + composer.width - 1;
+  const bottom = top + composer.height - 1;
+  const colors: RGBA[] = [];
+  const append = (x: number, y: number) => {
+    const color = capturedCellForeground(frame, x, y);
+    if (color !== undefined) colors.push(color);
+  };
+
+  for (let x = left; x <= right; x += 1) append(x, top);
+  for (let y = top + 1; y <= bottom; y += 1) append(right, y);
+  for (let x = right - 1; x >= left; x -= 1) append(x, bottom);
+  for (let y = bottom - 1; y > top; y -= 1) append(left, y);
+  return colors;
+}
+
 const setup = await testRender(
   <JixuApp
     connect={async (config, controls) => {
@@ -980,6 +1018,7 @@ try {
   assert.match(connectedFrame, /VERIFIED/);
   assert.match(connectedFrame, /NEEDS YOU/);
   assert.match(connectedFrame, /TOOLS\s+read write edit bash/);
+  assert.match(connectedFrame, /MODE\s+STANDARD/);
   assert.match(connectedFrame, /FILES workspace/);
   assert.match(connectedFrame, /BASH process/);
   assert.match(connectedFrame, /USD —/);
@@ -987,8 +1026,156 @@ try {
   assert.doesNotMatch(connectedFrame, /Next Level Agent/);
   assert.doesNotMatch(connectedFrame, /Conversation|Run activity|New Run/);
   assert.doesNotMatch(connectedFrame, /openrouter-secret-fixture/);
+  // JX-AC-030 JX-AC-033: Standard retains the stable Composer frame.
+  const standardComposer = setup.renderer.root.findDescendantById("composer");
+  assert.ok(standardComposer instanceof BoxRenderable);
+  assert.equal(
+    composerPerimeterColors(setup.captureSpans(), standardComposer).every(
+      (color) => color.equals(RGBA.fromHex(jixuTheme.divider)),
+    ),
+    true,
+  );
 
   assert.notEqual(activeController.current, null);
+  await act(async () => {
+    await setup.mockInput.typeText("/mode");
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const modeCommandFrame = setup.captureCharFrame();
+  assert.match(modeCommandFrame, /▶ \/mode\s+Set Thread reasoning mode/);
+  assert.doesNotMatch(modeCommandFrame, /<standard\|ultra>/);
+
+  await act(async () => {
+    setup.mockInput.pressEnter();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const modeChoiceFrame = setup.captureCharFrame();
+  assert.match(modeChoiceFrame, /Mode/);
+  assert.match(modeChoiceFrame, /▶ Standard\s+Fast, clear thinking for everyday tasks\s+CURRENT/);
+  assert.match(modeChoiceFrame, /Ultra\s+Go deeper\. Follow every ripple/);
+  assert.match(modeChoiceFrame, /Enter apply · Esc back/);
+
+  await act(async () => {
+    setup.mockInput.pressArrow("down");
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  // JX-AC-030 JX-AC-033: menu focus previews presentation, not durable mode.
+  assert.match(setup.captureCharFrame(), /▶ Ultra/);
+  assert.equal(activeController.current?.getSnapshot().mode, "standard");
+  const previewComposer = setup.renderer.root.findDescendantById("composer");
+  assert.ok(previewComposer instanceof BoxRenderable);
+  const previewBorder = composerPerimeterColors(
+    setup.captureSpans(),
+    previewComposer,
+  );
+  assert.equal(
+    previewBorder.some((color) =>
+      color.equals(RGBA.fromHex(jixuTheme.brand)),
+    ),
+    true,
+  );
+  assert.equal(
+    previewBorder.some((color) =>
+      color.equals(RGBA.fromHex(jixuNipponColors.mizuasagi)),
+    ),
+    true,
+  );
+
+  await act(async () => {
+    setup.mockInput.pressEscape();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.equal(activeController.current?.getSnapshot().mode, "standard");
+  assert.equal(
+    composerPerimeterColors(setup.captureSpans(), previewComposer).every(
+      (color) => color.equals(RGBA.fromHex(jixuTheme.divider)),
+    ),
+    true,
+  );
+
+  await act(async () => {
+    setup.mockInput.pressEnter();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  await act(async () => {
+    setup.mockInput.pressArrow("down");
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.match(setup.captureCharFrame(), /▶ Ultra/);
+
+  await act(async () => {
+    setup.mockInput.pressEnter();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.equal(activeController.current?.getSnapshot().mode, "ultra");
+  assert.match(setup.captureCharFrame(), /MODE\s+ULTRA/);
+  assert.doesNotMatch(setup.captureCharFrame(), /Mode set to ULTRA/);
+  // JX-AC-030 JX-AC-033: Ultra adds branded color motion without moving cells.
+  const ultraComposer = setup.renderer.root.findDescendantById("composer");
+  assert.ok(ultraComposer instanceof BoxRenderable);
+  const firstUltraBorder = composerPerimeterColors(
+    setup.captureSpans(),
+    ultraComposer,
+  );
+  const firstUltraFrame = setup.captureCharFrame();
+  assert.equal(
+    firstUltraBorder.some((color) =>
+      color.equals(RGBA.fromHex(jixuTheme.brand)),
+    ),
+    true,
+  );
+  assert.equal(
+    firstUltraBorder.some((color) =>
+      color.equals(RGBA.fromHex(jixuNipponColors.mizuasagi)),
+    ),
+    true,
+  );
+  let ultraBorderFrames = 0;
+  const countUltraBorderFrame = () => {
+    ultraBorderFrames += 1;
+  };
+  setup.renderer.on(CliRenderEvents.FRAME, countUltraBorderFrame);
+  try {
+    await act(async () => {
+      await new Promise((resolve) =>
+        setTimeout(resolve, ULTRA_COMPOSER_BORDER_CADENCE_MS + 40),
+      );
+    });
+  } finally {
+    setup.renderer.off(CliRenderEvents.FRAME, countUltraBorderFrame);
+  }
+  const secondUltraBorder = composerPerimeterColors(
+    setup.captureSpans(),
+    ultraComposer,
+  );
+  assert.ok(ultraBorderFrames > 0);
+  assert.equal(setup.captureCharFrame(), firstUltraFrame);
+  assert.notDeepEqual(
+    secondUltraBorder.map((color) => color.toString()),
+    firstUltraBorder.map((color) => color.toString()),
+  );
   let thinkingSubmission: Promise<void> | null = null;
   await act(async () => {
     if (activeController.current !== null) {
@@ -1000,7 +1187,7 @@ try {
     await setup.renderOnce();
     await setup.flush();
   });
-  // JX-AC-033 JX-AC-036: pending Agent work lives in transcript flow.
+  // JX-AC-033 JX-AC-036 JX-AC-053: Ultra work has a durable mode-aware label.
   const thinkingFrame = setup.captureCharFrame();
   assert.notEqual(
     setup.renderer.root.findDescendantById("ephemeral-agent-status"),
@@ -1010,20 +1197,23 @@ try {
     "thinking-motion-label",
   );
   assert.notEqual(thinkingMotion, undefined);
-  assert.equal(thinkingMotion?.width, "Thinking ...".length);
-  assert.equal(thinkingMotion?.getChildren().length, "Thinking ...".length);
+  assert.equal(thinkingMotion?.width, "Following every ripple ...".length);
+  assert.equal(
+    thinkingMotion?.getChildren().length,
+    "Following every ripple ...".length,
+  );
   const thinkingWordmark = setup.renderer.root.findDescendantById(
     "ephemeral-jixu-wordmark",
   );
   assert.ok(thinkingWordmark instanceof TextRenderable);
   assert.equal(thinkingWordmark.plainText, "JIXU");
   assert.match(thinkingFrame, /Thinking task/);
-  assert.match(thinkingFrame, /Thinking \.\.\./);
+  assert.match(thinkingFrame, /Following every ripple \.\.\./);
   assert.match(thinkingFrame, /MODEL\s+vendor\/model-example/);
   assert.match(thinkingFrame, /FILES workspace/);
 
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 1_050));
+    await new Promise((resolve) => setTimeout(resolve, 2_550));
   });
   await act(async () => {
     await setup.renderOnce();
@@ -1031,7 +1221,10 @@ try {
   });
   // JX-AC-033: the forward sweep reaches the dots while the JIXU wordmark
   // remains one static renderable.
-  assert.match(setup.captureCharFrame(), /Thinking [.•]*•[.•]*/);
+  assert.match(
+    setup.captureCharFrame(),
+    /Following every ripple [.•]*•[.•]*/,
+  );
   assert.equal(thinkingWordmark.plainText, "JIXU");
 
   await act(async () => {
@@ -1134,7 +1327,7 @@ try {
   );
   assert.match(continuationFrame, /cat > \/tmp\/hello\.html\s+· exit 0/);
   assert.doesNotMatch(continuationFrame, /fixture output/);
-  assert.match(continuationFrame, /Thinking \.\.\./);
+  assert.match(continuationFrame, /Following every ripple \.\.\./);
 
   await act(async () => {
     releaseContinuation();
@@ -2018,6 +2211,7 @@ const approvalSnapshot = {
   currentThreadId: "approval-thread",
   inspection: null,
   metrics: null,
+  mode: "standard",
   streamingText: "",
   threadPickerOpen: false,
   threads: [],

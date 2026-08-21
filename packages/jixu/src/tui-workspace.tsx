@@ -12,7 +12,7 @@ import {
   useSyncExternalStore,
 } from "react";
 
-import type { ThreadInput } from "jixu-core";
+import type { ThreadInput, ThreadMode } from "jixu-core";
 
 import { formatSlashCommandHelp, JIXU_SLASH_COMMANDS } from "./commands.ts";
 import type { JixuConnectionConfig } from "./config.ts";
@@ -29,6 +29,7 @@ import {
   JIXU_CREATION_MARK_DIMENSIONS,
   type JixuCreationMarkVariant,
 } from "./tui-creation-mark.tsx";
+import { ComposerFrame } from "./tui-composer-frame.tsx";
 import { ExecutionDock } from "./tui-dock.tsx";
 import { ToolApprovalPrompt } from "./tui-tool-approval.tsx";
 import { Transcript } from "./tui-transcript.tsx";
@@ -83,6 +84,7 @@ const inactiveSnapshot: ThreadControllerSnapshot = Object.freeze({
   currentThreadId: null,
   inspection: null,
   metrics: null,
+  mode: "standard",
   streamingText: "",
   threadPickerOpen: false,
   threads: Object.freeze([]),
@@ -146,6 +148,7 @@ function ComposerStatus({
   enabledTools,
   fileScope,
   modelContext,
+  mode,
   threadCost,
 }: {
   readonly compact: boolean;
@@ -153,6 +156,7 @@ function ComposerStatus({
   readonly enabledTools: readonly string[];
   readonly fileScope: "process" | "workspace";
   readonly modelContext: string | null;
+  readonly mode: ThreadControllerSnapshot["mode"];
   readonly threadCost: ReturnType<typeof costContext>;
 }) {
   return (
@@ -175,6 +179,15 @@ function ComposerStatus({
             Model not configured · <span fg={jixuTheme.brand}>use /config</span>
           </text>
         )}
+        {configured ? (
+          <>
+            <box style={{ flexGrow: 1 }} />
+            <text fg={mode === "ultra" ? jixuTheme.brand : jixuTheme.secondary}>
+              <strong>MODE</strong>
+              <span fg={jixuTheme.text}>  {mode.toUpperCase()}</span>
+            </text>
+          </>
+        ) : null}
       </box>
       <box
         style={{
@@ -270,6 +283,7 @@ export function AgentWorkspace({
   const pastedImages = useRef<readonly PendingPastedImage[]>([]);
   const pasteTail = useRef(Promise.resolve());
   const [draft, setDraft] = useState("");
+  const [modePreview, setModePreview] = useState<ThreadMode | null>(null);
   const [composerInspection, setComposerInspection] = useState<
     ThreadControllerSnapshot["inspection"]
   >(null);
@@ -527,8 +541,7 @@ export function AgentWorkspace({
         ) {
           setTranscriptRevealRequest((current) => current + 1);
         }
-        void active.controller.submit(cleanValue);
-        return;
+        return active.controller.submit(cleanValue);
       }
 
       if (typeof cleanValue !== "string") {
@@ -613,7 +626,7 @@ export function AgentWorkspace({
       nextPastedImageNumber.current = 1;
       setComposerInspection(null);
       clearComposer();
-      submitValue(command);
+      return submitValue(command);
     },
     [clearComposer, submitValue],
   );
@@ -752,8 +765,10 @@ export function AgentWorkspace({
               <SlashCommandMenu
                 draft={draft}
                 input={composer}
+                mode={snapshot.mode}
                 onInsert={setComposerValue}
                 onInvoke={invokeCommand}
+                onModePreview={setModePreview}
               />
 
               <ThreadPicker
@@ -766,24 +781,12 @@ export function AgentWorkspace({
                 threads={snapshot.threads}
               />
 
-              <box
-                backgroundColor={jixuTheme.surface}
-                border={["top", "bottom", "left", "right"]}
-                borderColor={jixuTheme.divider}
-                id="composer"
-                style={{
-                  alignItems: "flex-start",
-                  columnGap: 1,
-                  flexDirection: "row",
-                  flexShrink: 0,
-                  maxHeight: COMPOSER_MAX_HEIGHT,
-                  minHeight: COMPOSER_MIN_HEIGHT,
-                  paddingBottom: 1,
-                  paddingLeft: 1,
-                  paddingRight: 1,
-                  paddingTop: 1,
-                  width: chatWidth,
-                }}
+              <ComposerFrame
+                maxHeight={COMPOSER_MAX_HEIGHT}
+                minHeight={COMPOSER_MIN_HEIGHT}
+                motion={motion}
+                ultra={(modePreview ?? snapshot.mode) === "ultra"}
+                width={chatWidth}
               >
                 <box
                   backgroundColor={jixuTheme.secondary}
@@ -822,7 +825,7 @@ export function AgentWorkspace({
                   textColor={jixuTheme.text}
                   wrapMode="word"
                 />
-              </box>
+              </ComposerFrame>
             </box>
           </box>
 
@@ -832,6 +835,7 @@ export function AgentWorkspace({
             enabledTools={active?.config.tools.enabled ?? []}
             fileScope={active?.config.tools.fileScope ?? "workspace"}
             modelContext={modelContext}
+            mode={snapshot.mode}
             threadCost={threadCost}
           />
         </box>

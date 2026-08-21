@@ -161,6 +161,54 @@ test("JX-AC-001 JX-AC-002 JX-AC-014 Tool use and later send continue one Thread"
   );
 });
 
+test("JX-AC-053 Thread mode is durable, idempotent, clear-safe, and inherited by Fork", async () => {
+  const store = new InMemoryEventStore();
+  const agent = agentWith();
+  const model = new SequenceModelDriver([
+    succeed({ content: "Parent used Ultra.", toolCalls: [] }),
+    succeed({ content: "Child inherited Ultra.", toolCalls: [] }),
+  ]);
+  const harness = createHarness({
+    agent,
+    clock: new FixedClock(),
+    ids: new SequenceIdGenerator(),
+    modelDrivers: { mock: model },
+    store,
+  });
+  const thread = await harness.createThread();
+
+  assert.equal((await thread.state()).mode, "standard");
+  const ultra = await thread.setMode("ultra");
+  assert.equal(ultra.mode, "ultra");
+  const afterFirstChange = await thread.events();
+  await thread.setMode("ultra");
+  assert.equal((await thread.events()).length, afterFirstChange.length);
+
+  await thread.send("Use full reasoning.");
+  assert.equal(model.effects[0]?.input.mode, "ultra");
+  assert.equal((await thread.clear()).mode, "ultra");
+  assert.equal((await thread.replay()).mode, "ultra");
+
+  const modeEvent = afterFirstChange.find(
+    (event) => event.type === "thread.mode_changed",
+  );
+  assert.ok(modeEvent !== undefined);
+  const child = await thread.fork({
+    at: modeEvent.id,
+    input: "Continue from Ultra.",
+  });
+  assert.equal((await child.wait()).mode, "ultra");
+  assert.equal(model.effects[1]?.input.mode, "ultra");
+
+  const reopened = await createHarness({
+    agent,
+    modelDrivers: { mock: new SequenceModelDriver([]) },
+    store,
+  }).openThread(thread.id);
+  assert.equal((await reopened.state()).mode, "ultra");
+  assert.equal((await reopened.setMode("standard")).mode, "standard");
+});
+
 test("JX-AC-047 Tool ask is durable and only allow_once dispatches the pending Effect", async () => {
   let executions = 0;
   const tool = defineTool({
@@ -906,7 +954,7 @@ test("JX-AC-020 JX-AC-052 queued multimodal input is durable and starts in Event
     "first",
     "帮我看看这个 [pasted image 1] 是啥， 这个 [pasted image 2] 又是啥",
   ]);
-  assert.equal(accepted[1]?.schemaVersion, 6);
+  assert.equal(accepted[1]?.schemaVersion, 7);
   assert.doesNotMatch(JSON.stringify(accepted[1]), /iVBOR|\/9j/u);
   const structuredParts = accepted[1]?.payload.parts;
   assert.equal(structuredParts?.filter((part) => part.type === "image").length, 2);

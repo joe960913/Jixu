@@ -17,6 +17,8 @@ export type ThreadStatus =
   | "running"
   | "waiting";
 
+export type ThreadMode = "standard" | "ultra";
+
 export interface ModelRef {
   readonly model: string;
   readonly provider: string;
@@ -174,6 +176,7 @@ export interface ThreadState {
   readonly lineage: ForkLineage | null;
   readonly messages: readonly ModelMessage[];
   readonly metrics: ThreadMetrics;
+  readonly mode: ThreadMode;
   readonly pauseRequested: boolean;
   readonly pendingEffects: Readonly<Record<string, EffectRequest>>;
   readonly planRepairAttempts: number;
@@ -207,6 +210,7 @@ export function createInitialThreadState(threadId: string): ThreadState {
     lineage: null,
     messages: [],
     metrics: createInitialThreadMetrics(),
+    mode: "standard",
     pauseRequested: false,
     pendingEffects: {},
     planRepairAttempts: 0,

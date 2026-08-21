@@ -1,62 +1,139 @@
 import type { SelectRenderable, TextareaRenderable } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
+import type { ThreadMode } from "jixu-core";
 import type { RefObject } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { matchingSlashCommands } from "./commands.ts";
-import type { JixuSlashCommand } from "./commands.ts";
+import type {
+  JixuSlashCommand,
+  JixuSlashCommandChoice,
+} from "./commands.ts";
 import { jixuTheme } from "./theme.ts";
 import type { ThreadSummary } from "./tui-model.ts";
 
 interface SlashCommandMenuProps {
   readonly draft: string;
   readonly input: RefObject<TextareaRenderable | null>;
+  readonly mode: ThreadMode;
   readonly onInsert: (value: string) => void;
-  readonly onInvoke: (command: string) => void;
+  readonly onInvoke: (command: string) => Promise<void> | void;
+  readonly onModePreview: (mode: ThreadMode | null) => void;
 }
 
 function commandLabel(command: JixuSlashCommand): string {
-  return `${command.usage.padEnd(28)}${command.description}`;
+  const invocation = command.choices === undefined
+    ? command.usage
+    : command.name;
+  return `${invocation.padEnd(28)}${command.description}`;
+}
+
+function choiceLabel(
+  choice: JixuSlashCommandChoice,
+  mode: ThreadMode,
+): string {
+  const current = choice.value === mode ? "  CURRENT" : "";
+  return `${choice.label.padEnd(12)}${choice.description}${current}`;
+}
+
+function choiceMode(
+  choice: JixuSlashCommandChoice | undefined,
+): ThreadMode | null {
+  return choice?.value === "standard" || choice?.value === "ultra"
+    ? choice.value
+    : null;
 }
 
 export function SlashCommandMenu({
   draft,
   input,
+  mode,
   onInsert,
   onInvoke,
+  onModePreview,
 }: SlashCommandMenuProps) {
   const menu = useRef<SelectRenderable>(null);
+  const modeApplyPending = useRef(false);
   const [dismissed, setDismissed] = useState(false);
   const [menuFocused, setMenuFocused] = useState(false);
+  const [choiceCommand, setChoiceCommand] = useState<JixuSlashCommand | null>(
+    null,
+  );
   const commands = matchingSlashCommands(draft);
-  const open = !dismissed && commands.length > 0;
+  const choices = choiceCommand?.choices ?? [];
+  const open =
+    !dismissed && (choiceCommand !== null || commands.length > 0);
 
   useEffect(() => {
     setDismissed(false);
     setMenuFocused(false);
+    setChoiceCommand(null);
     menu.current?.setSelectedIndex(0);
+    if (!modeApplyPending.current) onModePreview(null);
     input.current?.focus();
-  }, [draft, input]);
+  }, [draft, input, onModePreview]);
 
-  const close = useCallback(() => {
+  const close = useCallback((resetModePreview = true) => {
     setDismissed(true);
     setMenuFocused(false);
+    setChoiceCommand(null);
+    if (resetModePreview) onModePreview(null);
     input.current?.focus();
-  }, [input]);
+  }, [input, onModePreview]);
+
+  const back = useCallback(() => {
+    setChoiceCommand(null);
+    setMenuFocused(true);
+    menu.current?.setSelectedIndex(0);
+    onModePreview(null);
+    menu.current?.focus();
+  }, [onModePreview]);
+
+  useEffect(() => {
+    if (choiceCommand === null) return;
+    const currentIndex = choices.findIndex((choice) => choice.value === mode);
+    input.current?.blur();
+    menu.current?.setSelectedIndex(Math.max(0, currentIndex));
+    menu.current?.focus();
+    setMenuFocused(true);
+  }, [choiceCommand, choices, input, mode]);
 
   const accept = useCallback(
     (index: number) => {
+      if (choiceCommand !== null) {
+        const choice = choices[index];
+        if (choice === undefined) return;
+        modeApplyPending.current = true;
+        onModePreview(choiceMode(choice));
+        const result = onInvoke(`${choiceCommand.name} ${choice.value}`);
+        close(false);
+        void Promise.resolve(result).finally(() => {
+          modeApplyPending.current = false;
+          onModePreview(null);
+        });
+        return;
+      }
       const command = commands[index];
       if (command === undefined) return;
 
-      if (command.requiresArguments) {
+      if (command.choices !== undefined) {
+        setChoiceCommand(command);
+      } else if (command.requiresArguments) {
         onInsert(`${command.name} `);
       } else {
         onInvoke(command.name);
       }
-      close();
+      if (command.choices === undefined) close();
     },
-    [close, commands, onInsert, onInvoke],
+    [
+      choiceCommand,
+      choices,
+      close,
+      commands,
+      onInsert,
+      onInvoke,
+      onModePreview,
+    ],
   );
 
   useKeyboard((key) => {
@@ -64,7 +141,8 @@ export function SlashCommandMenu({
 
     if (key.name === "escape") {
       key.preventDefault();
-      close();
+      if (choiceCommand === null) close();
+      else back();
       return;
     }
 
@@ -93,10 +171,12 @@ export function SlashCommandMenu({
       backgroundColor={jixuTheme.surface}
       border
       borderColor={menuFocused ? jixuTheme.brand : jixuTheme.secondary}
-      bottomTitle=" ↑/↓ select · Enter use · Esc close "
+      bottomTitle={choiceCommand === null
+        ? " ↑/↓ select · Enter use · Esc close "
+        : " ↑/↓ select · Enter apply · Esc back "}
       bottomTitleAlignment="right"
-      height={commands.length + 2}
-      title=" Commands "
+      height={(choiceCommand === null ? commands.length : choices.length) + 2}
+      title={choiceCommand === null ? " Commands " : " Mode "}
       titleColor={jixuTheme.text}
       style={{ flexShrink: 0, width: "100%" }}
     >
@@ -107,19 +187,30 @@ export function SlashCommandMenu({
         focused={menuFocused}
         focusedBackgroundColor={jixuTheme.surface}
         focusedTextColor={jixuTheme.text}
-        height={commands.length}
+        height={choiceCommand === null ? commands.length : choices.length}
         id="slash-command-select"
+        onChange={(index) => {
+          if (choiceCommand === null) return;
+          onModePreview(choiceMode(choices[index]));
+        }}
         onKeyDown={(key) => {
           if (key.name !== "escape") return;
           key.preventDefault();
-          close();
+          if (choiceCommand === null) close();
+          else back();
         }}
         onSelect={(index) => accept(index)}
-        options={commands.map((command) => ({
-          description: command.description,
-          name: commandLabel(command),
-          value: command.name,
-        }))}
+        options={(choiceCommand === null
+          ? commands.map((command) => ({
+              description: command.description,
+              name: commandLabel(command),
+              value: command.name,
+            }))
+          : choices.map((choice) => ({
+              description: choice.description,
+              name: choiceLabel(choice, mode),
+              value: choice.value,
+            })))}
         selectedBackgroundColor={jixuTheme.surface}
         selectedDescriptionColor={jixuTheme.brand}
         selectedTextColor={jixuTheme.brand}
