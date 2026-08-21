@@ -32,8 +32,8 @@ npx jixu-ai
 # bunx jixu-ai
 ```
 
-The initial native TUI targets are macOS arm64, macOS x64, and Linux x64
-with glibc. Bun is not required at runtime.
+The supported native TUI targets are macOS arm64 and Linux x64 with glibc.
+Intel macOS x64 is not supported. Bun is not required at runtime.
 
 Install the Agent Framework packages separately when building an application:
 
@@ -130,9 +130,9 @@ See [SPEC.md](./SPEC.md) for the full product contract and
   OpenAI-compatible Chat Completions, Anthropic Messages, local file and shell
   Tools, Jina Web Search, and ordered Tool permissions.
 - [x] **The reference TUI and CLI path** — credential-free startup, local BYOK
-  configuration, durable Thread inspection, and standalone macOS arm64,
-  macOS x64, and Linux x64 release candidates verified through npm, pnpm,
-  Yarn, and Bun consumers.
+  configuration, durable Thread inspection, and standalone release candidates
+  for macOS arm64 and Linux x64 verified through npm, pnpm, Yarn, and Bun
+  consumers.
 - [ ] **Long-context continuity** — add adaptive compaction and immutable,
   source-linked continuity snapshots for the same Agent.
 - [ ] **First-class Skills and MCP Tools** — extend the same Agent through the

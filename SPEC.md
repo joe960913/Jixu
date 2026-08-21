@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.38
+**Version:** 0.4.39
 **Status:** normative, pre-1.0
 **Last updated:** 2026-08-21
 
@@ -1216,7 +1216,6 @@ permissions and never records secrets in Thread data.
 | `jixu-testkit` | Store and Driver contract suites. |
 | `jixu-ai` | Public facade, CLI, configuration, and reference TUI. |
 | `jixu-cli-darwin-arm64` | Native reference CLI executable for macOS arm64. |
-| `jixu-cli-darwin-x64` | Native reference CLI executable for macOS x64. |
 | `jixu-cli-linux-x64` | Native reference CLI executable for Linux x64 with glibc. |
 
 Core MUST remain free of provider SDKs, MCP SDKs, database drivers, web
@@ -1245,8 +1244,8 @@ implement another TUI, Harness, or Thread lifecycle.
   a credential gate, demo Agent, alternate state machine, or reduced runtime.
 - **JX-CLI-004.** Each supported target MUST be built as a Bun standalone
   executable with the matching OpenTUI native package and embedded runtime
-  assets. The initial npm target set is macOS arm64, macOS x64, and Linux x64
-  with glibc. Other targets are not part of this release line.
+  assets. The current npm target set is macOS arm64 and Linux x64 with glibc.
+  macOS x64 and other targets are not part of this release line.
 - **JX-CLI-005.** Platform packages produced from one native artifact set MUST
   have the same exact version. `jixu-ai` MAY advance independently for a
   facade-only documentation or packaging correction when its launcher target
@@ -1584,7 +1583,8 @@ implement another TUI, Harness, or Thread lifecycle.
   verifies its README, public import, selected native version, and help path.
   Omitting the compatible optional package and selecting an unsupported OS,
   CPU, or libc each produce a bounded actionable failure without a network
-  request or source build.
+  request or source build. macOS x64 MUST take that unsupported-target path and
+  MUST NOT resolve or dispatch the historical `jixu-cli-darwin-x64` package.
 - **JX-AC-051 — Standalone reference TUI.** On every advertised target, the
   exact signed or native release candidate starts from a clean directory and
   clean Jixu home without Node.js or Bun, initializes the real OpenTUI renderer,
@@ -2017,6 +2017,19 @@ Checkpoints. The reference TUI adds `/mode`, exposes the durable value in its fi
 footer, and uses `Following every ripple ...` for live Ultra requests. This adds no
 Multi-Agent behavior, Responses API, prompt mode, model/provider/protocol fallback,
 settings migration, or dependency.
+
+Version 0.4.39 withdraws Intel macOS x64 from the native CLI release boundary.
+The current target catalogue, facade optional dependencies, release-candidate
+matrix, manifest, and portability gate contain only macOS arm64 and Linux x64
+glibc. A launcher running on macOS x64 now fails through the ordinary bounded
+unsupported-target path before package resolution, network access, source
+compilation, or TUI startup; it does not dispatch the historical
+`jixu-cli-darwin-x64` package and provides no Rosetta or source-build fallback.
+Previously published Intel artifacts remain immutable and usable only with a
+matching older facade/version. Intel users must pin the last compatible pre-1.0
+distribution or move to Apple Silicon macOS or Linux x64 glibc. This changes
+package compatibility and release metadata only; it adds no Thread, Event,
+State, configuration, Replay, or stored-data migration.
 
 ## 19. Implementation order
 

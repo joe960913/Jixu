@@ -29,8 +29,6 @@ importers:
 
   packages/cli-darwin-arm64: {}
 
-  packages/cli-darwin-x64: {}
-
   packages/cli-linux-x64: {}
 
   packages/core: {}
@@ -75,9 +73,6 @@ importers:
       jixu-cli-darwin-arm64:
         specifier: workspace:*
         version: link:../cli-darwin-arm64
-      jixu-cli-darwin-x64:
-        specifier: workspace:*
-        version: link:../cli-darwin-x64
       jixu-cli-linux-x64:
         specifier: workspace:*
         version: link:../cli-linux-x64

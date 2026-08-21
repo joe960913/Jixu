@@ -56,7 +56,6 @@
   },
   "optionalDependencies": {
     "jixu-cli-darwin-arm64": "workspace:*",
-    "jixu-cli-darwin-x64": "workspace:*",
     "jixu-cli-linux-x64": "workspace:*"
   },
   "devDependencies": {
