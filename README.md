@@ -119,26 +119,6 @@ Event -> Reducer -> Effect -> Driver -> Event
 See [SPEC.md](./SPEC.md) for the full product contract and
 [CONTRIBUTING.md](./CONTRIBUTING.md) for development guidance.
 
-## Core status
-
-- [x] **Durable Threads** — multi-turn Agent work survives process restarts,
-  with pause, continue, clear, fork, recovery, and side-effect-free replay.
-- [x] **Reliable execution** — every model and Tool action is durably requested
-  before dispatch, with typed outcomes, bounded retries, approvals, and
-  indeterminate-failure handling.
-- [x] **A usable Agent runtime** — adaptive Plans, token and cost accounting,
-  OpenAI-compatible Chat Completions, Anthropic Messages, local file and shell
-  Tools, Jina Web Search, and ordered Tool permissions.
-- [x] **The reference TUI and CLI path** — credential-free startup, local BYOK
-  configuration, durable Thread inspection, and standalone release candidates
-  for macOS arm64 and Linux x64 verified through npm, pnpm, Yarn, and Bun
-  consumers.
-- [ ] **Long-context continuity** — add adaptive compaction and immutable,
-  source-linked continuity snapshots for the same Agent.
-- [ ] **First-class Skills and MCP Tools** — extend the same Agent through the
-  existing Tool, Effect, and durable Thread model, without Agent routing or
-  orchestration.
-
 ## License
 
 MIT
