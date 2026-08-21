@@ -34,7 +34,7 @@ import {
   samePlan,
 } from "./plan.ts";
 
-export const REDUCER_VERSION = 13;
+export const REDUCER_VERSION = 14;
 
 export interface TransitionResult {
   readonly effects: readonly EffectRequest[];
@@ -194,6 +194,7 @@ function sameReadyEffect(
     activePlan: expected.input.activePlan,
     instructions: expected.input.instructions,
     messages: expected.input.messages,
+    mode: expected.input.mode ?? "standard",
     model: expected.input.model,
     planControlName: expected.input.planControl.name,
     planRejectionFeedback: expected.input.planRejectionFeedback ?? null,
@@ -204,6 +205,7 @@ function sameReadyEffect(
     activePlan: persisted.input.activePlan,
     instructions: persisted.input.instructions,
     messages: persisted.input.messages,
+    mode: persisted.input.mode ?? "standard",
     model: persisted.input.model,
     planControlName: persisted.input.planControl.name,
     planRejectionFeedback: persisted.input.planRejectionFeedback ?? null,
@@ -216,10 +218,20 @@ function sameReadyEffect(
   ) {
     return jsonEquals(expectedBase, persistedBase);
   }
+  const legacyPersistedManifest =
+    persisted.input.mode === undefined &&
+      expected.input.contextManifest !== undefined &&
+      persisted.input.contextManifest !== undefined
+      ? {
+          ...expected.input.contextManifest,
+          logicalRequestDigest:
+            persisted.input.contextManifest.logicalRequestDigest,
+        }
+      : expected.input.contextManifest ?? null;
   return jsonEquals(
     {
       ...expectedBase,
-      contextManifest: expected.input.contextManifest ?? null,
+      contextManifest: legacyPersistedManifest,
       runtimeContext: expected.input.runtimeContext ?? null,
     },
     {
@@ -419,6 +431,20 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           toolApprovals: {},
           waitingReason: null,
         }),
+      };
+    }
+
+    case "thread.mode_changed": {
+      requireAgent(state);
+      requireStatus(state, event.type, "idle");
+      if (event.payload.mode === state.mode) {
+        throw new InvalidTransitionError(
+          `Thread ${state.threadId} is already in ${state.mode} mode`,
+        );
+      }
+      return {
+        effects: [],
+        state: advance(state, event.sequence, { mode: event.payload.mode }),
       };
     }
 

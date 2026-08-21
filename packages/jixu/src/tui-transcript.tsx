@@ -13,6 +13,7 @@ import type {
   ToolOperation,
   WorkStatus,
 } from "./tui-model.ts";
+import { isThinkingLabel } from "./tui-model.ts";
 import { jixuTheme } from "./theme.ts";
 import {
   JixuCreationMark,
@@ -526,10 +527,11 @@ function EphemeralAgentStatus({
       >
         <JixuWordmark />
       </box>
-      {status.phase === "thinking" && status.label === "Thinking" ? (
+      {status.phase === "thinking" && isThinkingLabel(status.label) ? (
         <ThinkingMotionText
           enabled={motion}
           id="thinking-motion-label"
+          label={status.label}
           tone={status.tone}
         />
       ) : (

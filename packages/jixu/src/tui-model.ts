@@ -1,5 +1,6 @@
 import type {
   PlanSnapshot,
+  ThreadMode,
   ThreadMetrics,
   ThreadStatus,
   ToolApproval,
@@ -16,6 +17,17 @@ export type JixuTone =
 
 export type TranscriptRole = "assistant" | "notice" | "user";
 export type ActivityKind = "control" | "model" | "runtime" | "tool";
+
+export const STANDARD_THINKING_LABEL = "Thinking";
+export const ULTRA_THINKING_LABEL = "Following every ripple";
+
+export function thinkingLabel(mode: ThreadMode): string {
+  return mode === "ultra" ? ULTRA_THINKING_LABEL : STANDARD_THINKING_LABEL;
+}
+
+export function isThinkingLabel(label: string): boolean {
+  return label === STANDARD_THINKING_LABEL || label === ULTRA_THINKING_LABEL;
+}
 
 export interface TranscriptMessageEntry {
   readonly content: string;
@@ -110,6 +122,7 @@ export interface ThreadControllerSnapshot {
   readonly currentThreadId: string | null;
   readonly inspection: ThreadInspection | null;
   readonly metrics: ThreadMetrics | null;
+  readonly mode: ThreadMode;
   readonly streamingText: string;
   readonly threadPickerOpen: boolean;
   readonly threads: readonly ThreadSummary[];

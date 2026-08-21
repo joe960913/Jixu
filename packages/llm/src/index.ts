@@ -43,6 +43,7 @@ export type {
 
 const ANTHROPIC_VERSION = "2023-06-01";
 const DEFAULT_ANTHROPIC_MAX_TOKENS = 4096;
+type UltraReasoningEffort = "high" | "xhigh";
 
 export type LLMApi =
   | "anthropic-messages"
@@ -104,8 +105,10 @@ export interface AnthropicMessagesRequest {
   readonly max_tokens: number;
   readonly messages: readonly AnthropicMessage[];
   readonly model: string;
+  readonly output_config?: { readonly effort: UltraReasoningEffort };
   readonly stream: true;
   readonly system?: string | readonly AnthropicTextBlock[];
+  readonly thinking?: { readonly type: "adaptive" };
   readonly tools: readonly AnthropicTool[];
 }
 
@@ -670,16 +673,53 @@ function isOpenRouterBaseUrl(baseURL: string): boolean {
   return hostname === "openrouter.ai" || hostname.endsWith(".openrouter.ai");
 }
 
+function modelLeaf(model: string): string {
+  return model.trim().toLowerCase().split("/").at(-1) ?? "";
+}
+
+function openAIUltraReasoningEffort(
+  model: string,
+  openRouter: boolean,
+): UltraReasoningEffort {
+  if (openRouter) return "xhigh";
+  const match = /^gpt-(\d+)(?:\.(\d+))?(?:-|$)/u.exec(modelLeaf(model));
+  if (match === null) return "high";
+  const major = Number(match[1]);
+  const minor = Number(match[2] ?? 0);
+  return major === 5 && minor >= 2 ? "xhigh" : "high";
+}
+
+function anthropicUltraReasoningEffort(
+  model: string,
+  openRouter: boolean,
+): UltraReasoningEffort {
+  if (openRouter) return "xhigh";
+  const match =
+    /^claude-(fable|mythos|opus|sonnet)-(\d+)(?:[-.](\d+))?(?:-|$)/u.exec(
+      modelLeaf(model),
+    );
+  if (match === null) return "high";
+  const family = match[1];
+  const major = Number(match[2]);
+  const minor = Number(match[3] ?? 0);
+  if (major === 5) return "xhigh";
+  return family === "opus" && major === 4 && (minor === 7 || minor === 8)
+    ? "xhigh"
+    : "high";
+}
+
 class OpenAIChatCompletionsModelDriver implements ModelDriver {
   readonly #client: OpenAIChatCompletionsClient;
   readonly #costCalculator: ModelCostCalculator | undefined;
   readonly #provider: string;
   readonly #providerReportsUsdCost: boolean;
   readonly #redactError: (message: string) => string;
+  readonly #openRouter: boolean;
 
   constructor(config: {
     readonly client: OpenAIChatCompletionsClient;
     readonly costCalculator?: ModelCostCalculator;
+    readonly openRouter: boolean;
     readonly provider: string;
     readonly providerReportsUsdCost: boolean;
     readonly redactError?: (message: string) => string;
@@ -687,6 +727,7 @@ class OpenAIChatCompletionsModelDriver implements ModelDriver {
   }) {
     this.#client = config.client;
     this.#costCalculator = config.costCalculator;
+    this.#openRouter = config.openRouter;
     this.#provider = config.provider;
     this.#providerReportsUsdCost = config.providerReportsUsdCost;
     this.#redactError = redactor(config);
@@ -720,6 +761,14 @@ class OpenAIChatCompletionsModelDriver implements ModelDriver {
         {
           messages,
           model: effect.input.model.model,
+          ...(effect.input.mode === "ultra"
+            ? {
+                reasoning_effort: openAIUltraReasoningEffort(
+                  effect.input.model.model,
+                  this.#openRouter,
+                ),
+              }
+            : {}),
           stream: true,
           stream_options: { include_usage: true },
           tools,
@@ -1056,6 +1105,7 @@ class AnthropicMessagesModelDriver implements ModelDriver {
   readonly #client: AnthropicMessagesClient;
   readonly #costCalculator: ModelCostCalculator | undefined;
   readonly #maxOutputTokens: number;
+  readonly #openRouter: boolean;
   readonly #provider: string;
   readonly #providerReportsUsdCost: boolean;
   readonly #redactError: (message: string) => string;
@@ -1064,6 +1114,7 @@ class AnthropicMessagesModelDriver implements ModelDriver {
     readonly client: AnthropicMessagesClient;
     readonly costCalculator?: ModelCostCalculator;
     readonly maxOutputTokens: number;
+    readonly openRouter: boolean;
     readonly provider: string;
     readonly providerReportsUsdCost: boolean;
     readonly redactError?: (message: string) => string;
@@ -1072,6 +1123,7 @@ class AnthropicMessagesModelDriver implements ModelDriver {
     this.#client = config.client;
     this.#costCalculator = config.costCalculator;
     this.#maxOutputTokens = config.maxOutputTokens;
+    this.#openRouter = config.openRouter;
     this.#provider = config.provider;
     this.#providerReportsUsdCost = config.providerReportsUsdCost;
     this.#redactError = redactor(config);
@@ -1103,6 +1155,17 @@ class AnthropicMessagesModelDriver implements ModelDriver {
           max_tokens: this.#maxOutputTokens,
           messages,
           model: effect.input.model.model,
+          ...(effect.input.mode === "ultra"
+            ? {
+                output_config: {
+                  effort: anthropicUltraReasoningEffort(
+                    effect.input.model.model,
+                    this.#openRouter,
+                  ),
+                },
+                thinking: { type: "adaptive" as const },
+              }
+            : {}),
           stream: true,
           ...(system === undefined ? {} : { system }),
           tools: [
@@ -1413,6 +1476,7 @@ export function createLLMModelDriver(
       ...(config.costCalculator === undefined
         ? {}
         : { costCalculator: config.costCalculator }),
+      openRouter: isOpenRouterBaseUrl(baseURL),
       provider: config.provider?.trim() || "openai-compatible",
       providerReportsUsdCost:
         config.providerReportsUsdCost ?? isOpenRouterBaseUrl(baseURL),
@@ -1453,6 +1517,7 @@ export function createLLMModelDriver(
       ? {}
       : { costCalculator: config.costCalculator }),
     maxOutputTokens,
+    openRouter: isOpenRouterBaseUrl(baseURL),
     provider: config.provider?.trim() || "anthropic",
     providerReportsUsdCost:
       config.providerReportsUsdCost ?? isOpenRouterBaseUrl(baseURL),

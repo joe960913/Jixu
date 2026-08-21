@@ -96,6 +96,7 @@ function effect(
           toolCallId: "call-spec",
         },
       ],
+      mode: "standard",
       model: { model, provider },
       planControl: PLAN_CONTROL,
       ...(rejectionFeedback === undefined
@@ -431,6 +432,7 @@ test("JX-PROV-002 JX-PROV-003 JX-AC-016 OpenAI Chat Completions normalizes contr
     )?.map((tool) => tool.function.name),
     ["read", PLAN_CONTROL.name, PROGRESS_CONTROL.name],
   );
+  assert.equal(client.body?.reasoning_effort, undefined);
   assert.equal(signals[0]?.type, "model.output_text.delta");
   assert.deepEqual(signals.at(-1), {
     data: { message: "Inspecting the SPEC" },
@@ -438,6 +440,102 @@ test("JX-PROV-002 JX-PROV-003 JX-AC-016 OpenAI Chat Completions normalizes contr
     threadId: "thread-1",
     type: "model.progress",
   });
+});
+
+test("JX-PROV-008 JX-AC-053 Ultra maps to the strongest compatible native effort without prompt changes", async () => {
+  const base = effect("fixture-provider", "fixture-model", null);
+  const ultra: ModelGenerateEffect = {
+    ...base,
+    input: { ...base.input, mode: "ultra" },
+  };
+  const chatClient = new FakeOpenAIChatClient(chatChunks());
+  const anthropicClient = new FakeAnthropicClient(anthropicEvents());
+  const directOpenAIXHigh = new FakeOpenAIChatClient(chatChunks());
+  const directOpenAIHigh = new FakeOpenAIChatClient(chatChunks());
+  const directAnthropicXHigh = new FakeAnthropicClient(anthropicEvents());
+  const directAnthropicHigh = new FakeAnthropicClient(anthropicEvents());
+
+  const chatOutcome = await createLLMModelDriver({
+    api: "openai-chat-completions",
+    baseURL: "https://openrouter.ai/api/v1",
+    openAIChatCompletionsClient: chatClient,
+    provider: "openrouter",
+  }).generate(ultra, context());
+  const anthropicOutcome = await createLLMModelDriver({
+    anthropicMessagesClient: anthropicClient,
+    api: "anthropic-messages",
+    baseURL: "https://api.anthropic.test",
+    provider: "anthropic",
+  }).generate(ultra, context());
+  const directOpenAIXHighOutcome = await createLLMModelDriver({
+    api: "openai-chat-completions",
+    baseURL: "https://api.openai.com/v1",
+    openAIChatCompletionsClient: directOpenAIXHigh,
+    provider: "openai",
+  }).generate({
+    ...ultra,
+    input: {
+      ...ultra.input,
+      model: { model: "gpt-5.2", provider: "openai" },
+    },
+  }, context());
+  const directOpenAIHighOutcome = await createLLMModelDriver({
+    api: "openai-chat-completions",
+    baseURL: "https://api.openai.com/v1",
+    openAIChatCompletionsClient: directOpenAIHigh,
+    provider: "openai",
+  }).generate({
+    ...ultra,
+    input: {
+      ...ultra.input,
+      model: { model: "gpt-5.1", provider: "openai" },
+    },
+  }, context());
+  const directAnthropicXHighOutcome = await createLLMModelDriver({
+    anthropicMessagesClient: directAnthropicXHigh,
+    api: "anthropic-messages",
+    baseURL: "https://api.anthropic.com",
+    provider: "anthropic",
+  }).generate({
+    ...ultra,
+    input: {
+      ...ultra.input,
+      model: { model: "claude-opus-4-8", provider: "anthropic" },
+    },
+  }, context());
+  const directAnthropicHighOutcome = await createLLMModelDriver({
+    anthropicMessagesClient: directAnthropicHigh,
+    api: "anthropic-messages",
+    baseURL: "https://api.anthropic.com",
+    provider: "anthropic",
+  }).generate({
+    ...ultra,
+    input: {
+      ...ultra.input,
+      model: { model: "claude-sonnet-4-6", provider: "anthropic" },
+    },
+  }, context());
+
+  assert.equal(chatOutcome.status, "succeeded");
+  assert.equal(anthropicOutcome.status, "succeeded");
+  assert.equal(directOpenAIXHighOutcome.status, "succeeded");
+  assert.equal(directOpenAIHighOutcome.status, "succeeded");
+  assert.equal(directAnthropicXHighOutcome.status, "succeeded");
+  assert.equal(directAnthropicHighOutcome.status, "succeeded");
+  assert.equal(chatClient.body?.reasoning_effort, "xhigh");
+  assert.deepEqual(anthropicClient.body?.thinking, { type: "adaptive" });
+  assert.deepEqual(anthropicClient.body?.output_config, { effort: "high" });
+  assert.equal(directOpenAIXHigh.body?.reasoning_effort, "xhigh");
+  assert.equal(directOpenAIHigh.body?.reasoning_effort, "high");
+  assert.deepEqual(directAnthropicXHigh.body?.output_config, {
+    effort: "xhigh",
+  });
+  assert.deepEqual(directAnthropicHigh.body?.output_config, { effort: "high" });
+  assert.deepEqual(chatClient.body?.messages[0], {
+    content: "Use tools when useful.",
+    role: "system",
+  });
+  assert.equal(anthropicClient.body?.system, "Use tools when useful.");
 });
 
 test("JX-PROV-007 JX-AC-052 both protocols materialize ordered image content and fail before dispatch when an Artifact is missing", async () => {
@@ -716,6 +814,8 @@ test("JX-PROV-002 JX-PROV-004 JX-PROV-005 JX-AC-016 Anthropic Messages groups To
     ],
   });
   assert.equal(client.body?.max_tokens, 4096);
+  assert.equal(client.body?.thinking, undefined);
+  assert.equal(client.body?.output_config, undefined);
   assert.deepEqual(client.body?.messages.map((message) => message.role), [
     "user",
     "assistant",

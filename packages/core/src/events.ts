@@ -3,6 +3,7 @@ import type {
   DriverError,
   ModelResponse,
   PendingPlanRejection,
+  ThreadMode,
   ToolApprovalDecision,
 } from "./domain.ts";
 import type {
@@ -14,10 +15,10 @@ import type { ModelAccounting } from "./metrics.ts";
 import type { PlanSnapshot, PlanUpdateProposal } from "./plan.ts";
 import type { AcceptedInput } from "./input.ts";
 
-export const CURRENT_EVENT_SCHEMA_VERSION = 6;
+export const CURRENT_EVENT_SCHEMA_VERSION = 7;
 
 export function isSupportedEventSchemaVersion(value: number): boolean {
-  return value === 5 || value === CURRENT_EVENT_SCHEMA_VERSION;
+  return value === 5 || value === 6 || value === CURRENT_EVENT_SCHEMA_VERSION;
 }
 
 export interface ThreadEvent<TType extends string, TPayload> {
@@ -72,6 +73,7 @@ export interface ThreadEventPayloads {
     readonly parentThreadId: string;
     readonly parentSequence: number;
   };
+  readonly "thread.mode_changed": { readonly mode: ThreadMode };
   readonly "thread.pause_requested": Record<string, never>;
   readonly "thread.paused": Record<string, never>;
   readonly "thread.continued": Record<string, never>;

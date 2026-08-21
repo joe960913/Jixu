@@ -26,6 +26,7 @@ import type {
   ToolLiveOutput,
   TranscriptRole,
 } from "./tui-model.ts";
+import { thinkingLabel } from "./tui-model.ts";
 
 type SnapshotUpdates = {
   -readonly [TKey in keyof ThreadControllerSnapshot]?: ThreadControllerSnapshot[TKey];
@@ -147,6 +148,7 @@ export class ThreadController {
     currentThreadId: null,
     inspection: null,
     metrics: null,
+    mode: "standard",
     streamingText: "",
     threadPickerOpen: false,
     threads: Object.freeze([]),
@@ -289,6 +291,9 @@ export class ThreadController {
       case "/fork":
         await this.#fork(input);
         return;
+      case "/mode":
+        await this.#mode(input);
+        return;
       default:
         this.#notice(`Unknown command ${command}. Use /help.`);
     }
@@ -301,6 +306,25 @@ export class ThreadController {
     }
     try {
       await this.#select(await this.#harness.createThread());
+    } catch (error) {
+      this.#notice(errorMessage(error), "ERROR", "danger");
+    }
+  }
+
+  async #mode(input: string): Promise<void> {
+    if (this.#snapshot.busy) {
+      this.#notice("Wait for the active turn before changing mode.");
+      return;
+    }
+    const value = /^\/mode(?:\s+(\S+))?\s*$/u.exec(input)?.[1]?.toLowerCase();
+    if (value !== "standard" && value !== "ultra") {
+      this.#notice("Usage: /mode <standard|ultra>");
+      return;
+    }
+    try {
+      const thread = await this.#ensureCurrent();
+      const state = await thread.setMode(value);
+      await this.#sync(thread, state);
     } catch (error) {
       this.#notice(errorMessage(error), "ERROR", "danger");
     }
@@ -464,6 +488,7 @@ export class ThreadController {
       currentThreadId: thread.id,
       inspection: null,
       metrics: state.metrics,
+      mode: state.mode,
       streamingText: "",
       threadPickerOpen: false,
       threads: this.#snapshot.threads.map((summary) => ({
@@ -504,6 +529,8 @@ export class ThreadController {
             } else if (item.event.type === "model.completed") {
               this.#resetStreaming();
               updates.streamingText = "";
+            } else if (item.event.type === "thread.mode_changed") {
+              updates.mode = item.event.payload.mode;
             }
             if (
               item.event.type === "tool.completed" ||
@@ -582,6 +609,7 @@ export class ThreadController {
     this.#patch({
       ...projection,
       metrics: currentState.metrics,
+      mode: currentState.mode,
       streamingText: "",
       threadStatus: currentState.status,
       toolApproval: this.#currentApproval(currentState),
@@ -627,7 +655,7 @@ export class ThreadController {
           ? this.#snapshot.toolOperations
           : [],
       workStatus: {
-        label: "Thinking",
+        label: thinkingLabel(this.#snapshot.mode),
         phase: "thinking",
         tone: "warning",
       },

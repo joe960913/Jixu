@@ -198,6 +198,7 @@ export function compileModelContext(
     activePlan: state.activePlan,
     instructions: agent.instructions,
     messages: state.messages,
+    mode: state.mode,
     model: agent.model,
     planControl,
     planRejectionFeedback: planRejectionFeedback ?? null,
@@ -267,6 +268,7 @@ export function compileModelContext(
     contextManifest: manifest,
     instructions: agent.instructions,
     messages: state.messages,
+    mode: state.mode,
     model: agent.model,
     planControl,
     ...(planRejectionFeedback === undefined
@@ -307,6 +309,7 @@ export function copyModelContextForFork(
     activePlan: input.activePlan,
     instructions: input.instructions,
     messages: input.messages,
+    mode: input.mode,
     model: input.model,
     planControl: input.planControl,
     planRejectionFeedback: input.planRejectionFeedback ?? null,

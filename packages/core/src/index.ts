@@ -52,6 +52,7 @@ export type {
   PendingPlanRejection,
   QueuedInput,
   ThreadState,
+  ThreadMode,
   ThreadStatus,
   ToolCall,
   ToolApproval,

@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.37
+**Version:** 0.4.38
 **Status:** normative, pre-1.0
 **Last updated:** 2026-08-21
 
@@ -241,6 +241,32 @@ paused records an explicit administrative stop.
 - **JX-THREAD-011.** Clear MUST be accepted only while `idle`.
 - **JX-THREAD-012.** Clear MUST NOT create, fork, delete, or replace a Thread.
 
+### 6.3 Model reasoning mode
+
+Every Thread has one durable model reasoning mode:
+
+```ts
+type ThreadMode = "standard" | "ultra";
+```
+
+- **JX-THREAD-015.** A new Thread MUST start in `standard`. `standard` uses the
+  configured model's default reasoning behavior, while `ultra` requests the
+  strongest compatible reasoning effort: `xhigh` when the selected endpoint and
+  recognized model support it, otherwise `high`. Mode changes MUST NOT alter the
+  immutable Agent, its instructions, Tools, model identity, or the single-Agent
+  execution model.
+- **JX-THREAD-016.** `setMode(mode)` MUST be accepted only while the Thread is
+  `idle`, append one `thread.mode_changed` Event when the requested value differs
+  from State, and replay deterministically. Repeating the current value MUST be
+  an idempotent no-op rather than an additional Event.
+- **JX-THREAD-017.** `clear()` MUST preserve the selected mode. Fork MUST inherit
+  the exact mode projected at its selected parent Event; a separately created
+  Thread starts in `standard`.
+- **JX-THREAD-018.** Every newly derived `model.generate` Effect MUST contain the
+  exact mode projected when that logical request was created. A retry MUST
+  preserve that input byte-for-byte; a later mode change MUST NOT rewrite a
+  historical, ready, or pending Effect.
+
 ## 7. Event, State, and observation
 
 ### 7.1 Event envelope
@@ -267,12 +293,14 @@ interface ThreadEvent<TType extends string, TPayload> {
 - **JX-EVT-004.** Events MUST be immutable after append.
 - **JX-EVT-005.** Correlation metadata MAY group work but MUST NOT replace
   Thread or Event identity.
-- **JX-EVT-006.** Event schema version 6 is the current Thread schema. Version 5
-  remains readable only for its historical text-only Event shapes so existing
-  Threads can continue by appending version 6 Events; it MUST reject fields
-  introduced by version 6 instead of silently discarding them. Every other
-  Event schema version MUST fail closed. This narrow decoder compatibility is
-  not an upcaster and MUST NOT rewrite stored Events.
+- **JX-EVT-006.** Event schema version 7 is the current Thread schema. Versions 5
+  and 6 remain readable for their historical Event shapes so existing Threads
+  can continue by appending version 7 Events. Version 5 MUST reject structured
+  input fields introduced by version 6, and versions 5 and 6 MUST reject mode
+  fields and `thread.mode_changed` introduced by version 7 instead of silently
+  discarding them. Every other Event schema version MUST fail closed. This
+  narrow decoder compatibility is not an upcaster and MUST NOT rewrite stored
+  Events.
 
 The v0.4 families are:
 
@@ -281,6 +309,7 @@ The v0.4 families are:
 - `thread.pause_requested`
 - `thread.paused`
 - `thread.continued`
+- `thread.mode_changed`
 - `thread.waiting`
 - `input.received`
 - `plan.updated`
@@ -430,6 +459,18 @@ routing authority.
   model failure and zero provider calls; a configured model that rejects image
   input remains an ordinary typed provider failure and MUST NOT trigger hidden
   model or protocol fallback.
+- **JX-PROV-008.** A `standard` model Effect MUST omit optional provider effort
+  controls. For `ultra`, the OpenRouter Chat endpoint MUST receive
+  `reasoning_effort: "xhigh"` and may normalize it to the selected model's nearest
+  supported effort. Other OpenAI Chat endpoints MUST use `xhigh` for recognized
+  GPT-5.x model IDs at 5.2 or newer and `high` otherwise. Anthropic Messages MUST
+  use adaptive thinking plus `xhigh` for recognized xhigh-capable model families
+  and `high` otherwise. Unknown direct model IDs MUST choose the conservative `high`
+  mapping rather than speculate about xhigh support. This deterministic request
+  mapping MUST NOT retry after an HTTP rejection, mutate durable Thread mode, or
+  cause a model, provider, or protocol fallback. A provider rejection follows the
+  ordinary typed model-failure path. Neither mode may add hidden prompt text or
+  expose private chain-of-thought.
 
 ## 9. Continuity operations
 
@@ -799,6 +840,7 @@ A Thread exposes:
 - `wait()`
 - `pause()`
 - `continue()`
+- `setMode(mode)`
 - `fork({ at, input })`
 - `replay()`
 
@@ -899,14 +941,15 @@ not own execution truth.
   durable Event inspection.
 
   Optional motion MUST use fixed-width text for the ephemeral Agent role and
-  canonical `Thinking ...` label, update only their color treatment on the same
-  bounded cadence, stop at stable boundaries, and provide intentional static
-  text rather than a frozen animation frame. Arbitrary public progress prose
-  remains static. The fixed two-row Composer footer MUST remain stable before,
-  during, and after live work: it exposes only the selected model on its first
-  row, while endpoint host and API format remain in configuration; its second
-  row exposes local I/O, cost, and quit context. Live work MUST NOT replace those
-  fields or increase the Composer footprint.
+  mode-aware `Thinking ...` or `Following every ripple ...` label, update only
+  their color treatment on the same bounded cadence, stop at stable boundaries,
+  and provide intentional static text rather than a frozen animation frame.
+  Arbitrary public progress prose remains static. The fixed two-row Composer
+  footer MUST remain stable before, during, and after live work: its first row
+  exposes the selected model and durable Thread mode, while endpoint host and API
+  format remain in configuration; its second row exposes local I/O, cost, and
+  quit context. Live work MUST NOT replace those fields or increase the Composer
+  footprint.
 - **JX-TUI-020.** Rich transcript content, including Markdown tables, MUST stay
   inside the transcript viewport after padding and scrollbar space are applied;
   it MUST NOT hide or draw its right boundary outside the composer column.
@@ -1115,6 +1158,13 @@ not own execution truth.
   image bytes or MIME metadata. The Composer and transcript MAY show only the
   placeholders and MUST NOT require terminal image protocols or render raw
   image data.
+- **JX-TUI-036.** `/mode standard` and `/mode ultra` MUST call the public
+  `Thread.setMode` API and render from its resulting durable State. Slash help
+  and completion MUST share the canonical command metadata. The Composer footer
+  MUST show `MODE STANDARD` or `MODE ULTRA`; while an Ultra model request is live,
+  its canonical motion label MUST be `Following every ripple ...`. Standard
+  retains `Thinking ...`, and provider-generated public progress remains
+  unchanged rather than being rewritten by the UI.
 
 Configuration uses one local BYOK settings file with restrictive POSIX
 permissions and never records secrets in Thread data.
@@ -1349,13 +1399,13 @@ implement another TUI, Harness, or Thread lifecycle.
 - **JX-AC-033 — Branded execution motion.** A live Thinking or planning phase
   renders one ephemeral transcript row with a fixed-width `JIXU` role marker
   whose emphasis travels through existing Nippon semantic colors without
-  changing durable State. In the canonical Thinking state, the `Thinking ...`
-  label uses the same cadence and emphasis treatment while preserving every
-  character cell. Response streaming and disabled motion use intentional static
-  text, not a frozen progress track. Tool phases render their causal receipts
-  instead of a second Agent status row. The Composer and its two footer rows
-  occupy the same rows before, during, and after transient work status is
-  present.
+  changing durable State. In the canonical Thinking state, `Thinking ...` and
+  the Ultra-specific `Following every ripple ...` label use the same cadence and
+  emphasis treatment while preserving every character cell. Response streaming
+  and disabled motion use intentional static text, not a frozen progress track.
+  Tool phases render their causal receipts instead of a second Agent status row.
+  The Composer and its two footer rows occupy the same rows before, during, and
+  after transient work status is present.
 - **JX-AC-034 — Model-generated public progress.** OpenAI Chat Completions and
   Anthropic Messages requests expose one reserved progress control in the existing
   model call. A valid concise update is emitted as `model.progress`, excluded
@@ -1552,7 +1602,7 @@ implement another TUI, Harness, or Thread lifecycle.
   editor positions without rendering terminal images. JPEG and oversized PNG
   clipboard sources are orientation-corrected and area-downsampled when needed,
   then become valid PNG bytes within the JX-TUI-035 pixel, edge, and byte bounds;
-  the source bytes are not retained. Submission appends one version 6
+  the source bytes are not retained. Submission appends one current-schema
   `input.received` Event containing ordered text/image references and no raw
   bytes; each referenced Artifact round-trips and verifies in every Store
   adapter. Replay invokes no provider and reproduces the same placeholders and
@@ -1563,6 +1613,18 @@ implement another TUI, Harness, or Thread lifecycle.
   a typed failure before either fake provider client is called, malformed or
   over-limit clipboard images are rejected before submission, and ordinary
   text paste remains unchanged.
+- **JX-AC-053 — Durable single-Agent mode.** A new Thread reports `standard`.
+  `/mode ultra` appends one `thread.mode_changed` Event, survives Replay and
+  reopen, remains selected after clear, and is inherited by a Fork at or after
+  that Event; `/mode standard` durably restores the default and setting the
+  current mode appends nothing. An Ultra OpenRouter Chat request contains exactly
+  `reasoning_effort: "xhigh"`; recognized xhigh-capable direct OpenAI and
+  Anthropic model IDs receive xhigh, while unsupported or unknown direct model IDs
+  receive high without a rejected-request retry. Anthropic Ultra also enables
+  adaptive thinking. Standard omits those controls. Retry preserves the original
+  Effect mode. The reference TUI shows the selected mode and uses
+  `Following every ripple ...` only for live Ultra requests while retaining one
+  immutable Agent and zero Agent routing or handoff concepts.
 
 The minimum validation for a code change is targeted tests, typecheck, lint, and
 `git diff --check`. Release work also runs the complete acceptance suite and
@@ -1942,6 +2004,19 @@ Artifact reference shape, provider contract, or stored-data migration. The
 pure-JavaScript PNG encoder and its transitive license notice are bundled into
 the standalone CLI and every native platform tarball through the authoritative
 artifact pipeline.
+
+Version 0.4.38 adds one durable `standard | ultra` reasoning mode to each
+single-Agent Thread. A new `thread.mode_changed` Event and `Thread.setMode`
+operation project the value into State; model Effects persist the selected mode
+before dispatch, and protocol Drivers map Ultra to native `xhigh` where recognized
+and conservative `high` otherwise, without a rejected-request retry, changed Agent
+instructions, or added orchestration. Event schema version 7 adds the mode Event
+and required model-Effect field. Historical version 5 and 6 Events remain readable
+as Standard and are never rewritten; Reducer version 14 invalidates disposable
+Checkpoints. The reference TUI adds `/mode`, exposes the durable value in its fixed
+footer, and uses `Following every ripple ...` for live Ultra requests. This adds no
+Multi-Agent behavior, Responses API, prompt mode, model/provider/protocol fallback,
+settings migration, or dependency.
 
 ## 19. Implementation order
 

@@ -52,7 +52,7 @@ test("JX-AC-011 foundation: persisted Event schemas and types fail closed", asyn
   assert.equal((await store.read("run-1")).length, 0);
 });
 
-test("JX-AC-052 schema 5 remains text-only while schema 6 accepts Artifact references", () => {
+test("JX-AC-052 schema 5 remains text-only while schemas 6 and 7 accept Artifact references", () => {
   const textInput = createThreadEvent({
     id: "event-text",
     payload: { content: "legacy text" },
@@ -89,6 +89,10 @@ test("JX-AC-052 schema 5 remains text-only while schema 6 accepts Artifact refer
     type: "input.received",
   });
   assert.deepEqual(decodeThreadEvent(structuredInput), structuredInput);
+  assert.deepEqual(
+    decodeThreadEvent({ ...structuredInput, schemaVersion: 6 }),
+    { ...structuredInput, schemaVersion: 6 },
+  );
   assert.throws(
     () => decodeThreadEvent({ ...structuredInput, schemaVersion: 5 }),
     SchemaValidationError,
@@ -123,6 +127,77 @@ test("JX-AC-052 schema 5 remains text-only while schema 6 accepts Artifact refer
   });
   assert.throws(
     () => decodeThreadEvent({ ...requested, schemaVersion: 5 }),
+    SchemaValidationError,
+  );
+});
+
+test("JX-AC-053 schema 7 requires mode while schema 6 remains readable as Standard", () => {
+  const threadId = "thread-mode-schema";
+  const created = createThreadEvent({
+    id: "event-created",
+    payload: { agent: snapshot },
+    threadId,
+    sequence: 1,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type: "thread.created",
+  });
+  const state = reduce(createInitialThreadState(threadId), created).state;
+  const input = createThreadEvent({
+    id: "event-input",
+    payload: { content: "Use the selected mode" },
+    threadId,
+    sequence: 2,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type: "input.received",
+  });
+  const effect = reduce(state, input).effects[0];
+  assert.equal(effect?.type, "model.generate");
+  if (effect?.type !== "model.generate") return;
+  const {
+    contextManifest: _contextManifest,
+    mode: _mode,
+    runtimeContext: _runtimeContext,
+    ...legacyInput
+  } = effect.input;
+  const legacyRequested = {
+    id: "event-requested",
+    payload: { effect: { ...effect, input: legacyInput } },
+    schemaVersion: 6,
+    sequence: 3,
+    threadId,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type: "model.requested",
+  };
+
+  assert.equal(decodeThreadEvent(legacyRequested).type, "model.requested");
+  let legacyState = reduce(
+    createInitialThreadState(threadId),
+    decodeThreadEvent({ ...created, schemaVersion: 6 }),
+  ).state;
+  legacyState = reduce(
+    legacyState,
+    decodeThreadEvent({ ...input, schemaVersion: 6 }),
+  ).state;
+  legacyState = reduce(
+    legacyState,
+    decodeThreadEvent(legacyRequested),
+  ).state;
+  assert.equal(legacyState.mode, "standard");
+  assert.notEqual(legacyState.pendingEffects[effect.id], undefined);
+  assert.throws(
+    () => decodeThreadEvent({ ...legacyRequested, schemaVersion: 7 }),
+    SchemaValidationError,
+  );
+  const modeChanged = createThreadEvent({
+    id: "event-mode",
+    payload: { mode: "ultra" },
+    threadId,
+    sequence: 2,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type: "thread.mode_changed",
+  });
+  assert.throws(
+    () => decodeThreadEvent({ ...modeChanged, schemaVersion: 6 }),
     SchemaValidationError,
   );
 });

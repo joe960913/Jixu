@@ -73,6 +73,12 @@ function optionalString(value: JsonValue | undefined, label: string): void {
   }
 }
 
+function assertThreadMode(value: JsonValue | undefined, label: string): void {
+  if (value !== "standard" && value !== "ultra") {
+    throw new SchemaValidationError(`${label} is unsupported`);
+  }
+}
+
 function assertToolCall(value: JsonValue | undefined, label: string): void {
   const item = object(value, label);
   string(item.id, `${label}.id`);
@@ -653,6 +659,7 @@ function assertThreadState(
     assertModelMessage(message, `${label}.messages[${index}]`),
   );
   parseThreadMetrics(state.metrics, `${label}.metrics`);
+  assertThreadMode(state.mode, `${label}.mode`);
   if (state.planRepairAttempts !== undefined) {
     const attempts = integer(
       state.planRepairAttempts,
@@ -827,6 +834,7 @@ function parseEffect(
   value: JsonValue | undefined,
   label: string,
   threadId: string,
+  allowLegacyModelMode = false,
 ): EffectRequest {
   const item = object(value, label);
   const type = string(item.type, `${label}.type`);
@@ -847,6 +855,13 @@ function parseEffect(
       parsePlanSnapshot(input.activePlan, `${label}.input.activePlan`);
     }
     string(input.instructions, `${label}.input.instructions`);
+    if (input.mode === undefined) {
+      if (!allowLegacyModelMode) {
+        throw new SchemaValidationError(`${label}.input.mode is required`);
+      }
+    } else {
+      assertThreadMode(input.mode, `${label}.input.mode`);
+    }
     if (input.planRejectionFeedback !== undefined) {
       const feedback = string(
         input.planRejectionFeedback,
@@ -924,6 +939,7 @@ function parseEffect(
         activePlan: input.activePlan,
         instructions: input.instructions,
         messages: input.messages,
+        ...(input.mode === undefined ? {} : { mode: input.mode }),
         model: input.model,
         planControl: input.planControl,
         planRejectionFeedback: input.planRejectionFeedback ?? null,
@@ -982,6 +998,7 @@ const eventTypes = new Set<ThreadEventType>([
   "plan.updated",
   "thread.created",
   "thread.forked",
+  "thread.mode_changed",
   "thread.pause_requested",
   "thread.paused",
   "thread.continued",
@@ -1026,6 +1043,14 @@ function assertEventPayload(
       string(payload.parentEventId, "payload.parentEventId");
       integer(payload.parentSequence, "payload.parentSequence");
       return;
+    case "thread.mode_changed":
+      if (schemaVersion < 7) {
+        throw new SchemaValidationError(
+          "Event schema versions 5 and 6 cannot contain thread.mode_changed",
+        );
+      }
+      assertThreadMode(payload.mode, "payload.mode");
+      return;
     case "thread.pause_requested":
     case "thread.paused":
     case "thread.continued":
@@ -1052,26 +1077,38 @@ function assertEventPayload(
     }
     case "model.requested":
     case "tool.requested": {
-      if (schemaVersion === 5 && type === "model.requested") {
+      if (type === "model.requested") {
         const effectInput = object(
           object(payload.effect, "payload.effect").input,
           "payload.effect.input",
         );
-        array(effectInput.messages, "payload.effect.input.messages").forEach(
-          (message, index) => {
-            const item = object(
-              message,
-              `payload.effect.input.messages[${index}]`,
-            );
-            if (item.role === "user" && item.parts !== undefined) {
-              throw new SchemaValidationError(
-                "Event schema version 5 model.requested cannot contain structured parts",
+        if (schemaVersion < 7 && effectInput.mode !== undefined) {
+          throw new SchemaValidationError(
+            "Event schema versions 5 and 6 model.requested cannot contain mode",
+          );
+        }
+        if (schemaVersion === 5) {
+          array(effectInput.messages, "payload.effect.input.messages").forEach(
+            (message, index) => {
+              const item = object(
+                message,
+                `payload.effect.input.messages[${index}]`,
               );
-            }
-          },
-        );
+              if (item.role === "user" && item.parts !== undefined) {
+                throw new SchemaValidationError(
+                  "Event schema version 5 model.requested cannot contain structured parts",
+                );
+              }
+            },
+          );
+        }
       }
-      const effect = parseEffect(payload.effect, "payload.effect", threadId);
+      const effect = parseEffect(
+        payload.effect,
+        "payload.effect",
+        threadId,
+        schemaVersion < 7,
+      );
       if (
         (type === "model.requested" && effect.type !== "model.generate") ||
         (type === "tool.requested" && effect.type !== "tool.execute")

@@ -72,6 +72,21 @@ const state = await thread.send("Review this design and identify its main risk."
 console.log(state.result);
 ```
 
+Each Thread starts in `standard` mode, which uses the configured model's default
+reasoning behavior. Switch an idle Thread to `ultra` to request the strongest
+compatible reasoning effort for later model calls:
+
+```ts
+await thread.setMode("ultra");
+await thread.send("Work through the edge cases and verify the result.");
+```
+
+The reference TUI exposes the same durable setting through `/mode standard` and
+`/mode ultra`. Ultra prefers `xhigh`; recognized direct models that do not support
+it use `high`, while OpenRouter receives `xhigh` and may map it to the closest
+effort supported by the selected model. Jixu does not change the prompt, model,
+provider, or protocol to provide this compatibility.
+
 For a model that accepts image input, the TUI can paste local clipboard images
 into the Composer as editable placeholders such as `[pasted image 1]`. Before
 submission, the reference Composer validates and orientation-corrects each

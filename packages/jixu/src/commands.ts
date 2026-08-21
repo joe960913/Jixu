@@ -1,4 +1,11 @@
+export interface JixuSlashCommandChoice {
+  readonly description: string;
+  readonly label: string;
+  readonly value: string;
+}
+
 export interface JixuSlashCommand {
+  readonly choices?: readonly JixuSlashCommandChoice[];
   readonly description: string;
   readonly name: `/${string}`;
   readonly requiresArguments: boolean;
@@ -77,6 +84,24 @@ export const JIXU_SLASH_COMMANDS: readonly JixuSlashCommand[] = Object.freeze([
     name: "/fork",
     requiresArguments: true,
     usage: "/fork <event-id> <input>",
+  },
+  {
+    choices: Object.freeze([
+      {
+        description: "Fast, clear thinking for everyday tasks",
+        label: "Standard",
+        value: "standard",
+      },
+      {
+        description: "Go deeper. Follow every ripple",
+        label: "Ultra",
+        value: "ultra",
+      },
+    ]),
+    description: "Set Thread reasoning mode",
+    name: "/mode",
+    requiresArguments: true,
+    usage: "/mode <standard|ultra>",
   },
   {
     description: "Change API format, Base URL, Key, or model ID",
