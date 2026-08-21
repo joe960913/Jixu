@@ -47,6 +47,10 @@ import {
   normalizePastedImage,
   PastedImageNormalizationError,
 } from "./tui-pasted-image.ts";
+import {
+  composerPastedImageStyleId,
+  jixuComposerSyntaxStyle,
+} from "./tui-syntax-theme.ts";
 import type {
   ThreadControllerSnapshot,
   TranscriptMessageEntry,
@@ -417,8 +421,21 @@ export function AgentWorkspace({
       };
       nextPastedImageNumber.current += 1;
       pastedImages.current = [...pastedImages.current, image];
-      composer.current?.insertText(pastedImageToken(image));
-      setDraft(composer.current?.plainText ?? pastedImageToken(image));
+      const editor = composer.current;
+      const token = pastedImageToken(image);
+      if (editor !== null) {
+        // Initialize native token tracking before insertion so Undo captures it.
+        const extmarks = editor.extmarks;
+        const tokenStart = editor.logicalCursor.offset;
+        editor.insertText(token);
+        extmarks.create({
+          end: tokenStart + token.length,
+          start: tokenStart,
+          styleId: composerPastedImageStyleId,
+          virtual: true,
+        });
+      }
+      setDraft(editor?.plainText ?? token);
       setComposerInspection(null);
     },
     [clipboard],
@@ -801,6 +818,7 @@ export function AgentWorkspace({
                     maxHeight: COMPOSER_EDITOR_MAX_HEIGHT,
                     minHeight: 1,
                   }}
+                  syntaxStyle={jixuComposerSyntaxStyle}
                   textColor={jixuTheme.text}
                   wrapMode="word"
                 />

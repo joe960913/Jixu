@@ -29,7 +29,7 @@ import {
   type Renderable,
   type TextareaRenderable,
 } from "@opentui/core";
-import { setRendererCapabilities } from "@opentui/core/testing";
+import { KeyCodes, setRendererCapabilities } from "@opentui/core/testing";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 
@@ -52,7 +52,10 @@ import {
   PASTED_IMAGE_MAX_PIXELS,
   PastedImageNormalizationError,
 } from "../src/tui-pasted-image.ts";
-import { jixuMarkdownSyntaxStyle } from "../src/tui-syntax-theme.ts";
+import {
+  composerPastedImageStyleId,
+  jixuMarkdownSyntaxStyle,
+} from "../src/tui-syntax-theme.ts";
 import { ToolApprovalPrompt } from "../src/tui-tool-approval.tsx";
 import { JixuApp } from "../src/tui.tsx";
 
@@ -2800,6 +2803,85 @@ try {
     "帮我看看这个 [pasted image 1] 是啥， 这个 [pasted image 2] 又是啥",
   );
 
+  const completeMultimodalPrompt =
+    "帮我看看这个 [pasted image 1] 是啥， 这个 [pasted image 2] 又是啥";
+  const pastedImageMarks = () =>
+    [...(multimodalComposer?.extmarks.getAll() ?? [])].sort(
+      (left, right) => left.start - right.start,
+    );
+  const pastedImageHighlights = () =>
+    (multimodalComposer?.getLineHighlights(0) ?? []).filter(
+      (highlight) => highlight.styleId === composerPastedImageStyleId,
+    );
+  // JX-TUI-035: Only real pending images render as atomic attachment chips.
+  assert.equal(pastedImageMarks().length, 2);
+  assert.equal(pastedImageMarks().every((mark) => mark.virtual), true);
+  assert.equal(pastedImageHighlights().length, 2);
+
+  const secondToken = "[pasted image 2]";
+  await act(async () => {
+    const secondMark = pastedImageMarks()[1];
+    assert.notEqual(secondMark, undefined);
+    const tokenEnd = multimodalComposer?.editBuffer.offsetToPosition(
+      secondMark?.end ?? 0,
+    );
+    assert.notEqual(tokenEnd, null);
+    multimodalComposer?.setCursor(tokenEnd?.row ?? 0, tokenEnd?.col ?? 0);
+    multimodalSetup.mockInput.pressBackspace();
+  });
+  await act(async () => {
+    await multimodalSetup.renderOnce();
+    await multimodalSetup.flush();
+  });
+  // JX-TUI-035: Backspace after a real pending image removes its whole token.
+  assert.equal(
+    multimodalComposer?.plainText,
+    completeMultimodalPrompt.replace(secondToken, ""),
+  );
+  assert.equal(pastedImageHighlights().length, 1);
+
+  await act(async () => {
+    multimodalComposer?.undo();
+  });
+  await act(async () => {
+    await multimodalSetup.renderOnce();
+    await multimodalSetup.flush();
+  });
+  assert.equal(multimodalComposer?.plainText, completeMultimodalPrompt);
+  assert.equal(pastedImageHighlights().length, 2);
+
+  const firstToken = "[pasted image 1]";
+  await act(async () => {
+    const firstMark = pastedImageMarks()[0];
+    assert.notEqual(firstMark, undefined);
+    const tokenStart = multimodalComposer?.editBuffer.offsetToPosition(
+      firstMark?.start ?? 0,
+    );
+    assert.notEqual(tokenStart, null);
+    multimodalComposer?.setCursor(tokenStart?.row ?? 0, tokenStart?.col ?? 0);
+    multimodalSetup.mockInput.pressKey(KeyCodes.DELETE);
+  });
+  await act(async () => {
+    await multimodalSetup.renderOnce();
+    await multimodalSetup.flush();
+  });
+  // JX-TUI-035: Delete before a real pending image has the same atomic behavior.
+  assert.equal(
+    multimodalComposer?.plainText,
+    completeMultimodalPrompt.replace(firstToken, ""),
+  );
+  assert.equal(pastedImageHighlights().length, 1);
+
+  await act(async () => {
+    multimodalComposer?.undo();
+  });
+  await act(async () => {
+    await multimodalSetup.renderOnce();
+    await multimodalSetup.flush();
+  });
+  assert.equal(multimodalComposer?.plainText, completeMultimodalPrompt);
+  assert.equal(pastedImageHighlights().length, 2);
+
   await act(async () => {
     multimodalSetup.mockInput.pressEnter();
     for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -2841,13 +2923,23 @@ try {
   }
 
   await act(async () => {
-    await multimodalSetup.mockInput.pasteBracketedText("ordinary text paste");
+    await multimodalSetup.mockInput.pasteBracketedText(
+      "ordinary [pasted image 1]",
+    );
   });
   await act(async () => {
     await multimodalSetup.renderOnce();
     await multimodalSetup.flush();
   });
-  assert.equal(multimodalComposer?.plainText, "ordinary text paste");
+  await act(async () => {
+    multimodalSetup.mockInput.pressBackspace();
+  });
+  await act(async () => {
+    await multimodalSetup.renderOnce();
+    await multimodalSetup.flush();
+  });
+  assert.equal(multimodalComposer?.plainText, "ordinary [pasted image 1");
+  assert.equal(pastedImageHighlights().length, 0);
 } finally {
   act(() => {
     multimodalSetup.renderer.destroy();

@@ -1,4 +1,6 @@
 export const jixuTheme = Object.freeze({
+  attachmentBackground: "#302126",
+  attachmentText: "#E8C4CB",
   background: "#141414",
   brand: "#D66276",
   canvas: "transparent",
