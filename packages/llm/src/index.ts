@@ -1,12 +1,14 @@
 import OpenAI from "openai";
 import type {
   ChatCompletionCreateParamsStreaming,
+  ChatCompletionContentPart,
   ChatCompletionMessageParam,
   ChatCompletionTool,
 } from "openai/resources/chat/completions/completions";
 
 import {
   cloneJson,
+  ArtifactError,
   EMPTY_MODEL_ACCOUNTING,
   isJsonObject,
   MODEL_PROGRESS_SIGNAL_TYPE,
@@ -58,6 +60,15 @@ export interface AnthropicTextBlock {
   readonly type: "text";
 }
 
+export interface AnthropicImageBlock {
+  readonly source: {
+    readonly data: string;
+    readonly media_type: "image/gif" | "image/jpeg" | "image/png" | "image/webp";
+    readonly type: "base64";
+  };
+  readonly type: "image";
+}
+
 export interface AnthropicToolUseBlock {
   readonly id: string;
   readonly input: JsonObject;
@@ -76,6 +87,7 @@ export interface AnthropicMessage {
     | string
     | readonly (
         | AnthropicTextBlock
+        | AnthropicImageBlock
         | AnthropicToolResultBlock
         | AnthropicToolUseBlock
       )[];
@@ -194,20 +206,50 @@ function modelRuntimeContext(
   return context.join("\n");
 }
 
-function toChatMessages(
+function base64(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("base64");
+}
+
+async function toChatUserContent(
+  message: Extract<ModelMessage, { readonly role: "user" }>,
+  artifacts: ModelDriverContext["artifacts"],
+): Promise<string | ChatCompletionContentPart[]> {
+  if (message.parts === undefined) return message.content;
+  const content: ChatCompletionContentPart[] = [];
+  for (const part of message.parts) {
+    if (part.type === "text") {
+      content.push({ text: part.text, type: "text" });
+      continue;
+    }
+    const bytes = await artifacts.readArtifact(part.artifact);
+    content.push({
+      image_url: {
+        url: `data:${part.artifact.mediaType};base64,${base64(bytes)}`,
+      },
+      type: "image_url",
+    });
+  }
+  return content;
+}
+
+async function toChatMessages(
   instructions: string,
   messages: readonly ModelMessage[],
   activePlan: ModelGenerateEffect["input"]["activePlan"],
   runtime: ModelGenerateEffect["input"]["runtimeContext"],
   rejectionFeedback: ModelGenerateEffect["input"]["planRejectionFeedback"],
-): ChatCompletionMessageParam[] {
+  artifacts: ModelDriverContext["artifacts"],
+): Promise<ChatCompletionMessageParam[]> {
   const input: ChatCompletionMessageParam[] = [];
   if (instructions.length > 0) {
     input.push({ content: instructions, role: "system" });
   }
   for (const message of messages) {
     if (message.role === "user") {
-      input.push({ content: message.content, role: "user" });
+      input.push({
+        content: await toChatUserContent(message, artifacts),
+        role: "user",
+      });
       continue;
     }
     if (message.role === "assistant") {
@@ -282,15 +324,36 @@ function toAnthropicSystem(
   ];
 }
 
-function toAnthropicMessages(
+async function toAnthropicMessages(
   messages: readonly ModelMessage[],
-): AnthropicMessage[] {
+  artifacts: ModelDriverContext["artifacts"],
+): Promise<AnthropicMessage[]> {
   const output: AnthropicMessage[] = [];
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
     if (message === undefined) continue;
     if (message.role === "user") {
-      output.push({ content: message.content, role: "user" });
+      if (message.parts === undefined) {
+        output.push({ content: message.content, role: "user" });
+        continue;
+      }
+      const content: (AnthropicImageBlock | AnthropicTextBlock)[] = [];
+      for (const part of message.parts) {
+        if (part.type === "text") {
+          content.push({ text: part.text, type: "text" });
+          continue;
+        }
+        const bytes = await artifacts.readArtifact(part.artifact);
+        content.push({
+          source: {
+            data: base64(bytes),
+            media_type: part.artifact.mediaType,
+            type: "base64",
+          },
+          type: "image",
+        });
+      }
+      output.push({ content, role: "user" });
       continue;
     }
     if (message.role === "assistant") {
@@ -530,6 +593,24 @@ function requestFailure(
   };
 }
 
+function artifactFailure(
+  error: unknown,
+  provider: string,
+  redact: (message: string) => string,
+): ModelOutcome {
+  const code =
+    error instanceof ArtifactError ? error.code : "artifact_read_failed";
+  const message =
+    error instanceof Error
+      ? redact(error.message)
+      : "Image Artifact could not be materialized";
+  return failed({
+    code: `${provider}_${code}`,
+    message,
+    retryable: false,
+  });
+}
+
 function invalidEvent(
   provider: string,
   redact: (message: string) => string,
@@ -620,17 +701,24 @@ class OpenAIChatCompletionsModelDriver implements ModelDriver {
       effect.input.planControl,
       effect.input.progressControl,
     ].map(toChatTool);
+    let messages: ChatCompletionMessageParam[];
+    try {
+      messages = await toChatMessages(
+        effect.input.instructions,
+        effect.input.messages,
+        effect.input.activePlan,
+        effect.input.runtimeContext,
+        effect.input.planRejectionFeedback,
+        context.artifacts,
+      );
+    } catch (error) {
+      return artifactFailure(error, this.#provider, this.#redactError);
+    }
     let stream: AsyncIterable<unknown>;
     try {
       stream = await this.#client.create(
         {
-          messages: toChatMessages(
-            effect.input.instructions,
-            effect.input.messages,
-            effect.input.activePlan,
-            effect.input.runtimeContext,
-            effect.input.planRejectionFeedback,
-          ),
+          messages,
           model: effect.input.model.model,
           stream: true,
           stream_options: { include_usage: true },
@@ -999,12 +1087,21 @@ class AnthropicMessagesModelDriver implements ModelDriver {
       effect.input.runtimeContext,
       effect.input.planRejectionFeedback,
     );
+    let messages: AnthropicMessage[];
+    try {
+      messages = await toAnthropicMessages(
+        effect.input.messages,
+        context.artifacts,
+      );
+    } catch (error) {
+      return artifactFailure(error, this.#provider, this.#redactError);
+    }
     let stream: AsyncIterable<unknown>;
     try {
       stream = await this.#client.create(
         {
           max_tokens: this.#maxOutputTokens,
-          messages: toAnthropicMessages(effect.input.messages),
+          messages,
           model: effect.input.model.model,
           stream: true,
           ...(system === undefined ? {} : { system }),

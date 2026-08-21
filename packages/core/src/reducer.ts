@@ -34,7 +34,7 @@ import {
   samePlan,
 } from "./plan.ts";
 
-export const REDUCER_VERSION = 12;
+export const REDUCER_VERSION = 13;
 
 export interface TransitionResult {
   readonly effects: readonly EffectRequest[];
@@ -343,7 +343,14 @@ function settleTurn(
   const nextState = advance(state, sequence, {
     error: null,
     inputQueue: remaining,
-    messages: [...state.messages, { content: next.content, role: "user" }],
+    messages: [
+      ...state.messages,
+      {
+        content: next.content,
+        ...(next.parts === undefined ? {} : { parts: next.parts }),
+        role: "user",
+      },
+    ],
     planRepairAttempts: 0,
     result: null,
     status: "running",
@@ -422,7 +429,13 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           state: advance(state, event.sequence, {
             inputQueue: [
               ...state.inputQueue,
-              { content: event.payload.content, eventId: event.id },
+              {
+                content: event.payload.content,
+                eventId: event.id,
+                ...(event.payload.parts === undefined
+                  ? {}
+                  : { parts: event.payload.parts }),
+              },
             ],
           }),
         };
@@ -433,7 +446,13 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         inputQueue: [],
         messages: [
           ...state.messages,
-          { content: event.payload.content, role: "user" },
+          {
+            content: event.payload.content,
+            ...(event.payload.parts === undefined
+              ? {}
+              : { parts: event.payload.parts }),
+            role: "user",
+          },
         ],
         result: null,
         planRepairAttempts: 0,

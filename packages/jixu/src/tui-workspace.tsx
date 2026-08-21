@@ -1,5 +1,9 @@
-import type { TextareaOptions, TextareaRenderable } from "@opentui/core";
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
+import type {
+  ClipboardService,
+  TextareaOptions,
+  TextareaRenderable,
+} from "@opentui/core";
+import { useKeyboard, usePaste, useTerminalDimensions } from "@opentui/react";
 import {
   useCallback,
   useEffect,
@@ -7,6 +11,8 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+
+import type { ThreadInput } from "jixu-core";
 
 import { formatSlashCommandHelp, JIXU_SLASH_COMMANDS } from "./commands.ts";
 import type { JixuConnectionConfig } from "./config.ts";
@@ -26,6 +32,21 @@ import {
 import { ExecutionDock } from "./tui-dock.tsx";
 import { ToolApprovalPrompt } from "./tui-tool-approval.tsx";
 import { Transcript } from "./tui-transcript.tsx";
+import {
+  buildThreadInputFromComposer,
+  pendingNormalizedImageError,
+  pendingPastedImageError,
+  pastedImageToken,
+  readJixuClipboard,
+} from "./tui-clipboard.ts";
+import type {
+  PasteFallback,
+  PendingPastedImage,
+} from "./tui-clipboard.ts";
+import {
+  normalizePastedImage,
+  PastedImageNormalizationError,
+} from "./tui-pasted-image.ts";
 import type {
   ThreadControllerSnapshot,
   TranscriptMessageEntry,
@@ -38,6 +59,7 @@ export interface JixuActiveConnection {
 
 interface AgentWorkspaceProps {
   readonly active: JixuActiveConnection | null;
+  readonly clipboard: Pick<ClipboardService, "read"> | undefined;
   readonly connectionError: string | null;
   readonly motion: boolean;
   readonly onConfigure: () => void;
@@ -183,6 +205,7 @@ function ComposerStatus({
 
 export function AgentWorkspace({
   active,
+  clipboard,
   connectionError,
   motion,
   onConfigure,
@@ -239,7 +262,13 @@ export function AgentWorkspace({
     Math.floor((emptyStateViewportHeight - emptyStateHeight) / 2),
   );
   const composer = useRef<TextareaRenderable>(null);
+  const nextPastedImageNumber = useRef(1);
+  const pastedImages = useRef<readonly PendingPastedImage[]>([]);
+  const pasteTail = useRef(Promise.resolve());
   const [draft, setDraft] = useState("");
+  const [composerInspection, setComposerInspection] = useState<
+    ThreadControllerSnapshot["inspection"]
+  >(null);
   const [transcriptRevealRequest, setTranscriptRevealRequest] = useState(0);
   const [toolDisclosureByThread, setToolDisclosureByThread] = useState<
     ReadonlyMap<string, ToolDisclosureState>
@@ -253,7 +282,9 @@ export function AgentWorkspace({
   );
   const configured = active !== null;
   const snapshot = configured
-    ? controllerSnapshot
+    ? composerInspection === null
+      ? controllerSnapshot
+      : { ...controllerSnapshot, inspection: composerInspection }
     : { ...inactiveSnapshot, inspection: localInspection };
   const currentToolDisclosure = snapshot.currentThreadId === null
     ? EMPTY_TOOL_DISCLOSURE
@@ -322,6 +353,116 @@ export function AgentWorkspace({
     });
   });
 
+  const handleClipboardRead = useCallback(
+    async (fallback?: PasteFallback) => {
+      if (clipboard === undefined) return;
+      const result = await readJixuClipboard(clipboard, fallback);
+      if (result.kind === "unavailable") {
+        if (fallback === undefined) {
+          setComposerInspection({
+            content:
+              "The host clipboard did not expose supported image or text content.",
+            title: "Clipboard unavailable",
+          });
+        }
+        return;
+      }
+      if (result.kind === "text") {
+        if (result.text.length > 0) {
+          composer.current?.insertText(result.text);
+          setDraft(composer.current?.plainText ?? result.text);
+        }
+        setComposerInspection(null);
+        return;
+      }
+
+      const composerText = composer.current?.plainText ?? "";
+      pastedImages.current = pastedImages.current.filter((image) =>
+        composerText.includes(pastedImageToken(image)),
+      );
+      const error = pendingPastedImageError(pastedImages.current, result.bytes);
+      if (error !== null) {
+        setComposerInspection({ content: error, title: "Image paste rejected" });
+        return;
+      }
+      let normalized;
+      try {
+        normalized = normalizePastedImage(result.bytes, result.mediaType);
+      } catch (normalizationError) {
+        setComposerInspection({
+          content:
+            normalizationError instanceof PastedImageNormalizationError
+              ? normalizationError.message
+              : "The pasted image could not be normalized to PNG.",
+          title: "Image paste rejected",
+        });
+        return;
+      }
+      const normalizedError = pendingNormalizedImageError(
+        pastedImages.current,
+        normalized.bytes,
+      );
+      if (normalizedError !== null) {
+        setComposerInspection({
+          content: normalizedError,
+          title: "Image paste rejected",
+        });
+        return;
+      }
+      const image: PendingPastedImage = {
+        bytes: normalized.bytes,
+        mediaType: normalized.mediaType,
+        placeholder: `pasted image ${nextPastedImageNumber.current}`,
+        sourceByteLength: normalized.sourceByteLength,
+      };
+      nextPastedImageNumber.current += 1;
+      pastedImages.current = [...pastedImages.current, image];
+      composer.current?.insertText(pastedImageToken(image));
+      setDraft(composer.current?.plainText ?? pastedImageToken(image));
+      setComposerInspection(null);
+    },
+    [clipboard],
+  );
+
+  const enqueueClipboardRead = useCallback(
+    (fallback?: PasteFallback) => {
+      pasteTail.current = pasteTail.current
+        .then(() => handleClipboardRead(fallback))
+        .catch(() => {
+          setComposerInspection({
+            content: "The host clipboard could not be read.",
+            title: "Clipboard unavailable",
+          });
+        });
+    },
+    [handleClipboardRead],
+  );
+
+  usePaste((event) => {
+    if (clipboard === undefined || composer.current?.focused !== true) return;
+    event.preventDefault();
+    event.stopPropagation();
+    enqueueClipboardRead({
+      bytes: Uint8Array.from(event.bytes),
+      ...(event.metadata === undefined ? {} : { metadata: event.metadata }),
+    });
+  });
+
+  useKeyboard((key) => {
+    if (
+      clipboard === undefined ||
+      composer.current?.focused !== true ||
+      key.name !== "v" ||
+      (key.ctrl !== true && key.super !== true) ||
+      key.repeated === true
+    ) {
+      return;
+    }
+    key.preventDefault();
+    key.stopPropagation();
+    enqueueClipboardRead();
+  });
+
   useEffect(() => {
     if (active !== null || connectionError === null) return;
     setLocalInspection(
@@ -358,15 +499,28 @@ export function AgentWorkspace({
   }, [snapshot.currentThreadId, toolEffectIdKey]);
 
   const submitValue = useCallback(
-    (value: string) => {
-      const cleanValue = value.trim();
-      if (cleanValue.length === 0) return;
+    (value: ThreadInput) => {
+      const cleanValue = typeof value === "string" ? value.trim() : value;
+      if (typeof cleanValue === "string" && cleanValue.length === 0) return;
 
       if (active !== null) {
-        if (!cleanValue.startsWith("/")) {
+        if (
+          typeof cleanValue !== "string" ||
+          !cleanValue.startsWith("/")
+        ) {
           setTranscriptRevealRequest((current) => current + 1);
         }
         void active.controller.submit(cleanValue);
+        return;
+      }
+
+      if (typeof cleanValue !== "string") {
+        setLocalInspection(
+          Object.freeze({
+            content: "Use /config to connect a model, then submit this prompt again.",
+            title: "No model configured",
+          }),
+        );
         return;
       }
 
@@ -424,14 +578,23 @@ export function AgentWorkspace({
   const clearComposer = useCallback(() => setComposerValue(""), [setComposerValue]);
 
   const submit = () => {
-    const value = composer.current?.plainText ?? draft;
-    if (value.trim().length === 0) return;
-    clearComposer();
-    submitValue(value);
+    void pasteTail.current.then(() => {
+      const value = composer.current?.plainText ?? draft;
+      const input = buildThreadInputFromComposer(value, pastedImages.current);
+      if (input === null) return;
+      pastedImages.current = [];
+      nextPastedImageNumber.current = 1;
+      setComposerInspection(null);
+      clearComposer();
+      submitValue(input);
+    });
   };
 
   const invokeCommand = useCallback(
     (command: string) => {
+      pastedImages.current = [];
+      nextPastedImageNumber.current = 1;
+      setComposerInspection(null);
       clearComposer();
       submitValue(command);
     },

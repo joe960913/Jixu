@@ -78,6 +78,7 @@ export type {
 } from "./effects.ts";
 export {
   AgentMismatchError,
+  ArtifactError,
   InvalidForkPointError,
   InvalidTransitionError,
   JixuError,
@@ -88,6 +89,29 @@ export {
   SchemaValidationError,
   UnsupportedEventError,
 } from "./errors.ts";
+export {
+  artifactDigest,
+  assertArtifactBytes,
+  assertArtifactReference,
+  MAX_INPUT_IMAGE_BYTES,
+  MAX_INPUT_IMAGE_PLACEHOLDER_LENGTH,
+  MAX_INPUT_IMAGES,
+  MAX_INPUT_TOTAL_IMAGE_BYTES,
+  prepareThreadInput,
+} from "./input.ts";
+export type {
+  AcceptedInput,
+  ArtifactReference,
+  ImageMediaType,
+  ImageThreadInputPart,
+  StoredImageInputPart,
+  StoredInputPart,
+  StoredTextInputPart,
+  StructuredThreadInput,
+  TextThreadInputPart,
+  ThreadInput,
+  ThreadInputPart,
+} from "./input.ts";
 export {
   createThreadEvent,
   CURRENT_EVENT_SCHEMA_VERSION,
@@ -177,6 +201,8 @@ export type {
   ToolResourcePermission,
 } from "./tool-permissions.ts";
 export type {
+  ArtifactReader,
+  ArtifactStore,
   Clock,
   EventStore,
   EventStreamItem,

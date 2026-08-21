@@ -72,6 +72,28 @@ const state = await thread.send("Review this design and identify its main risk."
 console.log(state.result);
 ```
 
+For a model that accepts image input, the TUI can paste local clipboard images
+into the Composer as editable placeholders such as `[pasted image 1]`. Before
+submission, the reference Composer validates and orientation-corrects each
+source, downsamples it when needed, and retains only a lossless PNG of at most
+4 MiB, 4,194,304 pixels, and 4,096 pixels on either edge. The Framework API
+preserves the same ordered text-and-image input and continues to accept bounded
+PNG, JPEG, GIF, and WebP directly:
+
+```ts
+await thread.send({
+  content: [
+    { type: "text", text: "What is shown in " },
+    { type: "image", data: pngBytes, mediaType: "image/png" },
+    { type: "text", text: "?" },
+  ],
+});
+```
+
+Jixu validates and stores image bytes as immutable Artifacts; durable Events
+contain only references and placeholders. The selected provider model remains
+responsible for supporting image input.
+
 The ordered Event log is the source of truth. State is derived from Events, and
 external work follows one path:
 

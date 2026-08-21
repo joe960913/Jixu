@@ -18,7 +18,8 @@
     "glibc"
   ],
   "files": [
-    "bin/jixu"
+    "bin/jixu",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "preferUnplugged": true,
   "publishConfig": {

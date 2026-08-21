@@ -5,22 +5,27 @@ import {
   defineAgent,
   defineSchema,
   defineTool,
+  EMPTY_MODEL_ACCOUNTING,
+  InMemoryEventStore,
   TOOL_OUTPUT_SIGNAL_TYPE,
 } from "jixu-core";
 import type { ModelDriver } from "jixu-core";
 import { createJinaWebSearchTool } from "jixu-tools-jina";
 import { createNodeTools } from "jixu-tools-node";
+import { encode } from "fast-png";
 import {
   BoxRenderable,
   CliRenderEvents,
   CodeRenderable,
   getTreeSitterClient,
+  imageInfo,
   ImageRenderable,
   RGBA,
   ScrollBoxRenderable,
   SelectRenderable,
   TextRenderable,
   type BaseRenderable,
+  type ClipboardService,
   type Renderable,
   type TextareaRenderable,
 } from "@opentui/core";
@@ -40,6 +45,13 @@ import { BUTTERFLY_MOTION_CADENCE_MS } from "../src/tui-creation-mark.tsx";
 import { CODE_BLOCK_MAX_CONTENT_HEIGHT } from "../src/tui-markdown.ts";
 import type { ThreadControllerSnapshot } from "../src/tui-model.ts";
 import { registerJixuCodeParsers } from "../src/tui-parsers.ts";
+import {
+  normalizePastedImage,
+  PASTED_IMAGE_MAX_BYTES,
+  PASTED_IMAGE_MAX_EDGE,
+  PASTED_IMAGE_MAX_PIXELS,
+  PastedImageNormalizationError,
+} from "../src/tui-pasted-image.ts";
 import { jixuMarkdownSyntaxStyle } from "../src/tui-syntax-theme.ts";
 import { ToolApprovalPrompt } from "../src/tui-tool-approval.tsx";
 import { JixuApp } from "../src/tui.tsx";
@@ -2599,5 +2611,245 @@ try {
   await selectionClipboard.dispose();
   act(() => {
     selectionClipboardSetup.renderer.destroy();
+  });
+}
+
+const pastedPngFixture = encode({
+  channels: 4,
+  data: Uint8Array.from([
+    255, 0, 0, 255,
+    0, 255, 0, 255,
+    0, 0, 255, 255,
+    255, 255, 255, 255,
+  ]),
+  depth: 8,
+  height: 2,
+  width: 2,
+});
+const pastedJpegFixture = Uint8Array.from(
+  Buffer.from(
+    [
+      "/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKAC",
+      "AAQAAAABAAAAAaADAAQAAAABAAAAAQAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZ",
+      "jwCyBOmACZjs+EJ+/8AAEQgAAQABAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIB",
+      "AwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNE",
+      "RUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfI",
+      "ycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIB",
+      "AgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpD",
+      "REVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXG",
+      "x8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/bAEMAAgICAgICAwICAwUDAwMFBgUFBQUGCAYGBgYGCAoICAgICAgK",
+      "CgoKCgoKCgwMDAwMDA4ODg4ODw8PDw8PDw8PD//bAEMBAgICBAQEBwQEBxALCQsQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ",
+      "EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEP/dAAQAAf/aAAwDAQACEQMRAD8A/FeiiiucD//Z",
+    ].join(""),
+    "base64",
+  ),
+);
+
+{
+  // JX-TUI-035 JX-AC-052: conforming PNG is retained, while other or oversized
+  // clipboard formats become bounded, decodable, orientation-corrected PNG.
+  const retained = normalizePastedImage(pastedPngFixture, "image/png");
+  assert.deepEqual(retained.bytes, pastedPngFixture);
+  assert.equal(retained.sourceByteLength, pastedPngFixture.byteLength);
+
+  const converted = normalizePastedImage(pastedJpegFixture, "image/jpeg");
+  assert.equal(converted.mediaType, "image/png");
+  assert.equal(imageInfo(converted.bytes).format, "png");
+  assert.equal(converted.sourceByteLength, pastedJpegFixture.byteLength);
+
+  const width = 2_300;
+  const height = 1_900;
+  const sourcePixels = new Uint8Array(width * height * 4);
+  for (let index = 0; index < sourcePixels.length; index += 4) {
+    const pixel = index / 4;
+    sourcePixels[index] = pixel % 251;
+    sourcePixels[index + 1] = Math.floor(pixel / width) % 251;
+    sourcePixels[index + 2] = (pixel * 17) % 251;
+    sourcePixels[index + 3] = 255;
+  }
+  const oversized = encode(
+    { channels: 4, data: sourcePixels, depth: 8, height, width },
+    { zlib: { level: 3 } },
+  );
+  const bounded = normalizePastedImage(oversized, "image/png");
+  assert.ok(bounded.bytes.byteLength <= PASTED_IMAGE_MAX_BYTES);
+  assert.ok(bounded.width <= PASTED_IMAGE_MAX_EDGE);
+  assert.ok(bounded.height <= PASTED_IMAGE_MAX_EDGE);
+  assert.ok(bounded.width * bounded.height <= PASTED_IMAGE_MAX_PIXELS);
+  assert.ok(Math.abs(bounded.width / bounded.height - width / height) < 0.01);
+  assert.equal(imageInfo(bounded.bytes).format, "png");
+
+  assert.throws(
+    () => normalizePastedImage(pastedJpegFixture, "image/png"),
+    PastedImageNormalizationError,
+  );
+}
+
+const multimodalEffects: Parameters<ModelDriver["generate"]>[0][] = [];
+const multimodalStore = new InMemoryEventStore();
+const multimodalHarness = createHarness({
+  agent: defineAgent({
+    instructions: "Describe pasted images.",
+    model: { model: "multimodal-fixture", provider: "mock" },
+  }),
+  modelDrivers: {
+    mock: {
+      generate: async (effect) => {
+        multimodalEffects.push(structuredClone(effect));
+        return {
+          accounting: EMPTY_MODEL_ACCOUNTING,
+          status: "succeeded",
+          value: { content: "Both images received.", toolCalls: [] },
+        };
+      },
+    },
+  },
+  store: multimodalStore,
+});
+const pastedClipboardImages = [
+  {
+    bytes: pastedPngFixture,
+    mimeType: "image/png",
+  },
+  {
+    bytes: pastedJpegFixture,
+    mimeType: "image/jpeg",
+  },
+] as const;
+let pastedClipboardIndex = 0;
+const pastedClipboard: Pick<ClipboardService, "read"> = {
+  read: async (options) => {
+    assert.equal(options.preferredTypes.includes("image/png"), true);
+    const representation = pastedClipboardImages[pastedClipboardIndex];
+    pastedClipboardIndex += 1;
+    return representation === undefined
+      ? { status: "unsupported" }
+      : { representation, status: "read" };
+  },
+};
+let multimodalController: ThreadController | null = null;
+const multimodalSetup = await testRender(
+  <JixuApp
+    clipboard={pastedClipboard}
+    connect={async (_config, controls) => {
+      multimodalController = createThreadController({
+        harness: multimodalHarness,
+        ...controls,
+      });
+      return multimodalController;
+    }}
+    initial={{
+      api: "openai-chat-completions",
+      apiKey: "fixture",
+      autoConnect: true,
+      baseUrl: "https://fixture.invalid/v1",
+      model: "multimodal-fixture",
+    }}
+    motion={false}
+    onQuit={() => undefined}
+    workspace="/workspace"
+  />,
+  { height: 30, kittyKeyboard: true, width: 120 },
+);
+
+try {
+  await act(async () => {
+    await multimodalSetup.renderOnce();
+    await Promise.resolve();
+    await multimodalSetup.flush();
+  });
+  await act(async () => {
+    await Promise.resolve();
+    await multimodalSetup.flush();
+  });
+  const multimodalComposer = multimodalSetup.renderer.root.findDescendantById(
+    "composer-editor",
+  ) as TextareaRenderable | undefined;
+  assert.notEqual(multimodalComposer, undefined);
+
+  await act(async () => {
+    await multimodalSetup.mockInput.typeText("帮我看看这个 ");
+    multimodalSetup.mockInput.pressKey("v", { ctrl: true });
+    await Promise.resolve();
+  });
+  await act(async () => {
+    await multimodalSetup.renderOnce();
+    await multimodalSetup.flush();
+  });
+  assert.equal(multimodalComposer?.plainText, "帮我看看这个 [pasted image 1]");
+
+  await act(async () => {
+    await multimodalSetup.mockInput.typeText(" 是啥， 这个 ");
+    multimodalSetup.mockInput.pressKey("v", { ctrl: true });
+    await Promise.resolve();
+  });
+  await act(async () => {
+    await multimodalSetup.renderOnce();
+    await multimodalSetup.flush();
+  });
+  await act(async () => {
+    await multimodalSetup.mockInput.typeText(" 又是啥");
+  });
+  await act(async () => {
+    await multimodalSetup.renderOnce();
+    await multimodalSetup.flush();
+  });
+  // JX-TUI-035 JX-AC-052: Composer keeps ordered, editable placeholders.
+  assert.equal(
+    multimodalComposer?.plainText,
+    "帮我看看这个 [pasted image 1] 是啥， 这个 [pasted image 2] 又是啥",
+  );
+
+  await act(async () => {
+    multimodalSetup.mockInput.pressEnter();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (
+        multimodalEffects.length === 1 &&
+        multimodalController?.getSnapshot().busy === false
+      ) {
+        break;
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  });
+  await act(async () => {
+    await Promise.resolve();
+    await multimodalSetup.renderOnce();
+    await multimodalSetup.flush();
+  });
+  assert.equal(multimodalComposer?.plainText, "");
+  assert.equal(multimodalEffects.length, 1);
+  const submitted = multimodalEffects[0]?.input.messages.at(-1);
+  assert.equal(submitted?.role, "user");
+  assert.equal(
+    submitted?.content,
+    "帮我看看这个 [pasted image 1] 是啥， 这个 [pasted image 2] 又是啥",
+  );
+  assert.deepEqual(
+    submitted?.role === "user"
+      ? submitted.parts?.map((part) => part.type)
+      : undefined,
+    ["text", "image", "text", "image", "text"],
+  );
+  for (const part of submitted?.role === "user" ? submitted.parts ?? [] : []) {
+    if (part.type === "image") {
+      const artifact = await multimodalStore.readArtifact(part.artifact);
+      assert.equal(artifact.byteLength, part.artifact.byteLength);
+      assert.equal(part.artifact.mediaType, "image/png");
+      assert.equal(imageInfo(artifact).format, "png");
+    }
+  }
+
+  await act(async () => {
+    await multimodalSetup.mockInput.pasteBracketedText("ordinary text paste");
+  });
+  await act(async () => {
+    await multimodalSetup.renderOnce();
+    await multimodalSetup.flush();
+  });
+  assert.equal(multimodalComposer?.plainText, "ordinary text paste");
+} finally {
+  act(() => {
+    multimodalSetup.renderer.destroy();
   });
 }

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  artifactDigest,
   createThreadEvent,
   jsonDigest,
   REDUCER_VERSION,
@@ -157,6 +158,41 @@ export function defineStoreContract(
         store.append("global-id-b", 0, created("global-id-b", "global-event")),
       );
       assert.equal((await store.read("global-id-b")).length, 0);
+    } finally {
+      await fixture.cleanup?.();
+    }
+  });
+
+  test(`JX-AC-052 ${name}: image Artifacts are immutable and verified on read`, async () => {
+    const fixture = await factory();
+    try {
+      const { store } = fixture;
+      const bytes = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 1]);
+      const reference = {
+        byteLength: bytes.byteLength,
+        digest: await artifactDigest(bytes),
+        mediaType: "image/png" as const,
+      };
+
+      await store.putArtifact(reference, bytes);
+      bytes[8] = 2;
+      const firstRead = await store.readArtifact(reference);
+      assert.equal(firstRead[8], 1);
+      firstRead[8] = 3;
+      assert.equal((await store.readArtifact(reference))[8], 1);
+      await store.putArtifact(
+        reference,
+        Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 1]),
+      );
+
+      await assert.rejects(
+        store.readArtifact({ ...reference, digest: `sha256:${"0".repeat(64)}` }),
+        hasErrorCode("artifact_missing"),
+      );
+      await assert.rejects(
+        store.putArtifact(reference, Uint8Array.from([255, 216, 255])),
+        hasErrorCode("artifact_corrupt"),
+      );
     } finally {
       await fixture.cleanup?.();
     }

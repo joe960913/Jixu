@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.35
+**Version:** 0.4.37
 **Status:** normative, pre-1.0
 **Last updated:** 2026-08-21
 
@@ -196,9 +196,10 @@ indeterminate external outcome requires `waiting`.
 
 - **JX-THREAD-001.** Creating a Thread MUST durably record its Agent snapshot
   before the Thread becomes visible.
-- **JX-THREAD-002.** `send(input)` MUST accept non-empty input while `idle` or
-  `running` and durably append it. Input accepted while `idle` starts the Agent
-  automatically; input accepted while `running` is queued in Event order.
+- **JX-THREAD-002.** `send(input)` MUST accept non-empty text or structured
+  ordered text-and-image input while `idle` or `running` and durably append it.
+  Input accepted while `idle` starts the Agent automatically; input accepted
+  while `running` is queued in Event order.
 - **JX-THREAD-003.** A final model response with no Tool calls MUST start the
   next queued input automatically, or return the same Thread to `idle` when the
   queue is empty.
@@ -218,6 +219,15 @@ indeterminate external outcome requires `waiting`.
   delivery guarantees in §8. `send` while `waiting` or `paused` MUST fail with a
   typed status error unless a separately specified operation satisfies the wait
   or continues the Thread.
+- **JX-THREAD-014.** A structured input MUST preserve the exact order of its
+  text and image parts. Before `input.received` is appended, each image MUST be
+  validated, written as an immutable content-addressed Artifact, and replaced
+  in the Event and derived message by a bounded reference containing its
+  digest, media type, byte length, and presentation placeholder. Raw image
+  bytes MUST NOT enter Events, State, Checkpoints, Context Manifests, or
+  Signals. Queue activation, clear, Replay, recovery, and Fork MUST treat that
+  one structured value as the same accepted user input rather than creating an
+  attachment lifecycle or second message history.
 
 `waiting` and `paused` are not synonyms. Waiting records a named condition;
 paused records an explicit administrative stop.
@@ -257,10 +267,12 @@ interface ThreadEvent<TType extends string, TPayload> {
 - **JX-EVT-004.** Events MUST be immutable after append.
 - **JX-EVT-005.** Correlation metadata MAY group work but MUST NOT replace
   Thread or Event identity.
-- **JX-EVT-006.** Event schema version 5 is the current Thread schema. During
-  pre-release development, every other Event schema version MUST fail closed;
-  incompatible local development Threads are deleted and recreated rather than
-  hidden behind runtime upcasters.
+- **JX-EVT-006.** Event schema version 6 is the current Thread schema. Version 5
+  remains readable only for its historical text-only Event shapes so existing
+  Threads can continue by appending version 6 Events; it MUST reject fields
+  introduced by version 6 instead of silently discarding them. Every other
+  Event schema version MUST fail closed. This narrow decoder compatibility is
+  not an upcaster and MUST NOT rewrite stored Events.
 
 The v0.4 families are:
 
@@ -409,6 +421,15 @@ routing authority.
   `/v1` root or `/v1/messages` below an origin-style root. Standard Anthropic
   authentication uses `x-api-key`; a recognized OpenRouter Messages endpoint
   uses its required Bearer authorization without exposing either credential.
+- **JX-PROV-007.** Both first-party protocols MUST preserve ordered user text
+  and image parts. OpenAI Chat Completions MUST encode a verified image
+  Artifact as an inline `image_url` data URL; Anthropic Messages MUST encode it
+  as a base64 `image` source with the same media type. Artifact reads MUST
+  verify digest and byte length before the provider request is dispatched. A
+  missing, corrupt, oversized, or unsupported Artifact MUST produce a typed
+  model failure and zero provider calls; a configured model that rejects image
+  input remains an ordinary typed provider failure and MUST NOT trigger hidden
+  model or protocol fallback.
 
 ## 9. Continuity operations
 
@@ -750,6 +771,15 @@ await thread.send("Now challenge the strongest assumption.");
 
 const reopened = await harness.openThread(thread.id);
 const threads = await harness.listThreads();
+
+await thread.send({
+  content: [
+    { type: "text", text: "Compare " },
+    { type: "image", data: firstPng, mediaType: "image/png" },
+    { type: "text", text: " with " },
+    { type: "image", data: secondJpeg, mediaType: "image/jpeg" },
+  ],
+});
 ```
 
 The public Harness exposes:
@@ -1065,6 +1095,26 @@ not own execution truth.
   missing-Key state. A settings change applies only when a new immutable Agent
   and Harness are constructed; it MUST NOT mutate the selected Thread's Agent
   snapshot or Driver closure in place.
+- **JX-TUI-035.** While the Composer is focused, pasting an image from a
+  supported local host clipboard MUST insert a stable textual placeholder such
+  as `[pasted image 1]` at the current editor selection and retain the bounded
+  bytes only in transient Composer state until submission. Before those bytes
+  enter Composer state, the reference application MUST validate the declared
+  source format, apply encoded orientation, and normalize the accepted image to
+  lossless PNG. A normalized image MUST be at most 4 MiB and 4,194,304 pixels,
+  with neither edge greater than 4,096 pixels. Downsampling MUST preserve aspect
+  ratio and use an area-quality kernel; a conforming source PNG MAY be retained
+  byte-for-byte. GIF input uses only its first frame, and animated input is not
+  preserved. The original source bytes MUST be released after normalization and
+  MUST NOT enter Composer state, an Artifact, or durable data. Multiple image
+  pastes MUST preserve editor and provider-part order; deleting a placeholder
+  before submission omits that image. Ordinary bracketed text paste MUST retain
+  its exact decoded text when no image is available. `Ctrl+V`, and `Cmd+V` when
+  the terminal forwards that key, MUST offer the same host-clipboard read as a
+  deterministic fallback because terminal paste streams do not reliably carry
+  image bytes or MIME metadata. The Composer and transcript MAY show only the
+  placeholders and MUST NOT require terminal image protocols or render raw
+  image data.
 
 Configuration uses one local BYOK settings file with restrictive POSIX
 permissions and never records secrets in Thread data.
@@ -1093,6 +1143,15 @@ permissions and never records secrets in Thread data.
   settings path and missing field but MUST NOT contain the configured Key,
   Authorization header, upstream request headers, or an upstream body that
   could echo credentials.
+- **JX-SEC-009.** Structured image input MUST accept only PNG, JPEG, GIF, and
+  WebP whose signature matches the declared media type. One image is bounded
+  to 8 MiB, one input to ten images and 16 MiB of raw image data, and every
+  public and persisted placeholder is bounded text. Images and their Artifact
+  references are private Thread content. Provider payload encoding is
+  transient; base64 image data MUST NOT enter durable errors, logs, Context
+  Manifests, or Signals. The reference Composer MUST enforce its 8 MiB source
+  bound before image decode and the 16 MiB source-total bound independently of
+  the smaller normalized PNG bytes described by JX-TUI-035.
 
 ## 16. Package boundaries
 
@@ -1488,6 +1547,22 @@ implement another TUI, Harness, or Thread lifecycle.
   a GitHub Release MUST publish the exact npm candidate rather than enter a
   distinct build channel. Unsupported channels, including a fresh
   `github-release` or generic direct-distribution build, fail closed.
+- **JX-AC-052 — Durable pasted-image input.** With a supported local clipboard,
+  two pasted images create `[pasted image 1]` and `[pasted image 2]` at their
+  editor positions without rendering terminal images. JPEG and oversized PNG
+  clipboard sources are orientation-corrected and area-downsampled when needed,
+  then become valid PNG bytes within the JX-TUI-035 pixel, edge, and byte bounds;
+  the source bytes are not retained. Submission appends one version 6
+  `input.received` Event containing ordered text/image references and no raw
+  bytes; each referenced Artifact round-trips and verifies in every Store
+  adapter. Replay invokes no provider and reproduces the same placeholders and
+  message parts; recovery and queued activation preserve them; Fork keeps the
+  same immutable Artifact references. OpenAI Chat Completions receives
+  interleaved text and inline `image_url` parts, while Anthropic Messages
+  receives equivalent text and base64 image blocks. A corrupt Artifact causes
+  a typed failure before either fake provider client is called, malformed or
+  over-limit clipboard images are rejected before submission, and ordinary
+  text paste remains unchanged.
 
 The minimum validation for a code change is targeted tests, typecheck, lint, and
 `git diff --check`. Release work also runs the complete acceptance suite and
@@ -1843,6 +1918,30 @@ cannot be rebuilt or re-signed under the same version. Homebrew retains its
 separate Developer ID and notarization requirement. This changes distribution
 and trust policy only; it changes no package version, executable bytes, Thread,
 Event, State, configuration, or stored data.
+
+Version 0.4.36 adds ordered text-and-image Thread input and pasted-image support
+to the reference Composer. Image bytes are stored once as digest-verified
+immutable Artifacts; Events, State, queued input, Replay, recovery, and Fork
+carry only bounded references and placeholders. OpenAI Chat Completions and
+Anthropic Messages materialize equivalent inline image blocks only at Driver
+dispatch. Event schema version 6 adds structured input parts. Historical
+version 5 text-only Events remain readable without rewriting and a continued
+Thread appends version 6 Events; version 5 data containing version 6 fields
+fails closed. Reducer version 13 invalidates disposable Checkpoints. This adds
+no model-capability registry, upload service, terminal image rendering, or
+provider fallback.
+
+Version 0.4.37 makes the reference Composer normalize accepted clipboard images
+before they become pending input. The application validates and orientation-
+corrects the supported source, uses area downsampling to bound dimensions and
+encoded size, and stores only the resulting lossless PNG. A conforming source
+PNG may remain byte-identical; animation is intentionally reduced to the first
+supported frame. The public structured-input API continues to accept bounded
+PNG, JPEG, GIF, and WebP, so this changes no Event schema, Reducer version,
+Artifact reference shape, provider contract, or stored-data migration. The
+pure-JavaScript PNG encoder and its transitive license notice are bundled into
+the standalone CLI and every native platform tarball through the authoritative
+artifact pipeline.
 
 ## 19. Implementation order
 

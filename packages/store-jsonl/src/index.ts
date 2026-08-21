@@ -14,6 +14,9 @@ import { randomUUID } from "node:crypto";
 import {
   decodeCheckpoint,
   decodeThreadEvent,
+  ArtifactError,
+  assertArtifactBytes,
+  assertArtifactReference,
   InvalidTransitionError,
   replayEvents,
   RevisionConflictError,
@@ -22,6 +25,7 @@ import {
 } from "jixu-core";
 import type {
   AnyThreadEvent,
+  ArtifactReference,
   Checkpoint,
   EventStore,
 } from "jixu-core";
@@ -43,6 +47,7 @@ function threadIdFromFileName(fileName: string): string {
 }
 
 export class JsonlEventStore implements EventStore {
+  readonly #artifactDirectory: string;
   readonly #checkpointDirectory: string;
   readonly #eventIds = new Set<string>();
   readonly #initialization: Promise<void>;
@@ -50,12 +55,14 @@ export class JsonlEventStore implements EventStore {
   #writeTail: Promise<void> = Promise.resolve();
 
   constructor(directory: string) {
+    this.#artifactDirectory = join(directory, "artifacts");
     this.#threadDirectory = join(directory, "threads");
     this.#checkpointDirectory = join(directory, "checkpoints");
     this.#initialization = this.#initialize();
   }
 
   async #initialize(): Promise<void> {
+    await mkdir(this.#artifactDirectory, { recursive: true });
     await mkdir(this.#threadDirectory, { recursive: true });
     await mkdir(this.#checkpointDirectory, { recursive: true });
     const entries = await readdir(this.#threadDirectory, { withFileTypes: true });
@@ -92,6 +99,11 @@ export class JsonlEventStore implements EventStore {
     return join(this.#checkpointDirectory, `${encodeURIComponent(threadId)}.json`);
   }
 
+  #artifactPath(reference: ArtifactReference): string {
+    assertArtifactReference(reference);
+    return join(this.#artifactDirectory, reference.digest.slice("sha256:".length));
+  }
+
   async #writeNew(path: string, contents: string): Promise<void> {
     const temporary = `${path}.${randomUUID()}.tmp`;
     await writeFile(temporary, contents, { encoding: "utf8", flag: "wx" });
@@ -100,6 +112,51 @@ export class JsonlEventStore implements EventStore {
     } finally {
       await unlink(temporary).catch(() => undefined);
     }
+  }
+
+  async #writeNewBytes(path: string, bytes: Uint8Array): Promise<void> {
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    await writeFile(temporary, bytes, { flag: "wx" });
+    try {
+      await link(temporary, path);
+    } finally {
+      await unlink(temporary).catch(() => undefined);
+    }
+  }
+
+  async putArtifact(
+    reference: ArtifactReference,
+    bytes: Uint8Array,
+  ): Promise<void> {
+    await this.#initialization;
+    await assertArtifactBytes(reference, bytes);
+    await this.#withWriteLock(async () => {
+      try {
+        await this.#writeNewBytes(this.#artifactPath(reference), bytes);
+      } catch (error) {
+        if (errorCode(error) !== "EEXIST") throw error;
+        const existing = await readFile(this.#artifactPath(reference));
+        await assertArtifactBytes(reference, existing);
+      }
+    });
+  }
+
+  async readArtifact(reference: ArtifactReference): Promise<Uint8Array> {
+    await this.#initialization;
+    let bytes: Uint8Array;
+    try {
+      bytes = await readFile(this.#artifactPath(reference));
+    } catch (error) {
+      if (errorCode(error) === "ENOENT") {
+        throw new ArtifactError(
+          "artifact_missing",
+          `Image Artifact ${reference.digest} does not exist`,
+        );
+      }
+      throw error;
+    }
+    await assertArtifactBytes(reference, bytes);
+    return Uint8Array.from(bytes);
   }
 
   async #replace(path: string, contents: string): Promise<void> {

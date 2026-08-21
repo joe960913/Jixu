@@ -18,6 +18,7 @@ import {
 import type {
   AgentConfig,
   AnyThreadEvent,
+  ArtifactReference,
   Checkpoint,
   EventStore,
   JsonObject,
@@ -55,6 +56,17 @@ class CrashStore implements EventStore {
       return Promise.reject(new Error("simulated process stop"));
     }
     return this.#inner.append(threadId, expectedRevision, event);
+  }
+
+  putArtifact(
+    reference: ArtifactReference,
+    bytes: Uint8Array,
+  ): Promise<void> {
+    return this.#inner.putArtifact(reference, bytes);
+  }
+
+  readArtifact(reference: ArtifactReference): Promise<Uint8Array> {
+    return this.#inner.readArtifact(reference);
   }
 
   createFork(threadId: string, events: readonly AnyThreadEvent[]): Promise<void> {
@@ -640,7 +652,7 @@ test("JX-AC-009 pause survives restart and only continue dispatches ready work",
   assert.equal(executions, 1);
 });
 
-test("JX-AC-006 JX-AC-007 JX-AC-028 fork is isolated, replay is inert, and accounting is inherited", async () => {
+test("JX-AC-006 JX-AC-007 JX-AC-028 JX-AC-052 fork preserves Artifact references while replay stays inert", async () => {
   const driver = new SequenceModelDriver([
     succeed({ content: "parent", toolCalls: [] }),
     succeed({ content: "child", toolCalls: [] }),
@@ -653,8 +665,26 @@ test("JX-AC-006 JX-AC-007 JX-AC-028 fork is isolated, replay is inert, and accou
     store,
   });
   const parent = await harness.createThread();
-  await parent.send("parent input");
+  await parent.send({
+    content: [
+      { text: "parent ", type: "text" },
+      {
+        data: Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 7]),
+        mediaType: "image/png",
+        placeholder: "pasted image 1",
+        type: "image",
+      },
+    ],
+  });
   const parentEvents = await parent.events();
+  const parentInput = parentEvents.find(
+    (event) => event.type === "input.received",
+  );
+  assert.notEqual(parentInput, undefined);
+  const parentImage = parentInput?.payload.parts?.find(
+    (part) => part.type === "image",
+  );
+  assert.notEqual(parentImage, undefined);
   const forkPoint = parentEvents.at(-1);
   assert.notEqual(forkPoint, undefined);
   if (forkPoint === undefined) return;
@@ -671,6 +701,16 @@ test("JX-AC-006 JX-AC-007 JX-AC-028 fork is isolated, replay is inert, and accou
     child.id,
     childEvents.slice(0, forkSequence + 1),
   );
+  const childParentImage = childEvents
+    .find((event) => event.type === "input.received")
+    ?.payload.parts?.find((part) => part.type === "image");
+  assert.deepEqual(childParentImage, parentImage);
+  if (childParentImage?.type === "image") {
+    assert.equal(
+      (await store.readArtifact(childParentImage.artifact)).byteLength,
+      childParentImage.artifact.byteLength,
+    );
+  }
   assert.deepEqual(childAtFork.metrics, parentState.metrics);
   const callsBeforeReplay = driver.effects.length;
   assert.deepEqual(await child.replay(), await child.state());
