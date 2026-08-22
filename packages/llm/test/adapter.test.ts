@@ -451,7 +451,21 @@ function compactionEffect(
       previousHandoff: null,
       sourceEventIds: ["event-source"],
       sourceFromSequence: 2,
-      sourceManifest: [],
+      sourceManifest: [
+        {
+          causedByEventId: "event-source",
+          digest: null,
+          disposition: "included",
+          estimatedTokens: 10,
+          id: "message:event-source",
+          kind: "message",
+          priority: 100,
+          reason: "llm-adapter-fixture",
+          sensitivity: "private",
+          trust: "accepted",
+          version: "1",
+        },
+      ],
       sourceMessageThroughSequence: 2,
       sourceMessages: [{ content: "Preserve this source", role: "user" }],
       sourceThreadId: "thread-1",
@@ -529,6 +543,42 @@ test("JX-PROV-009 JX-PROV-011 JX-AC-023 JX-AC-025 JX-AC-055 protocols compact on
   ]);
   assert.deepEqual(chatCompactionClient.body?.tools, []);
   assert.match(JSON.stringify(chatCompactionClient.body?.messages), /sourceEventIds/u);
+  assert.match(
+    JSON.stringify(chatCompactionClient.body?.messages),
+    /sourceMessageBindings/u,
+  );
+  const chatMetadataMessage = chatCompactionClient.body?.messages[1];
+  assert.equal(chatMetadataMessage?.role, "user");
+  assert.ok(typeof chatMetadataMessage.content === "string");
+  const chatMetadata = JSON.parse(
+    chatMetadataMessage.content.replace("Accepted source metadata:\n", ""),
+  ) as Record<string, unknown>;
+  assert.deepEqual(chatMetadata.sourceMessageBindings, [
+    {
+      contentAnchor: "Preserve this source",
+      messageIndex: 0,
+      role: "user",
+      sourceEventId: "event-source",
+    },
+  ]);
+
+  const invalidBindingClient = new FakeOpenAIChatClient(chatCompactionChunks());
+  const invalidBindingEffect = compactionEffect("chat-provider");
+  const invalidBinding = await createLLMModelDriver({
+    api: "openai-chat-completions",
+    baseURL: "https://chat.example/v1",
+    openAIChatCompletionsClient: invalidBindingClient,
+    provider: "chat-provider",
+  }).compact!(
+    {
+      ...invalidBindingEffect,
+      input: { ...invalidBindingEffect.input, sourceManifest: [] },
+    },
+    context(),
+  );
+  assert.equal(invalidBinding.status, "failed");
+  assert.equal(invalidBinding.error.code, "chat-provider_context_source_invalid");
+  assert.equal(invalidBindingClient.body, undefined);
 
   const anthropicCompactionClient = new FakeAnthropicClient(
     anthropicCompactionEvents(),
@@ -552,6 +602,24 @@ test("JX-PROV-009 JX-PROV-011 JX-AC-023 JX-AC-025 JX-AC-055 protocols compact on
   ]);
   assert.deepEqual(anthropicCompactionClient.body?.tools, []);
   assert.match(JSON.stringify(anthropicCompactionClient.body?.system), /sourceEventIds/u);
+  assert.match(
+    JSON.stringify(anthropicCompactionClient.body?.messages),
+    /sourceMessageBindings/u,
+  );
+  const anthropicMetadataMessage = anthropicCompactionClient.body?.messages[0];
+  assert.equal(anthropicMetadataMessage?.role, "user");
+  assert.ok(typeof anthropicMetadataMessage.content === "string");
+  const anthropicMetadata = JSON.parse(
+    anthropicMetadataMessage.content.replace("Accepted source metadata:\n", ""),
+  ) as Record<string, unknown>;
+  assert.deepEqual(anthropicMetadata.sourceMessageBindings, [
+    {
+      contentAnchor: "Preserve this source",
+      messageIndex: 0,
+      role: "user",
+      sourceEventId: "event-source",
+    },
+  ]);
 
   const openRouterMessagesCompactionClient = new FakeAnthropicClient(
     anthropicCompactionEvents(),

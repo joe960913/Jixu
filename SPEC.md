@@ -1,8 +1,8 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.44
+**Version:** 0.4.45
 **Status:** normative, pre-1.0
-**Last updated:** 2026-08-22
+**Last updated:** 2026-08-23
 
 ## 1. Product definition
 
@@ -511,6 +511,16 @@ routing authority.
   Required streaming, Tool, structured-output, and explicit `ultra` effort
   controls are not sampling defaults and remain governed by `JX-PROV-008` and
   `JX-PROV-009`.
+- **JX-PROV-012.** Every built-in model-capability catalogue entry MUST carry
+  one versioned maintenance identity, exact positive hard limits, bounded model
+  match examples, and a primary-source evidence URL with its verification date.
+  A deterministic repository audit MUST reject overlapping examples, invalid
+  limits, unsupported evidence origins, and a catalogue revision that does not
+  match its newest entry. Runtime resolution MUST remain local and fail closed;
+  evidence-only re-verification MUST NOT change the immutable profile identity,
+  while a hard-limit or matcher change MUST advance that entry's profile revision.
+  The audit metadata MUST NOT add a runtime network request, mutable registry,
+  provider routing authority, or fallback for an unknown model.
 
 ## 9. Continuity operations
 
@@ -714,6 +724,17 @@ metadata. It is not the default for a new current-schema Agent.
   and recovery. It is request context, not another Event history, lifecycle,
   or source of authority. Provider adapters may format it but MUST NOT infer or
   alter its semantics.
+- **JX-CTX-017.** The repository MUST maintain a versioned, synthetic Context
+  quality corpus and deterministic evaluator for Continuity Handoff fidelity.
+  Corpus expectations MUST remain source-linked and distinguish critical facts,
+  unsupported facts, invalid citations, forbidden claims, and repeated-compaction
+  preservation. The offline evaluator MUST perform no network request and MUST
+  exercise both first-party compaction protocol shapes through recorded fixtures.
+  Optional live probes MUST call the ordinary `ModelDriver.compact` boundary,
+  require an explicit paid-request acknowledgement before reading credentials or
+  using the network, keep credentials out of configuration and reports, and emit
+  redacted quality and accounting observations. Evaluation artifacts are
+  maintainer evidence, not Thread authority, model routing, or runtime telemetry.
 
 ### 10.3 Adaptive compaction and Continuity Handoff
 
@@ -1790,6 +1811,21 @@ implement another TUI, Harness, or Thread lifecycle.
   Store-readiness rejection is observed before activation and becomes the
   ordinary in-workspace connection inspection without an unhandled rejection or
   renderer Console overlay.
+- **JX-AC-058 — Context quality and catalogue maintenance gate.** A checked-in
+  synthetic corpus covers an initial Handoff, a repeated compaction, adversarial
+  source text, objective, constraints, permissions, `do-not-retry`, Artifact,
+  validation, and exact next-action facts. Recorded OpenAI Chat Completions and
+  Anthropic Messages fixtures both pass the same deterministic evaluator with
+  100% expected and critical fact recall, 100% valid source citations, zero
+  unsupported facts, and zero forbidden claims. Mutation fixtures prove that a
+  missing critical fact, out-of-range citation, unsupported fact, or forbidden
+  claim fails the gate. The report includes the portable estimator value and any
+  provider-reported input usage without treating either as the other. A
+  credential-free catalogue audit verifies every built-in OpenAI and DeepSeek
+  entry's limits, examples, primary-source evidence, verification date, and
+  revision. An opt-in live run over one exact model for each first-party protocol
+  uses the same corpus and thresholds, discloses its exact maximum paid request
+  count before dispatch, and writes no credential or raw private Thread data.
 
 The minimum validation for a code change is targeted tests, typecheck, lint, and
 `git diff --check`. Release work also runs the complete acceptance suite and
@@ -2275,6 +2311,18 @@ misleading full-page `Loading saved endpoint configuration` view; success and
 failure settle through the same workspace. This changes no provider request,
 Thread authority, secret storage, model routing, or destructive data policy.
 
+Version 0.4.45 adds a release-blocking Context quality and catalogue maintenance
+gate without changing runtime Thread semantics. A checked-in synthetic corpus,
+deterministic evaluator, and two recorded protocol fixtures measure source-linked
+Handoff recall, citation validity, unsupported facts, forbidden claims, repeated
+compaction preservation, and estimator observations. Built-in capability entries
+now carry primary-source maintenance evidence that is audited locally while
+runtime resolution remains network-free for recognized direct catalogues. A
+separate opt-in live probe requires an exact paid-request acknowledgement before
+credential access or network dispatch. This adds no Event, State, Reducer,
+Context Manifest, Handoff schema, provider routing, Memory, or stored-data
+migration.
+
 ## 19. Implementation order
 
 1. Reconcile public and durable Runtime/Run remnants to Harness/Thread and keep
@@ -2287,8 +2335,10 @@ Thread authority, secret storage, model routing, or destructive data policy.
    immutable Handoff Artifacts, and adaptive safe-boundary compaction.
 5. Align progressive Skills, Tool disclosure, policy, model adapters, and the
    reference TUI with the same Context and Thread path.
-6. Run targeted acceptance, Store and Driver contracts, typecheck, lint,
-   package portability, and the ordinary public Harness path.
+6. Run targeted acceptance, Store and Driver contracts, the offline Context
+   quality and catalogue gate, typecheck, lint, package portability, and the
+   ordinary public Harness path. Run paid Context quality probes only through
+   their explicit opt-in boundary.
 7. Build, channel-appropriate sign, pack, and target-test the installed `jixu`
    command and its platform executable packages before any public registry
    publication.

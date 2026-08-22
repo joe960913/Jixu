@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "probes": [
+    {
+      "id": "openrouter-openai",
+      "api": "openai-chat-completions",
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "baseURL": "https://openrouter.ai/api/v1",
+      "model": "openai/gpt-5.6-luna"
+    },
+    {
+      "id": "openrouter-anthropic",
+      "api": "anthropic-messages",
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "baseURL": "https://openrouter.ai/api/v1",
+      "model": "anthropic/claude-sonnet-5"
+    }
+  ]
+}

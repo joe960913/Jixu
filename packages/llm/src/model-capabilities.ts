@@ -8,6 +8,10 @@ import type {
   JsonValue,
   ModelCapabilityProfile,
 } from "jixu-core";
+import {
+  MODEL_CAPABILITY_CATALOG,
+  type ModelCapabilityCatalogEntry,
+} from "./model-capability-catalog.ts";
 
 export type LLMCapabilityApi =
   | "anthropic-messages"
@@ -45,61 +49,8 @@ export class ModelCapabilityResolutionError extends TypeError {
   }
 }
 
-const MODEL_CATALOG_REVISION = "2026-08-22";
 const MAX_METADATA_BYTES = 256 * 1024;
 const DEFAULT_METADATA_TIMEOUT_MS = 10_000;
-
-interface CatalogEntry {
-  readonly contextWindowTokens: number;
-  readonly maxOutputTokens: number;
-  readonly matches: RegExp;
-}
-
-const OPENAI_CATALOG: readonly CatalogEntry[] = Object.freeze([
-  {
-    contextWindowTokens: 1_050_000,
-    matches: /^gpt-5\.6(?:-(?:sol|terra|luna))?(?:-\d{4}-\d{2}-\d{2})?$/u,
-    maxOutputTokens: 128_000,
-  },
-  {
-    contextWindowTokens: 1_050_000,
-    matches: /^gpt-5\.4(?:-\d{4}-\d{2}-\d{2})?$/u,
-    maxOutputTokens: 128_000,
-  },
-  {
-    contextWindowTokens: 400_000,
-    matches: /^gpt-5\.(?:1|2)(?:-\d{4}-\d{2}-\d{2})?$/u,
-    maxOutputTokens: 128_000,
-  },
-  {
-    contextWindowTokens: 400_000,
-    matches: /^gpt-5(?:-(?:mini|nano))?(?:-\d{4}-\d{2}-\d{2})?$/u,
-    maxOutputTokens: 128_000,
-  },
-  {
-    contextWindowTokens: 1_047_576,
-    matches: /^gpt-4\.1(?:-(?:mini|nano))?(?:-\d{4}-\d{2}-\d{2})?$/u,
-    maxOutputTokens: 32_768,
-  },
-  {
-    contextWindowTokens: 200_000,
-    matches: /^(?:o3|o4-mini)(?:-\d{4}-\d{2}-\d{2})?$/u,
-    maxOutputTokens: 100_000,
-  },
-  {
-    contextWindowTokens: 128_000,
-    matches: /^gpt-4o(?:-mini)?(?:-\d{4}-\d{2}-\d{2})?$/u,
-    maxOutputTokens: 16_384,
-  },
-]);
-
-const DEEPSEEK_CATALOG: readonly CatalogEntry[] = Object.freeze([
-  {
-    contextWindowTokens: 1_000_000,
-    matches: /^deepseek-v4-(?:flash|pro)$/u,
-    maxOutputTokens: 384_000,
-  },
-]);
 
 function normalizedBaseUrl(value: string): URL {
   let url: URL;
@@ -159,7 +110,7 @@ function isDirectDeepSeek(url: URL, api: LLMCapabilityApi): boolean {
 
 function catalogueProfile(
   model: string,
-  entries: readonly CatalogEntry[],
+  entries: readonly ModelCapabilityCatalogEntry[],
   name: string,
 ): ModelCapabilityProfile | null {
   const normalized = model.trim().toLowerCase();
@@ -171,7 +122,7 @@ function catalogueProfile(
     resolvedModel: normalized,
     source: {
       kind: "catalog",
-      name: `${name}@${MODEL_CATALOG_REVISION}`,
+      name: `${name}@${entry.profileRevision}`,
     },
   });
 }
@@ -393,12 +344,16 @@ export async function resolveLLMModelCapabilities(
 
   const host = endpointHost(base);
   if (isDirectOpenAI(base)) {
-    const profile = catalogueProfile(model, OPENAI_CATALOG, "openai-official");
+    const profile = catalogueProfile(
+      model,
+      MODEL_CAPABILITY_CATALOG.filter((entry) => entry.provider === "openai"),
+      "openai-official",
+    );
     if (profile !== null) return profile;
   } else if (isDirectDeepSeek(base, config.api)) {
     const profile = catalogueProfile(
       model,
-      DEEPSEEK_CATALOG,
+      MODEL_CAPABILITY_CATALOG.filter((entry) => entry.provider === "deepseek"),
       "deepseek-official",
     );
     if (profile !== null) return profile;
