@@ -27,6 +27,7 @@ export interface Thread {
   ): Promise<ThreadState>;
   events(): Promise<readonly AnyThreadEvent[]>;
   fork(options: ForkOptions): Promise<Thread>;
+  interrupt(): Promise<ThreadState>;
   pause(): Promise<ThreadState>;
   replay(): Promise<ThreadState>;
   setMode(mode: ThreadMode): Promise<ThreadState>;

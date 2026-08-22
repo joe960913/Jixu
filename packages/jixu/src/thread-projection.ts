@@ -78,8 +78,11 @@ export function eventActivity(
         ...base,
         detail: event.payload.error.code,
         kind: "model",
-        label: "Context compaction failed",
-        tone: "danger",
+        label:
+          event.payload.disposition === "cancelled"
+            ? "Context compaction cancelled"
+            : "Context compaction failed",
+        tone: event.payload.disposition === "cancelled" ? "warning" : "danger",
       };
     case "model.requested":
       return {
@@ -101,6 +104,13 @@ export function eventActivity(
           event.payload.response.content.trim().length > 0
             ? "success"
             : "info",
+      };
+    case "model.cancelled":
+      return {
+        ...base,
+        kind: "runtime",
+        label: "Model response interrupted",
+        tone: "warning",
       };
     case "model.failed":
       return {
@@ -154,6 +164,14 @@ export function eventActivity(
         label: "Tool completed",
         tone: "success",
       };
+    case "tool.cancelled":
+      return {
+        ...base,
+        detail: event.payload.name,
+        kind: "tool",
+        label: "Tool cancelled before start",
+        tone: "warning",
+      };
     case "tool.failed":
       return {
         ...base,
@@ -168,6 +186,20 @@ export function eventActivity(
       return { ...base, kind: "control", label: "Thread paused", tone: "warning" };
     case "thread.continued":
       return { ...base, kind: "control", label: "Thread continued", tone: "info" };
+    case "thread.interrupt_requested":
+      return {
+        ...base,
+        kind: "control",
+        label: "Response interruption requested",
+        tone: "warning",
+      };
+    case "thread.interrupted":
+      return {
+        ...base,
+        kind: "control",
+        label: "Response interrupted",
+        tone: "info",
+      };
     case "thread.waiting":
       return {
         ...base,
@@ -269,7 +301,11 @@ export function projectThread(
         });
       }
     }
-    if (event.type === "tool.completed" || event.type === "tool.failed") {
+    if (
+      event.type === "tool.cancelled" ||
+      event.type === "tool.completed" ||
+      event.type === "tool.failed"
+    ) {
       const operationIndex = toolOperations.findIndex(
         (operation) => operation.effectId === event.payload.effectId,
       );
@@ -299,8 +335,11 @@ export function projectThread(
       }
     }
 
-    if (event.type === "model.completed") {
-      const content = event.payload.response.content;
+    if (event.type === "model.completed" || event.type === "model.cancelled") {
+      const content =
+        event.type === "model.completed"
+          ? event.payload.response.content
+          : event.payload.content;
       if (content.trim().length === 0) continue;
       transcript.push({
         content,

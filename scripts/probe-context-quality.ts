@@ -296,7 +296,9 @@ for (const probe of config.probes) {
     const outcome = await compact(effect, contextQualityDriverContext);
     if (outcome.status !== "succeeded") {
       throw new Error(
-        `${probe.id} ${testCase.id} failed: ${outcome.error.code}: ${outcome.error.message}`,
+        outcome.status === "cancelled"
+          ? `${probe.id} ${testCase.id} was cancelled`
+          : `${probe.id} ${testCase.id} failed: ${outcome.error.code}: ${outcome.error.message}`,
       );
     }
     const result = evaluateContextQualityCase(

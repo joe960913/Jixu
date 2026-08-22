@@ -186,6 +186,7 @@ export interface ThreadState {
   readonly contextClearBoundary: ContextBoundary | null;
   readonly error: DriverError | null;
   readonly inputQueue: readonly QueuedInput[];
+  readonly interruptRequested: boolean;
   readonly lineage: ForkLineage | null;
   readonly messages: readonly ModelMessage[];
   readonly messageSources: readonly ModelMessageSource[];
@@ -224,6 +225,7 @@ export function createInitialThreadState(threadId: string): ThreadState {
     contextClearBoundary: null,
     error: null,
     inputQueue: [],
+    interruptRequested: false,
     lineage: null,
     messages: [],
     messageSources: [],

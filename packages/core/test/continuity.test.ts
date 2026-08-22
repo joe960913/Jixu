@@ -102,6 +102,39 @@ class CrashStore implements EventStore {
   }
 }
 
+class DelayedToolRequestStore extends InMemoryEventStore {
+  readonly requestAppended: Promise<void>;
+  #releaseRequest!: () => void;
+  #resolveRequestAppended!: () => void;
+  #triggered = false;
+
+  constructor() {
+    super();
+    this.requestAppended = new Promise((resolve) => {
+      this.#resolveRequestAppended = resolve;
+    });
+  }
+
+  override async append(
+    threadId: string,
+    expectedRevision: number,
+    event: AnyThreadEvent,
+  ): Promise<void> {
+    await super.append(threadId, expectedRevision, event);
+    if (!this.#triggered && event.type === "tool.requested") {
+      this.#triggered = true;
+      this.#resolveRequestAppended();
+      await new Promise<void>((resolve) => {
+        this.#releaseRequest = resolve;
+      });
+    }
+  }
+
+  releaseRequest(): void {
+    this.#releaseRequest();
+  }
+}
+
 const objectSchema = defineSchema<JsonObject>({
   jsonSchema: { type: "object" },
   parse(value: unknown): JsonObject {
@@ -664,6 +697,232 @@ test("JX-AC-009 pause survives restart and only continue dispatches ready work",
   assert.equal(executions, 0);
   assert.equal((await reopened.continue()).status, "idle");
   assert.equal(executions, 1);
+});
+
+test("JX-AC-059 interrupt durably cancels one model turn without creating resumable work", async () => {
+  let started!: () => void;
+  const modelStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const driver: ModelDriver = {
+    generate(_effect, context) {
+      started();
+      return new Promise((resolve) => {
+        context.cancellation.addEventListener(
+          "abort",
+          () => resolve({
+            accounting: EMPTY_MODEL_ACCOUNTING,
+            cancelledContent: "Partial answer",
+            status: "cancelled",
+          }),
+          { once: true },
+        );
+      });
+    },
+  };
+  const store = new InMemoryEventStore();
+  const harness = createHarness({
+    agent: defineTestAgent(),
+    modelDrivers: { mock: driver },
+    store,
+  });
+  const thread = await harness.createThread();
+  const sending = thread.send("Explain until I stop you");
+  await modelStarted;
+
+  const [interrupted, sendResult] = await Promise.all([
+    thread.interrupt(),
+    sending,
+  ]);
+  const events = await thread.events();
+
+  assert.equal(interrupted.status, "idle");
+  assert.equal(sendResult.status, "idle");
+  assert.equal(interrupted.result, "Partial answer");
+  assert.equal(interrupted.error, null);
+  assert.equal(interrupted.interruptRequested, false);
+  assert.equal(interrupted.metrics.model.cancelled, 1);
+  assert.deepEqual(
+    events.slice(-3).map((event) => event.type),
+    ["thread.interrupt_requested", "model.cancelled", "thread.interrupted"],
+  );
+  assert.equal(
+    events.some(
+      (event) => event.type === "thread.paused" || event.type === "thread.continued",
+    ),
+    false,
+  );
+  await assert.rejects(thread.continue(), /cannot continue while idle/);
+
+  const reopened = await createHarness({
+    agent: defineTestAgent(),
+    modelDrivers: {
+      mock: new SequenceModelDriver([
+        succeed({ content: "A new answer", toolCalls: [] }),
+      ]),
+    },
+    store,
+  }).openThread(thread.id);
+  const next = await reopened.send("Now answer a new question");
+  assert.equal(next.status, "idle");
+  assert.equal(next.result, "A new answer");
+  assert.equal(next.messages.at(-1)?.role, "assistant");
+});
+
+test("JX-AC-059 interrupt cancels a durably requested Tool before Driver dispatch", async () => {
+  const store = new DelayedToolRequestStore();
+  let executions = 0;
+  const tool = defineTool({
+    description: "Must not start after interruption",
+    execute: () => {
+      executions += 1;
+      return "unexpected";
+    },
+    idempotency: "idempotent",
+    input: objectSchema,
+    name: "not_started",
+    output: stringSchema,
+  });
+  const thread = await createHarness({
+    agent: defineTestAgent([tool]),
+    modelDrivers: {
+      mock: new SequenceModelDriver([
+        succeed({
+          content: "I will use the Tool.",
+          toolCalls: [
+            { arguments: {}, id: "not-started-1", name: "not_started" },
+          ],
+        }),
+      ]),
+    },
+    store,
+  }).createThread();
+  const sending = thread.send("Start only if I do not cancel");
+  await store.requestAppended;
+  const interrupting = thread.interrupt();
+  store.releaseRequest();
+
+  const [state] = await Promise.all([interrupting, sending]);
+  const events = await thread.events();
+  assert.equal(executions, 0);
+  assert.equal(state.status, "idle");
+  assert.equal(state.metrics.tools.cancelled, 1);
+  assert.deepEqual(
+    events.slice(-4).map((event) => event.type),
+    [
+      "tool.requested",
+      "thread.interrupt_requested",
+      "tool.cancelled",
+      "thread.interrupted",
+    ],
+  );
+});
+
+test("JX-AC-059 interrupt lets an already dispatched Tool reach its real outcome", async () => {
+  let toolStarted!: () => void;
+  let releaseTool!: () => void;
+  const started = new Promise<void>((resolve) => {
+    toolStarted = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    releaseTool = resolve;
+  });
+  let executions = 0;
+  const tool = defineTool({
+    description: "Already active Tool",
+    async execute() {
+      executions += 1;
+      toolStarted();
+      await gate;
+      return "real outcome";
+    },
+    idempotency: "idempotent",
+    input: objectSchema,
+    name: "already_started",
+    output: stringSchema,
+  });
+  const model = new SequenceModelDriver([
+    succeed({
+      content: "The Tool has started.",
+      toolCalls: [
+        { arguments: {}, id: "already-started-1", name: "already_started" },
+      ],
+    }),
+  ]);
+  const thread = await createHarness({
+    agent: defineTestAgent([tool]),
+    modelDrivers: { mock: model },
+  }).createThread();
+  const sending = thread.send("Start the Tool");
+  await started;
+  const interrupting = thread.interrupt();
+  releaseTool();
+
+  const [state] = await Promise.all([interrupting, sending]);
+  const events = await thread.events();
+  assert.equal(executions, 1);
+  assert.equal(model.effects.length, 1);
+  assert.equal(state.status, "idle");
+  assert.equal(events.some((event) => event.type === "tool.cancelled"), false);
+  assert.deepEqual(
+    events.slice(-3).map((event) => event.type),
+    ["thread.interrupt_requested", "tool.completed", "thread.interrupted"],
+  );
+});
+
+test("JX-AC-004 JX-AC-059 recovery never redispatches an interrupted model Effect", async () => {
+  const inner = new InMemoryEventStore();
+  const store = new CrashStore(inner, (event) => event.type === "model.cancelled");
+  let started!: () => void;
+  const modelStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const thread = await createHarness({
+    agent: defineTestAgent(),
+    modelDrivers: {
+      mock: {
+        generate(_effect, context) {
+          started();
+          return new Promise((resolve) => {
+            context.cancellation.addEventListener(
+              "abort",
+              () => resolve({ status: "cancelled" }),
+              { once: true },
+            );
+          });
+        },
+      },
+    },
+    store,
+  }).createThread();
+  const sending = thread.send("Interrupt and recover");
+  await modelStarted;
+  const results = await Promise.allSettled([thread.interrupt(), sending]);
+  assert.equal(results.every((result) => result.status === "rejected"), true);
+  assert.equal((await inner.read(thread.id)).at(-1)?.type, "thread.interrupt_requested");
+
+  let redispatches = 0;
+  const recovered = await createHarness({
+    agent: defineTestAgent(),
+    modelDrivers: {
+      mock: {
+        generate() {
+          redispatches += 1;
+          return Promise.resolve(
+            succeed({ content: "must not dispatch", toolCalls: [] }),
+          );
+        },
+      },
+    },
+    store: inner,
+  }).openThread(thread.id);
+  const state = await recovered.wait();
+  assert.equal(redispatches, 0);
+  assert.equal(state.status, "idle");
+  assert.deepEqual(
+    (await recovered.events()).slice(-2).map((event) => event.type),
+    ["model.cancelled", "thread.interrupted"],
+  );
 });
 
 test("JX-AC-006 JX-AC-007 JX-AC-028 JX-AC-052 fork preserves Artifact references while replay stays inert", async () => {

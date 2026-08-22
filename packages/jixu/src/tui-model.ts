@@ -62,6 +62,7 @@ export interface WorkStatus {
 }
 
 export type ToolOperationStatus =
+  | "cancelled"
   | "failed"
   | "indeterminate"
   | "running"

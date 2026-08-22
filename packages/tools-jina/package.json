@@ -1,6 +1,6 @@
 {
   "name": "jixu-tools-jina",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Opt-in Jina-backed Web Search Tool for Jixu.",
   "type": "module",
   "license": "MIT",

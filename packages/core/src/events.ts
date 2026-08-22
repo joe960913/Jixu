@@ -18,7 +18,7 @@ import type { ModelAccounting } from "./metrics.ts";
 import type { PlanSnapshot, PlanUpdateProposal } from "./plan.ts";
 import type { AcceptedInput } from "./input.ts";
 
-export const CURRENT_EVENT_SCHEMA_VERSION = 9;
+export const CURRENT_EVENT_SCHEMA_VERSION = 10;
 
 export function isSupportedEventSchemaVersion(value: number): boolean {
   return (
@@ -26,6 +26,7 @@ export function isSupportedEventSchemaVersion(value: number): boolean {
     value === 6 ||
     value === 7 ||
     value === 8 ||
+    value === 9 ||
     value === CURRENT_EVENT_SCHEMA_VERSION
   );
 }
@@ -63,7 +64,7 @@ export interface ThreadEventPayloads {
   };
   readonly "context.compaction_failed": {
     readonly accounting: ModelAccounting;
-    readonly disposition: "failed" | "indeterminate";
+    readonly disposition: "cancelled" | "failed" | "indeterminate";
     readonly effectId: string;
     readonly error: DriverError;
   };
@@ -76,6 +77,11 @@ export interface ThreadEventPayloads {
     readonly effectId: string;
     readonly planRejections?: readonly PendingPlanRejection[];
     readonly response: ModelResponse;
+  };
+  readonly "model.cancelled": {
+    readonly accounting: ModelAccounting;
+    readonly content: string;
+    readonly effectId: string;
   };
   readonly "model.failed": {
     readonly accounting: ModelAccounting;
@@ -101,6 +107,8 @@ export interface ThreadEventPayloads {
   readonly "thread.pause_requested": Record<string, never>;
   readonly "thread.paused": Record<string, never>;
   readonly "thread.continued": Record<string, never>;
+  readonly "thread.interrupt_requested": Record<string, never>;
+  readonly "thread.interrupted": Record<string, never>;
   readonly "thread.waiting": {
     readonly effectId: string;
     readonly reasonCode: "effect_outcome_unknown";
@@ -109,6 +117,11 @@ export interface ThreadEventPayloads {
     readonly effectId: string;
     readonly name: string;
     readonly output: JsonValue;
+    readonly toolCallId: string;
+  };
+  readonly "tool.cancelled": {
+    readonly effectId: string;
+    readonly name: string;
     readonly toolCallId: string;
   };
   readonly "tool.failed": {

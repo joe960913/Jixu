@@ -1806,7 +1806,7 @@ test("JX-PROV-002 JX-AC-016 mid-stream failures are typed without a fallback dis
   }
 });
 
-test("JX-PROV-002 JX-AC-016 cancellation is a typed non-retryable failure for both protocols", async () => {
+test("JX-PROV-002 JX-AC-016 JX-AC-059 cancellation is distinct from failure for both protocols", async () => {
   const cancellation = new AbortController();
   cancellation.abort();
   const abortingChat: OpenAIChatCompletionsClient = {
@@ -1839,11 +1839,85 @@ test("JX-PROV-002 JX-AC-016 cancellation is a typed non-retryable failure for bo
       effect("fixture", "fixture", null),
       context([], cancellation.signal),
     );
-    assert.equal(outcome.status, "failed");
-    if (outcome.status === "failed") {
-      assert.match(outcome.error.code, /_cancelled$/);
-      assert.equal(outcome.error.retryable, false);
+    assert.equal(outcome.status, "cancelled");
+    if (outcome.status === "cancelled") {
+      assert.equal(outcome.cancelledContent ?? "", "");
     }
+  }
+});
+
+test("JX-PROV-002 JX-AC-059 mid-stream cancellation preserves public text for both protocols", async () => {
+  const chatCancellation = new AbortController();
+  const chatClient: OpenAIChatCompletionsClient = {
+    create() {
+      return Promise.resolve({
+        async *[Symbol.asyncIterator]() {
+          yield {
+            choices: [
+              {
+                delta: { content: "partial chat" },
+                finish_reason: null,
+                index: 0,
+              },
+            ],
+          };
+          chatCancellation.abort();
+          throw new DOMException("aborted", "AbortError");
+        },
+      });
+    },
+  };
+  const chatOutcome = await createLLMModelDriver({
+    api: "openai-chat-completions",
+    baseURL: "https://chat.example/v1",
+    openAIChatCompletionsClient: chatClient,
+    provider: "chat",
+  }).generate(
+    effect("chat", "fixture", null),
+    context([], chatCancellation.signal),
+  );
+  assert.equal(chatOutcome.status, "cancelled");
+  if (chatOutcome.status === "cancelled") {
+    assert.equal(chatOutcome.cancelledContent, "partial chat");
+  }
+
+  const anthropicCancellation = new AbortController();
+  const anthropicClient: AnthropicMessagesClient = {
+    create() {
+      return Promise.resolve({
+        async *[Symbol.asyncIterator]() {
+          yield {
+            message: { usage: { input_tokens: 2, output_tokens: 0 } },
+            type: "message_start",
+          };
+          yield {
+            content_block: { text: "", type: "text" },
+            index: 0,
+            type: "content_block_start",
+          };
+          yield {
+            delta: { text: "partial anthropic", type: "text_delta" },
+            index: 0,
+            type: "content_block_delta",
+          };
+          anthropicCancellation.abort();
+          throw new DOMException("aborted", "AbortError");
+        },
+      });
+    },
+  };
+  const anthropicOutcome = await createLLMModelDriver({
+    anthropicMessagesClient: anthropicClient,
+    api: "anthropic-messages",
+    baseURL: "https://anthropic.example",
+    provider: "anthropic",
+  }).generate(
+    effect("anthropic", "fixture", null),
+    context([], anthropicCancellation.signal),
+  );
+  assert.equal(anthropicOutcome.status, "cancelled");
+  if (anthropicOutcome.status === "cancelled") {
+    assert.equal(anthropicOutcome.cancelledContent, "partial anthropic");
   }
 });
 

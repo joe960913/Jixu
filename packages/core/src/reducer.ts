@@ -35,7 +35,7 @@ import {
   samePlan,
 } from "./plan.ts";
 
-export const REDUCER_VERSION = 15;
+export const REDUCER_VERSION = 16;
 
 export interface TransitionResult {
   readonly effects: readonly EffectRequest[];
@@ -366,6 +366,7 @@ function settleTurn(
       effects: [],
       state: advance(state, sequence, {
         ...outcome,
+        interruptRequested: false,
         pauseRequested: false,
         readyEffects: [],
         status: "idle",
@@ -376,6 +377,7 @@ function settleTurn(
   const nextState = advance(state, sequence, {
     error: null,
     inputQueue: remaining,
+    interruptRequested: false,
     messages: [
       ...state.messages,
       {
@@ -444,6 +446,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         state: advance(state, event.sequence, {
           error: null,
           inputQueue: [],
+          interruptRequested: false,
           lineage: event.payload,
           pauseRequested: false,
           pendingEffects: {},
@@ -627,21 +630,29 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         event.payload.effectId,
         "context.compact",
       );
-      return settleTurn(
-        advance(state, event.sequence, {
-          metrics: recordModelAccounting(
-            recordEffectOutcome(
-              state.metrics,
-              "model",
-              event.payload.disposition,
-            ),
-            event.payload.accounting,
+      const nextState = advance(state, event.sequence, {
+        metrics: recordModelAccounting(
+          recordEffectOutcome(
+            state.metrics,
+            "model",
+            event.payload.disposition,
           ),
-          pendingEffects: remaining,
-        }),
-        event.sequence,
-        { error: event.payload.error, result: null },
-      );
+          event.payload.accounting,
+        ),
+        pendingEffects: remaining,
+      });
+      if (event.payload.disposition === "cancelled") {
+        if (!state.interruptRequested) {
+          throw new InvalidTransitionError(
+            "Context compaction cancellation requires an interrupt request",
+          );
+        }
+        return { effects: [], state: nextState };
+      }
+      return settleTurn(nextState, event.sequence, {
+        error: event.payload.error,
+        result: null,
+      });
     }
 
     case "thread.pause_requested": {
@@ -655,6 +666,74 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         effects: [],
         state: advance(state, event.sequence, { pauseRequested: true }),
       };
+    }
+
+    case "thread.interrupt_requested": {
+      requireOneStatus(state, event.type, ["running", "waiting"]);
+      if (
+        state.status === "waiting" &&
+        state.waitingReason?.reasonCode !== "tool_approval_required"
+      ) {
+        throw new InvalidTransitionError(
+          `Thread ${state.threadId} cannot interrupt unknown Tool work`,
+        );
+      }
+      if (state.interruptRequested) {
+        throw new InvalidTransitionError(
+          `Thread ${state.threadId} already has an interrupt request`,
+        );
+      }
+      if (state.pauseRequested) {
+        throw new InvalidTransitionError(
+          `Thread ${state.threadId} cannot interrupt after pause was requested`,
+        );
+      }
+      return {
+        effects: [],
+        state: advance(state, event.sequence, {
+          interruptRequested: true,
+          status: "running",
+          waitingReason: null,
+        }),
+      };
+    }
+
+    case "thread.interrupted": {
+      requireStatus(state, event.type, "running");
+      if (!state.interruptRequested) {
+        throw new InvalidTransitionError(
+          `Thread ${state.threadId} has no interrupt request`,
+        );
+      }
+      if (Object.keys(state.pendingEffects).length > 0) {
+        throw new InvalidTransitionError(
+          `Thread ${state.threadId} still has pending Effects`,
+        );
+      }
+      const lastUserIndex = state.messages.findLastIndex(
+        (message) => message.role === "user",
+      );
+      const currentPublicText = state.messages
+        .slice(lastUserIndex + 1)
+        .findLast(
+          (message) =>
+            message.role === "assistant" && message.content.trim().length > 0,
+        );
+      return settleTurn(
+        advance(state, event.sequence, {
+          pendingPlanRejections: [],
+          pendingPlanUpdates: [],
+          readyEffects: [],
+        }),
+        event.sequence,
+        {
+          error: null,
+          result:
+            currentPublicText?.role === "assistant"
+              ? currentPublicText.content
+              : null,
+        },
+      );
     }
 
     case "thread.paused": {
@@ -694,6 +773,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
       return {
         effects: [],
         state: advance(state, event.sequence, {
+          interruptRequested: false,
           pauseRequested: false,
           status: "waiting",
           waitingReason: event.payload,
@@ -908,6 +988,48 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
       return withReadyEffects(nextState, event.sequence, effects);
     }
 
+    case "model.cancelled": {
+      requireStatus(state, event.type, "running");
+      if (!state.interruptRequested) {
+        throw new InvalidTransitionError(
+          "Model cancellation requires an interrupt request",
+        );
+      }
+      const remaining = removePending(
+        state,
+        event.payload.effectId,
+        "model.generate",
+      );
+      const hasContent = event.payload.content.trim().length > 0;
+      return {
+        effects: [],
+        state: advance(state, event.sequence, {
+          messages: hasContent
+            ? [
+                ...state.messages,
+                {
+                  content: event.payload.content,
+                  role: "assistant",
+                  toolCalls: [],
+                },
+              ]
+            : state.messages,
+          messageSources: hasContent
+            ? [
+                ...state.messageSources,
+                { eventId: event.id, sequence: event.sequence },
+              ]
+            : state.messageSources,
+          metrics: recordModelAccounting(
+            recordEffectOutcome(state.metrics, "model", "cancelled"),
+            event.payload.accounting,
+          ),
+          pendingEffects: remaining,
+          result: hasContent ? event.payload.content : null,
+        }),
+      };
+    }
+
     case "plan.updated": {
       const expected = state.pendingPlanUpdates[0];
       const materialized =
@@ -1034,6 +1156,11 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
 
     case "model.failed": {
       requireStatus(state, event.type, "running");
+      if (state.interruptRequested) {
+        throw new InvalidTransitionError(
+          "Interrupted model work must commit model.cancelled",
+        );
+      }
       const remaining = removePending(
         state,
         event.payload.effectId,
@@ -1100,6 +1227,9 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
       if (hasPendingTools) {
         return { effects: [], state: nextState };
       }
+      if (nextState.interruptRequested) {
+        return { effects: [], state: nextState };
+      }
       if (nextState.error !== null) {
         return settleTurn(nextState, event.sequence, {
           error: nextState.error,
@@ -1121,6 +1251,44 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
       return withReadyEffects(nextState, event.sequence, effects);
     }
 
+    case "tool.cancelled": {
+      requireStatus(state, event.type, "running");
+      if (!state.interruptRequested) {
+        throw new InvalidTransitionError(
+          "Tool cancellation requires an interrupt request",
+        );
+      }
+      const effect = state.pendingEffects[event.payload.effectId];
+      if (
+        effect === undefined ||
+        effect.type !== "tool.execute" ||
+        effect.input.name !== event.payload.name ||
+        effect.input.toolCallId !== event.payload.toolCallId
+      ) {
+        throw new InvalidTransitionError(
+          `Effect ${event.payload.effectId} is not pending as the matching Tool`,
+        );
+      }
+      return {
+        effects: [],
+        state: advance(state, event.sequence, {
+          metrics: recordEffectOutcome(state.metrics, "tools", "cancelled"),
+          pendingEffects: removePending(
+            state,
+            event.payload.effectId,
+            "tool.execute",
+          ),
+          status: "running",
+          toolApprovals: Object.fromEntries(
+            Object.entries(state.toolApprovals).filter(
+              ([effectId]) => effectId !== event.payload.effectId,
+            ),
+          ),
+          waitingReason: null,
+        }),
+      };
+    }
+
     case "tool.failed": {
       requireOneStatus(state, event.type, ["running", "waiting"]);
       const remaining = removePending(
@@ -1128,6 +1296,18 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         event.payload.effectId,
         "tool.execute",
       );
+      const nextState = advance(state, event.sequence, {
+        ...withoutApproval(state, event.payload.effectId),
+        metrics: recordEffectOutcome(
+          state.metrics,
+          "tools",
+          event.payload.disposition,
+        ),
+        pendingEffects: remaining,
+      });
+      if (nextState.interruptRequested) {
+        return { effects: [], state: nextState };
+      }
       return failAfterToolOutcome(
         advance(state, event.sequence, {
           ...withoutApproval(state, event.payload.effectId),

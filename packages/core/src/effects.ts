@@ -78,18 +78,24 @@ export interface DriverFailure {
   readonly status: "failed";
 }
 
+export interface DriverCancellation {
+  readonly status: "cancelled";
+}
+
 export interface DriverIndeterminate {
   readonly error: DriverError;
   readonly status: "indeterminate";
 }
 
 export type DriverOutcome<T> =
+  | DriverCancellation
   | DriverFailure
   | DriverIndeterminate
   | DriverSuccess<T>;
 
 export type ModelOutcome = DriverOutcome<ModelResponse> & {
   readonly accounting?: ModelAccounting;
+  readonly cancelledContent?: string;
   readonly planRejections?: readonly DriverError[];
 };
 

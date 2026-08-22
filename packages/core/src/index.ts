@@ -102,6 +102,7 @@ export type {
   WaitingReason,
 } from "./domain.ts";
 export type {
+  DriverCancellation,
   DriverFailure,
   DriverIndeterminate,
   DriverOutcome,

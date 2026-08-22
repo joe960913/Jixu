@@ -80,6 +80,10 @@ let resolveThinkingTextStarted!: () => void;
 const thinkingTextStarted = new Promise<void>((resolve) => {
   resolveThinkingTextStarted = resolve;
 });
+let resolveInterruptStarted!: () => void;
+const interruptStarted = new Promise<void>((resolve) => {
+  resolveInterruptStarted = resolve;
+});
 let releaseThinkingFinal!: () => void;
 const thinkingFinalGate = new Promise<void>((resolve) => {
   releaseThinkingFinal = resolve;
@@ -137,6 +141,7 @@ const successfulDriver: ModelDriver = {
       (message) => message.role === "user",
     );
     const directExecution = latestUser?.content === "Direct task";
+    const afterInterruptExecution = latestUser?.content === "After interrupt";
     const batchExecution = latestUser?.content === "Batch task";
     const codeExecution = latestUser?.content === "Code task";
     const markdownExecution = latestUser?.content === "Markdown task";
@@ -144,7 +149,8 @@ const successfulDriver: ModelDriver = {
     const planOnlyExecution = latestUser?.content === "Plan-only task";
     const planCancelExecution = latestUser?.content === "Cancel Plan task";
     const failureBatchExecution = latestUser?.content === "Failure batch";
-    const priced = latestUser?.content !== "Compact activity";
+    const priced =
+      latestUser?.content !== "Compact activity" && !afterInterruptExecution;
     if (latestUser?.content === "Thinking task") {
       resolveThinkingStarted();
       await thinkingTextGate;
@@ -164,6 +170,30 @@ const successfulDriver: ModelDriver = {
           toolCalls: [],
         },
       };
+    }
+    if (latestUser?.content === "Interrupt task") {
+      const content = "A partial answer before interruption.";
+      context.signals.emit({
+        data: { delta: content },
+        kind: "signal",
+        threadId: effect.threadId,
+        type: "model.output_text.delta",
+      });
+      resolveInterruptStarted();
+      return new Promise((resolve) => {
+        const cancelled = () => resolve({
+          accounting: smokeAccounting(false),
+          cancelledContent: content,
+          status: "cancelled" as const,
+        });
+        if (context.cancellation.aborted) {
+          cancelled();
+        } else {
+          context.cancellation.addEventListener("abort", cancelled, {
+            once: true,
+          });
+        }
+      });
     }
     if (scrollExecution) {
       context.signals.emit({
@@ -368,8 +398,8 @@ const successfulDriver: ModelDriver = {
               ? ""
             : "The **durable** run completed.",
         planUpdates:
-          directExecution || batchExecution || codeExecution || markdownExecution ||
-              failureBatchExecution
+          afterInterruptExecution || directExecution || batchExecution ||
+              codeExecution || markdownExecution || failureBatchExecution
           ? []
           : [{
             acceptanceCriteria: ["The repository is explained accurately"],
@@ -1287,6 +1317,80 @@ try {
   assert.match(setup.captureCharFrame(), /const complete = true/);
   assert.equal(containsCodeRenderable(setup.renderer.root), true);
 
+  let interruptSubmission: Promise<void> | null = null;
+  await act(async () => {
+    if (activeController.current !== null) {
+      interruptSubmission = activeController.current.submit("Interrupt task");
+    }
+    await interruptStarted;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.equal(activeController.current?.getSnapshot().busy, true);
+  assert.match(
+    setup.captureCharFrame(),
+    /A partial answer before interruption\./,
+  );
+
+  await act(async () => {
+    await setup.mockInput.typeText("/");
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.match(setup.captureCharFrame(), /Commands/);
+  await act(async () => {
+    setup.mockInput.pressEscape();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.equal(activeController.current?.getSnapshot().busy, true);
+  assert.doesNotMatch(setup.captureCharFrame(), /↑\/↓ select/);
+
+  await act(async () => {
+    setup.mockInput.pressEscape();
+    await interruptSubmission;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const interruptedFrame = setup.captureCharFrame();
+  const interruptedSnapshot = activeController.current?.getSnapshot();
+  // JX-AC-059: Escape ends this turn; partial public text becomes durable and
+  // the Thread returns to idle without a pause/continue interaction.
+  assert.equal(interruptedSnapshot?.busy, false);
+  assert.equal(interruptedSnapshot?.threadStatus, "idle");
+  assert.equal(interruptedSnapshot?.streamingText, "");
+  const interruptedEntry = interruptedSnapshot?.transcript.at(-1);
+  assert.equal(
+    interruptedEntry?.kind === "message"
+      ? interruptedEntry.content
+      : undefined,
+    "A partial answer before interruption.",
+  );
+  assert.match(interruptedFrame, /A partial answer before interruption\./);
+  assert.doesNotMatch(interruptedFrame, /Paused|Continue to resume/);
+  await act(async () => {
+    setup.mockInput.pressBackspace();
+  });
+
+  await act(async () => {
+    await activeController.current?.submit("After interrupt");
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.match(setup.captureCharFrame(), /The durable run completed\./);
+
   await act(async () => {
     await activeController.current?.submit("/resume");
   });
@@ -1330,11 +1434,16 @@ try {
     setup.renderer.root.findDescendantById("ephemeral-agent-status"),
     undefined,
   );
-  // JX-AC-036: a Tool-only model response keeps the receipt visibly owned by JIXU.
+  // JX-AC-033 JX-AC-036: the first Agent row owns the JIXU label and its
+  // immediately following Tool receipt keeps the aligned gutter blank.
+  const liveAssistantHeader = liveToolFrame
+    .split("\n")
+    .find((line) => line.includes("Creating the requested file."));
   const liveToolHeader = liveToolFrame
     .split("\n")
     .find((line) => line.includes("TOOLS"));
-  assert.match(liveToolHeader ?? "", /JIXU.*TOOLS/);
+  assert.match(liveAssistantHeader ?? "", /JIXU.*Creating the requested file\./);
+  assert.doesNotMatch(liveToolHeader ?? "", /JIXU/);
   assert.match(
     liveToolFrame,
     /bash\s+cat > \/tmp\/hello\.html\s+· In progress/,
@@ -1358,6 +1467,12 @@ try {
   assert.match(continuationFrame, /cat > \/tmp\/hello\.html\s+· exit 0/);
   assert.doesNotMatch(continuationFrame, /fixture output/);
   assert.match(continuationFrame, /Following every ripple \.\.\./);
+  const continuationHeader = continuationFrame
+    .split("\n")
+    .find((line) => line.includes("Following every ripple"));
+  // JX-AC-033 JX-AC-036 JX-AC-041: one uninterrupted Agent block labels only
+  // its first row; the status continuation keeps the aligned gutter blank.
+  assert.doesNotMatch(continuationHeader ?? "", /JIXU/);
 
   await act(async () => {
     releaseContinuation();
@@ -1378,6 +1493,10 @@ try {
   assert.match(directFrame, /edit/);
   assert.match(directFrame, /cat > \/tmp\/hello\.html\s+· exit 0/);
   assert.match(directFrame, /demo\.html\s+· 1 replacement/);
+  const finalAssistantRow = directFrame
+    .split("\n")
+    .findLast((line) => line.includes("The durable run completed."));
+  assert.doesNotMatch(finalAssistantRow ?? "", /JIXU/);
   assert.doesNotMatch(directFrame, /Ctrl\+O/);
   assert.doesNotMatch(directFrame, /fixture output/);
   assert.doesNotMatch(directFrame, /REPLACEMENT DIFF/);

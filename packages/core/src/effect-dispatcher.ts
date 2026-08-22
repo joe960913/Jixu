@@ -50,6 +50,7 @@ export type OutcomeProposal = {
   [TType in
     | "context.compacted"
     | "context.compaction_failed"
+    | "model.cancelled"
     | "model.completed"
     | "model.failed"
     | "tool.completed"
@@ -61,6 +62,7 @@ export type OutcomeProposal = {
 }[
   | "context.compacted"
   | "context.compaction_failed"
+  | "model.cancelled"
   | "model.completed"
   | "model.failed"
   | "tool.completed"
@@ -108,12 +110,17 @@ function parseDriverError(value: unknown, label: string): DriverError {
 }
 
 export class EffectDispatcher {
+  readonly #activeCancellations = new Map<
+    string,
+    { readonly controller: AbortController; readonly threadId: string }
+  >();
   readonly #agent: AgentDefinition;
   readonly #artifacts: ArtifactStore;
   readonly #modelDrivers: Readonly<Record<string, ModelDriver>>;
   readonly #observations: ObservationBroker;
   readonly #signals: SignalSink;
   readonly #toolPermissionPolicy: ToolPermissionPolicy;
+  readonly #interruptedThreads = new Set<string>();
 
   constructor(config: EffectDispatcherConfig) {
     this.#agent = config.agent;
@@ -135,6 +142,41 @@ export class EffectDispatcher {
       case "tool.execute":
         return this.#dispatchTool(effect);
     }
+  }
+
+  clearInterrupt(threadId: string): void {
+    this.#interruptedThreads.delete(threadId);
+  }
+
+  interrupt(threadId: string): void {
+    this.#interruptedThreads.add(threadId);
+    for (const active of this.#activeCancellations.values()) {
+      if (active.threadId === threadId) active.controller.abort();
+    }
+  }
+
+  interruptedOutcome(
+    effect: ContextCompactEffect | ModelGenerateEffect,
+  ): OutcomeProposal {
+    if (effect.type === "model.generate") {
+      return {
+        payload: {
+          accounting: EMPTY_MODEL_ACCOUNTING,
+          content: "",
+          effectId: effect.id,
+        },
+        type: "model.cancelled",
+      };
+    }
+    return this.#compactionFailure(
+      effect,
+      "cancelled",
+      driverError(
+        "context_compaction_cancelled",
+        "Context compaction was cancelled",
+        false,
+      ),
+    );
   }
 
   inspectToolPermission(
@@ -187,18 +229,23 @@ export class EffectDispatcher {
       };
     }
 
+    const cancellation = this.#beginCancellable(effect);
     let outcome: ModelOutcome;
     try {
       outcome = await driver.generate(cloneJson(effect), {
         artifacts: this.#artifacts,
-        cancellation: new AbortController().signal,
+        cancellation: cancellation.signal,
         signals: this.#signalsFor(effect.threadId),
       });
     } catch (error) {
-      outcome = {
-        error: driverError("model_driver_exception", messageFrom(error), true),
-        status: "indeterminate",
-      };
+      outcome = cancellation.signal.aborted
+        ? { cancelledContent: "", status: "cancelled" }
+        : {
+            error: driverError("model_driver_exception", messageFrom(error), true),
+            status: "indeterminate",
+          };
+    } finally {
+      this.#endCancellable(effect, cancellation);
     }
 
     let accounting: ModelAccounting;
@@ -219,6 +266,17 @@ export class EffectDispatcher {
           ),
         },
         type: "model.failed",
+      };
+    }
+
+    if (outcome.status === "cancelled") {
+      return {
+        payload: {
+          accounting,
+          content: outcome.cancelledContent ?? "",
+          effectId: effect.id,
+        },
+        type: "model.cancelled",
       };
     }
 
@@ -303,22 +361,27 @@ export class EffectDispatcher {
       );
     }
 
+    const cancellation = this.#beginCancellable(effect);
     let outcome: ContextCompactionOutcome;
     try {
       outcome = await driver.compact(cloneJson(effect), {
         artifacts: this.#artifacts,
-        cancellation: new AbortController().signal,
+        cancellation: cancellation.signal,
         signals: this.#signalsFor(effect.threadId),
       });
     } catch (error) {
-      outcome = {
-        error: driverError(
-          "context_compaction_driver_exception",
-          messageFrom(error),
-          true,
-        ),
-        status: "indeterminate",
-      };
+      outcome = cancellation.signal.aborted
+        ? { status: "cancelled" }
+        : {
+            error: driverError(
+              "context_compaction_driver_exception",
+              messageFrom(error),
+              true,
+            ),
+            status: "indeterminate",
+          };
+    } finally {
+      this.#endCancellable(effect, cancellation);
     }
 
     let accounting: ModelAccounting;
@@ -337,7 +400,13 @@ export class EffectDispatcher {
       return this.#compactionFailure(
         effect,
         outcome.status,
-        outcome.error,
+        outcome.status === "cancelled"
+          ? driverError(
+              "context_compaction_cancelled",
+              "Context compaction was cancelled",
+              false,
+            )
+          : outcome.error,
         accounting,
       );
     }
@@ -490,6 +559,28 @@ export class EffectDispatcher {
     };
   }
 
+  #beginCancellable(
+    effect: ContextCompactEffect | ModelGenerateEffect,
+  ): AbortController {
+    const controller = new AbortController();
+    this.#activeCancellations.set(effect.id, {
+      controller,
+      threadId: effect.threadId,
+    });
+    if (this.#interruptedThreads.has(effect.threadId)) controller.abort();
+    return controller;
+  }
+
+  #endCancellable(
+    effect: ContextCompactEffect | ModelGenerateEffect,
+    controller: AbortController,
+  ): void {
+    const active = this.#activeCancellations.get(effect.id);
+    if (active?.controller === controller) {
+      this.#activeCancellations.delete(effect.id);
+    }
+  }
+
   #toolFailure(
     effect: ToolExecuteEffect,
     disposition: "failed" | "indeterminate",
@@ -509,7 +600,7 @@ export class EffectDispatcher {
 
   #compactionFailure(
     effect: ContextCompactEffect,
-    disposition: "failed" | "indeterminate",
+    disposition: "cancelled" | "failed" | "indeterminate",
     error: DriverError,
     accounting: ModelAccounting = EMPTY_MODEL_ACCOUNTING,
   ): OutcomeProposal {

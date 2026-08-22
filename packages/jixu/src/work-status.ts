@@ -192,10 +192,17 @@ export function toolOperationForRequest(
 export function toolOperationForOutcome(
   event: Extract<
     AnyThreadEvent,
-    { readonly type: "tool.completed" | "tool.failed" }
+    { readonly type: "tool.cancelled" | "tool.completed" | "tool.failed" }
   >,
   operation: ToolOperation,
 ): ToolOperation {
+  if (event.type === "tool.cancelled") {
+    return {
+      ...operation,
+      outcome: "Cancelled before start",
+      status: "cancelled",
+    };
+  }
   if (event.type === "tool.failed") {
     return {
       ...operation,
@@ -365,6 +372,8 @@ export function workStatusForEvent(
       };
     case "tool.requested":
       return withProgress(toolStatus(event), progressMessage);
+    case "tool.cancelled":
+      return null;
     case "tool.completed":
       return {
         detail: event.payload.name,
@@ -379,6 +388,14 @@ export function workStatusForEvent(
         phase: "thinking",
         tone: "warning",
       };
+    case "thread.interrupt_requested":
+      return {
+        label: "Stopping response",
+        phase: "responding",
+        tone: "warning",
+      };
+    case "model.cancelled":
+    case "thread.interrupted":
     case "model.completed":
       return null;
     default:

@@ -75,7 +75,13 @@ function onPrimaryMouseDown(action: () => void) {
   };
 }
 
-function TranscriptItem({ entry }: { readonly entry: TranscriptMessageEntry }) {
+function TranscriptItem({
+  entry,
+  showAgentRole,
+}: {
+  readonly entry: TranscriptMessageEntry;
+  readonly showAgentRole: boolean;
+}) {
   if (entry.role === "user") {
     return (
       <box
@@ -101,7 +107,7 @@ function TranscriptItem({ entry }: { readonly entry: TranscriptMessageEntry }) {
         style={{ flexDirection: "row", marginBottom: 1, paddingLeft: 1, paddingRight: 1, width: "100%" }}
       >
         <text fg={jixuTheme.brand} style={{ width: MESSAGE_ROLE_WIDTH }}>
-          <strong>JIXU</strong>
+          {showAgentRole ? <strong>JIXU</strong> : ""}
         </text>
         <box style={{ flexGrow: 1, minWidth: 0 }}>
           <AssistantMarkdown content={entry.content} />
@@ -134,7 +140,11 @@ function TranscriptItem({ entry }: { readonly entry: TranscriptMessageEntry }) {
 
 function toolTone(operation: ToolOperation): JixuTone {
   if (operation.status === "failed") return "danger";
-  if (operation.status === "indeterminate" || operation.status === "running") {
+  if (
+    operation.status === "cancelled" ||
+    operation.status === "indeterminate" ||
+    operation.status === "running"
+  ) {
     return "warning";
   }
   return operation.outcomeTone ?? "success";
@@ -142,6 +152,7 @@ function toolTone(operation: ToolOperation): JixuTone {
 
 function toolResult(operation: ToolOperation): string {
   if (operation.status === "running") return "In progress";
+  if (operation.status === "cancelled") return "Cancelled before start";
   if (operation.status === "failed") {
     return operation.outcome === undefined
       ? "Failed"
@@ -159,6 +170,9 @@ function toolSummary(operations: readonly ToolOperation[]): string {
   const succeeded = operations.filter(
     (operation) => operation.status === "succeeded",
   ).length;
+  const cancelled = operations.filter(
+    (operation) => operation.status === "cancelled",
+  ).length;
   const failed = operations.filter(
     (operation) => operation.status === "failed",
   ).length;
@@ -167,6 +181,7 @@ function toolSummary(operations: readonly ToolOperation[]): string {
   ).length;
   return [
     succeeded > 0 ? `${succeeded} done` : null,
+    cancelled > 0 ? `${cancelled} cancelled` : null,
     failed > 0 ? `${failed} failed` : null,
     indeterminate > 0 ? `${indeterminate} unknown` : null,
   ].filter((part): part is string => part !== null).join(" · ");
@@ -366,12 +381,14 @@ function ToolLedger({
   liveOutput,
   onToggleDetail,
   operations,
+  showAgentRole,
   showAllOperations,
 }: {
   readonly expandedEffectIds: ReadonlySet<string>;
   readonly liveOutput: Readonly<Record<string, ToolLiveOutput>>;
   readonly onToggleDetail: (effectId: string) => void;
   readonly operations: readonly ToolOperation[];
+  readonly showAgentRole: boolean;
   readonly showAllOperations: boolean;
 }) {
   const live = operations.some((operation) => operation.status === "running");
@@ -380,6 +397,7 @@ function ToolLedger({
   const visible = collapsed
     ? operations.filter(
         (operation) =>
+          operation.status === "cancelled" ||
           operation.status === "failed" ||
           operation.status === "indeterminate",
       )
@@ -400,7 +418,7 @@ function ToolLedger({
       }}
     >
       <text fg={jixuTheme.brand} style={{ width: MESSAGE_ROLE_WIDTH }}>
-        <strong>JIXU</strong>
+        {showAgentRole ? <strong>JIXU</strong> : ""}
       </text>
       <box
         border={["left"]}
@@ -502,9 +520,11 @@ function pendingAgentStatus(
 
 function EphemeralAgentStatus({
   motion,
+  showAgentRole,
   status,
 }: {
   readonly motion: boolean;
+  readonly showAgentRole: boolean;
   readonly status: WorkStatus;
 }) {
   return (
@@ -525,7 +545,7 @@ function EphemeralAgentStatus({
           width: MESSAGE_ROLE_WIDTH,
         }}
       >
-        <JixuWordmark />
+        {showAgentRole ? <JixuWordmark /> : null}
       </box>
       {status.phase === "thinking" && isThinkingLabel(status.label) ? (
         <ThinkingMotionText
@@ -611,6 +631,39 @@ export function Transcript({
     snapshot.inspection === null &&
     snapshot.streamingText.length === 0 &&
     pendingStatus === null;
+  let agentBlockOpen = false;
+  const transcriptRows = snapshot.transcript.map((entry) => {
+    if (entry.kind === "message" && entry.role !== "assistant") {
+      agentBlockOpen = false;
+      return (
+        <TranscriptItem
+          entry={entry}
+          key={`transcript-${entry.id}`}
+          showAgentRole={false}
+        />
+      );
+    }
+    const showAgentRole = !agentBlockOpen;
+    agentBlockOpen = true;
+    return entry.kind === "tool-receipts" ? (
+      <ToolLedger
+        expandedEffectIds={expandedToolEffectIds}
+        key={`transcript-${entry.id}`}
+        liveOutput={snapshot.toolLiveOutput}
+        onToggleDetail={onToggleToolDetail}
+        operations={entry.operations}
+        showAgentRole={showAgentRole}
+        showAllOperations={showAllToolOperations}
+      />
+    ) : (
+      <TranscriptItem
+        entry={entry}
+        key={`transcript-${entry.id}`}
+        showAgentRole={showAgentRole}
+      />
+    );
+  });
+  const showLiveAgentRole = !agentBlockOpen;
 
   useEffect(() => {
     if (revealLatestRequest === 0) return;
@@ -648,29 +701,20 @@ export function Transcript({
           top={emptyTop}
         />
       ) : null}
-      {snapshot.transcript.map((entry) =>
-        entry.kind === "tool-receipts" ? (
-          <ToolLedger
-            expandedEffectIds={expandedToolEffectIds}
-            key={`transcript-${entry.id}`}
-            liveOutput={snapshot.toolLiveOutput}
-            onToggleDetail={onToggleToolDetail}
-            operations={entry.operations}
-            showAllOperations={showAllToolOperations}
-          />
-        ) : (
-          <TranscriptItem key={`transcript-${entry.id}`} entry={entry} />
-        ),
-      )}
+      {transcriptRows}
       {pendingStatus === null ? null : (
-        <EphemeralAgentStatus motion={motion} status={pendingStatus} />
+        <EphemeralAgentStatus
+          motion={motion}
+          showAgentRole={showLiveAgentRole}
+          status={pendingStatus}
+        />
       )}
       {snapshot.streamingText.length > 0 ? (
         <box
           style={{ flexDirection: "row", marginBottom: 1, paddingLeft: 1, paddingRight: 1, width: "100%" }}
         >
           <text fg={jixuTheme.brand} style={{ width: MESSAGE_ROLE_WIDTH }}>
-            <strong>JIXU</strong>
+            {showLiveAgentRole ? <strong>JIXU</strong> : ""}
           </text>
           <box style={{ flexGrow: 1, minWidth: 0 }}>
             <AssistantMarkdown content={snapshot.streamingText} streaming />

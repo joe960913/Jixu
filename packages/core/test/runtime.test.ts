@@ -420,6 +420,7 @@ test("JX-AC-028 Thread metrics durably project tokens, USD cost, and Tool effici
     },
     model: {
       attempts: 2,
+      cancelled: 0,
       calls: 2,
       failed: 0,
       indeterminate: 0,
@@ -440,6 +441,7 @@ test("JX-AC-028 Thread metrics durably project tokens, USD cost, and Tool effici
     },
     tools: {
       attempts: 1,
+      cancelled: 0,
       calls: 1,
       failed: 0,
       indeterminate: 0,

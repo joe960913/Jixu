@@ -419,10 +419,12 @@ export class Harness {
     }
     if (
       event.type === "context.compaction_failed" ||
+      event.type === "model.cancelled" ||
       event.type === "model.completed" ||
       event.type === "model.failed" ||
       event.type === "approval.requested" ||
       event.type === "approval.decided" ||
+      event.type === "tool.cancelled" ||
       event.type === "tool.completed" ||
       event.type === "tool.failed" ||
       event.type === "thread.waiting"

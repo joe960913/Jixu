@@ -178,6 +178,18 @@ export class ThreadController {
     this.#patch({ threadPickerOpen: false });
   }
 
+  async interrupt(): Promise<void> {
+    if (!this.#snapshot.busy) return;
+    const thread = this.#current;
+    if (thread === null) return;
+    try {
+      const state = await thread.interrupt();
+      await this.#sync(thread, state);
+    } catch (error) {
+      this.#notice(errorMessage(error), "ERROR", "danger");
+    }
+  }
+
   async selectThread(threadId: string): Promise<void> {
     if (this.#snapshot.busy) {
       this.#notice("Pause the active Thread before switching.");
@@ -527,13 +539,18 @@ export class ThreadController {
               this.#progressMessage = null;
               this.#resetStreaming();
               updates.streamingText = "";
-            } else if (item.event.type === "model.completed") {
+            } else if (
+              item.event.type === "model.completed" ||
+              item.event.type === "model.cancelled" ||
+              item.event.type === "thread.interrupted"
+            ) {
               this.#resetStreaming();
               updates.streamingText = "";
             } else if (item.event.type === "thread.mode_changed") {
               updates.mode = item.event.payload.mode;
             }
             if (
+              item.event.type === "tool.cancelled" ||
               item.event.type === "tool.completed" ||
               item.event.type === "tool.failed"
             ) {

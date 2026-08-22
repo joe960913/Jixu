@@ -523,14 +523,7 @@ function compactionRequestFailure(
   accounting: ModelAccounting = EMPTY_MODEL_ACCOUNTING,
 ): ContextCompactionOutcome {
   if (cancellation.aborted) {
-    return compactionFailed(
-      {
-        code: `${provider}_cancelled`,
-        message: `${provider} request was cancelled`,
-        retryable: false,
-      },
-      accounting,
-    );
+    return { accounting, status: "cancelled" };
   }
   const status = statusCode(error);
   const retryable =
@@ -729,16 +722,10 @@ function requestFailure(
   redact: (message: string) => string,
   cancellation: AbortSignal,
   accounting: ModelAccounting = EMPTY_MODEL_ACCOUNTING,
+  cancelledContent = "",
 ): ModelOutcome {
   if (cancellation.aborted) {
-    return failed(
-      {
-        code: `${provider}_cancelled`,
-        message: `${provider} request was cancelled`,
-        retryable: false,
-      },
-      accounting,
-    );
+    return { accounting, cancelledContent, status: "cancelled" };
   }
   const status = statusCode(error);
   const retryable =
@@ -1016,6 +1003,9 @@ class OpenAIChatCompletionsModelDriver implements ModelDriver {
         accounting,
       );
     }
+    if (context.cancellation.aborted) {
+      return { accounting, status: "cancelled" };
+    }
     if (!sawChoice) {
       return {
         accounting,
@@ -1230,7 +1220,16 @@ class OpenAIChatCompletionsModelDriver implements ModelDriver {
         this.#redactError,
         context.cancellation,
         accounting,
+        content,
       );
+    }
+
+    if (context.cancellation.aborted) {
+      return {
+        accounting,
+        cancelledContent: content,
+        status: "cancelled",
+      };
     }
 
     if (!sawChoice) {
@@ -1595,6 +1594,9 @@ class AnthropicMessagesModelDriver implements ModelDriver {
         accounting,
       );
     }
+    if (context.cancellation.aborted) {
+      return { accounting, status: "cancelled" };
+    }
     if (!sawMessageStart || !sawMessageStop) {
       return {
         accounting,
@@ -1889,6 +1891,7 @@ class AnthropicMessagesModelDriver implements ModelDriver {
         this.#redactError,
         context.cancellation,
         accounting,
+        content,
       );
     }
 
@@ -1898,6 +1901,13 @@ class AnthropicMessagesModelDriver implements ModelDriver {
       provider: this.#provider,
       providerReportsUsdCost: this.#providerReportsUsdCost,
     });
+    if (context.cancellation.aborted) {
+      return {
+        accounting,
+        cancelledContent: content,
+        status: "cancelled",
+      };
+    }
     if (!sawMessageStart || !sawMessageStop) {
       return {
         accounting,

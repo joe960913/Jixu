@@ -19,6 +19,7 @@ interface SlashCommandMenuProps {
   readonly onInsert: (value: string) => void;
   readonly onInvoke: (command: string) => Promise<void> | void;
   readonly onModePreview: (mode: ThreadMode | null) => void;
+  readonly onOpenChange: (open: boolean) => void;
 }
 
 function commandLabel(command: JixuSlashCommand): string {
@@ -51,6 +52,7 @@ export function SlashCommandMenu({
   onInsert,
   onInvoke,
   onModePreview,
+  onOpenChange,
 }: SlashCommandMenuProps) {
   const menu = useRef<SelectRenderable>(null);
   const modeApplyPending = useRef(false);
@@ -63,6 +65,11 @@ export function SlashCommandMenu({
   const choices = choiceCommand?.choices ?? [];
   const open =
     !dismissed && (choiceCommand !== null || commands.length > 0);
+
+  useEffect(() => {
+    onOpenChange(open);
+    return () => onOpenChange(false);
+  }, [onOpenChange, open]);
 
   useEffect(() => {
     setDismissed(false);

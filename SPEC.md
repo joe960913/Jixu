@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.45
+**Version:** 0.4.47
 **Status:** normative, pre-1.0
 **Last updated:** 2026-08-23
 
@@ -266,6 +266,17 @@ type ThreadMode = "standard" | "ultra";
   exact mode projected when that logical request was created. A retry MUST
   preserve that input byte-for-byte; a later mode change MUST NOT rewrite a
   historical, ready, or pending Effect.
+- **JX-THREAD-019.** `interrupt()` MUST accept only a `running` Thread, durably
+  record the user's intent before signalling an in-flight model or compaction
+  Driver, and terminate the current turn without changing the Thread to
+  `paused` or creating work that `continue()` can resume. Public model text
+  observed before cancellation MUST be committed as the interrupted response;
+  unstarted Effects derived by that turn MUST NOT dispatch. A Tool Effect that
+  has already dispatched MUST reach its ordinary terminal or indeterminate
+  boundary instead of being reported as safely cancelled. Once those boundaries
+  are durable, the Thread MUST start any already accepted queued input in Event
+  order or return to `idle` with no error. Recovery after the interrupt intent
+  MUST NOT redispatch the interrupted model or compaction Effect.
 
 ## 7. Event, State, and observation
 
@@ -293,9 +304,9 @@ interface ThreadEvent<TType extends string, TPayload> {
 - **JX-EVT-004.** Events MUST be immutable after append.
 - **JX-EVT-005.** Correlation metadata MAY group work but MUST NOT replace
   Thread or Event identity.
-- **JX-EVT-006.** Event schema version 9 is the current Thread schema. Versions 5
-  through 8 remain readable for their historical Event shapes so existing
-  Threads can continue by appending version 9 Events. Version 5 MUST reject
+- **JX-EVT-006.** Event schema version 10 is the current Thread schema. Versions
+  5 through 9 remain readable for their historical Event shapes so existing
+  Threads can continue by appending version 10 Events. Version 5 MUST reject
   structured input fields introduced by version 6; versions 5 and 6 MUST reject
   mode fields and `thread.mode_changed` introduced by version 7; and versions 5
   through 7 MUST reject bounded Context fields and compaction Events introduced
@@ -305,9 +316,11 @@ interface ThreadEvent<TType extends string, TPayload> {
   earliest pre-release Agent snapshots and model requests MAY omit bounded
   Context fields. Those known omissions are interpreted with the frozen
   32,768/4,096 portable profile and derived default Context Policy without
-  rewriting stored Events. Schema 9 requires both immutable Agent fields and a
-  capability-bearing bounded Context Manifest. Every other Event schema version
-  MUST fail closed.
+  rewriting stored Events. Schemas 9 and 10 require both immutable Agent fields
+  and a capability-bearing bounded Context Manifest. Schema 10 adds durable
+  turn interruption plus the `model.cancelled` and pre-dispatch
+  `tool.cancelled` outcomes; those Event types MUST be rejected under every
+  earlier schema. Every other Event schema version MUST fail closed.
 
 The v0.4 families are:
 
@@ -316,6 +329,8 @@ The v0.4 families are:
 - `thread.pause_requested`
 - `thread.paused`
 - `thread.continued`
+- `thread.interrupt_requested`
+- `thread.interrupted`
 - `thread.mode_changed`
 - `thread.waiting`
 - `input.received`
@@ -327,8 +342,10 @@ The v0.4 families are:
 - `context.compaction_failed`
 - `model.requested`
 - `model.completed`
+- `model.cancelled`
 - `model.failed`
 - `tool.requested`
+- `tool.cancelled`
 - `approval.requested`
 - `approval.decided`
 - `tool.completed`
@@ -536,6 +553,10 @@ routing authority.
 
 The word `resume` is reserved for selecting and opening a previous Thread in
 the reference application. It is not a Thread lifecycle method.
+
+Interrupt is also distinct from pause. It terminates only the current turn and
+does not leave resumable Thread work behind; later work begins through ordinary
+accepted input rather than `continue()`.
 
 ### 9.2 Fork
 
@@ -974,6 +995,7 @@ A Thread exposes:
 - `state()`
 - `stream()`
 - `wait()`
+- `interrupt()`
 - `pause()`
 - `continue()`
 - `setMode(mode)`
@@ -1047,7 +1069,7 @@ not own execution truth.
   absent without reserving empty rows; the Attention Rail still states that the
   Thread is using direct execution.
 - **JX-TUI-019.** While work is live, the TUI SHOULD present observable Agent
-  progress as one ephemeral `JIXU` row inside the transcript flow, using the
+  progress as one ephemeral Agent row inside the transcript flow, using the
   existing Nippon-color tokens. It is a presentation of the current transient
   controller snapshot, not a transcript entry, Event, model message, or source
   of execution authority. Model progress MUST describe only the next observable
@@ -1066,9 +1088,12 @@ not own execution truth.
 
   The transcript MUST derive durable receipt groups from `tool.requested` and
   matching outcome Events, place them in causal order with surrounding model
-  messages, and retain them after the final response and later input.
-  Every Tool receipt group MUST retain a visible `JIXU` role anchor in the same
-  compact role gutter as ordinary Agent messages. Its `TOOLS` heading MUST NOT
+  messages, and retain them after the final response and later input. The first
+  Agent message, status, stream, or Tool receipt after a `YOU` row or other
+  non-Agent boundary MUST retain a visible `JIXU` role anchor in the same
+  compact role gutter as ordinary Agent messages. Consecutive Agent rows in the
+  same uninterrupted visual block MUST keep that gutter but leave the repeated
+  role text empty. A first Tool receipt's `TOOLS` heading therefore cannot
   appear beneath or visually attach to the preceding `YOU` row when an empty
   Tool-calling model response produces no public Agent text.
   Historical groups MAY be collapsed or bounded for presentation, but MUST
@@ -1310,6 +1335,14 @@ not own execution truth.
   complete. Success replaces the transient status with the configured model;
   failure remains in the workspace as an actionable connection inspection and
   MUST NOT open or receive a renderer Console overlay.
+- **JX-TUI-038.** In the ordinary workspace, `Escape` during live work MUST call
+  the selected Thread's public `interrupt()` operation and stop the current
+  turn rather than pausing it. Slash completion, mode choice, Thread selection,
+  Configuration, and any other open surface whose documented Back or Close key
+  is `Escape` MUST consume that key before workspace interruption. Repeated keys
+  MUST NOT append duplicate interrupt intent. The interrupted partial response
+  remains in transcript order, the Composer returns to ordinary input, and the
+  TUI MUST NOT advertise `/continue` for that turn.
 
 Configuration uses one local BYOK settings file with restrictive POSIX
 permissions and never records secrets in Thread data.
@@ -1541,13 +1574,16 @@ implement another TUI, Harness, or Thread lifecycle.
   user and Agent rows use the same compact role gutter without visually
   detaching names from messages.
 - **JX-AC-033 — Branded execution motion.** A live Thinking or planning phase
-  renders one ephemeral transcript row with a fixed-width `JIXU` role marker
-  whose emphasis travels through existing Nippon semantic colors without
-  changing durable State. In the canonical Thinking state, `Thinking ...` and
+  renders one ephemeral transcript row with a fixed-width role gutter and a
+  `JIXU` marker when that row begins an uninterrupted Agent block. Its emphasis
+  travels through existing Nippon semantic colors without changing durable
+  State. In the canonical Thinking state, `Thinking ...` and
   the Ultra-specific `Following every ripple ...` label use the same cadence and
   emphasis treatment while preserving every character cell. Response streaming
   and disabled motion use intentional static text, not a frozen progress track.
-  Tool phases render their causal receipts instead of a second Agent status row.
+  A later ephemeral row in the same Agent block keeps the gutter empty rather
+  than repeating the role marker. Tool phases render their causal receipts
+  instead of a second Agent status row.
   The Composer and its two footer rows occupy the same rows before, during, and
   after transient work status is present.
 - **JX-AC-034 — Model-generated public progress.** OpenAI Chat Completions and
@@ -1580,9 +1616,11 @@ implement another TUI, Harness, or Thread lifecycle.
   ephemeral Agent row appears after that receipt. At a final model boundary, the
   transient stream is atomically replaced by the exact committed response, with
   no duplicate or empty intermediate frame; presentation-only updates preserve
-  unchanged committed transcript identities. A receipt group remains visibly
-  anchored to `JIXU` even when the preceding model result contains only Tool
-  calls and therefore produces no public Agent message. The Composer footer
+  unchanged committed transcript identities. The first Agent row after a `YOU`
+  or non-Agent boundary remains visibly anchored to `JIXU`, including a Tool
+  receipt when the preceding model result contains no public Agent message;
+  later consecutive Agent messages, statuses, streams, and receipt groups keep
+  the aligned role gutter without repeating `JIXU`. The Composer footer
   remains stable model, local-I/O, cost, and quit context throughout the turn.
 - **JX-AC-037 — Premium attention workspace.** Before a Thread exists and after
   a simple no-Plan turn, a wide TUI renders the same `NOW`, `PLAN`, `VERIFIED`,
@@ -1615,7 +1653,8 @@ implement another TUI, Harness, or Thread lifecycle.
   the Thread; `/clear` removes it only from the visible transcript projection
   while preserving the underlying Events.
 - **JX-AC-041 — Tool action stream.** Two consecutive Tool-only model decisions
-  render two `JIXU` receipt groups, while concurrent Tool calls from one model
+  render two receipt groups with `JIXU` visible only on the first row of their
+  uninterrupted Agent block, while concurrent Tool calls from one model
   response retain source order inside one group. Every visible operation uses
   one compact row and transitions in place from running to a Tool-specific
   terminal result. A running Node `bash` call exposes only a bounded transient
@@ -1826,6 +1865,21 @@ implement another TUI, Harness, or Thread lifecycle.
   revision. An opt-in live run over one exact model for each first-party protocol
   uses the same corpus and thresholds, discloses its exact maximum paid request
   count before dispatch, and writes no credential or raw private Thread data.
+- **JX-AC-059 — Durable turn interruption.** While each first-party model
+  protocol streams a response, `Thread.interrupt()` appends one
+  `thread.interrupt_requested` before aborting the provider request, commits the
+  exact public text observed so far through `model.cancelled`, appends
+  `thread.interrupted`, and returns the Thread to `idle` with no resumable work
+  or automatic retry. Replay invokes no Driver and reproduces the partial
+  assistant context. Recovery after the request Event does not redispatch the
+  interrupted Effect. An already dispatched Tool reaches its ordinary outcome,
+  while not-yet-dispatched Tool and model continuation Effects are discarded.
+  Already accepted queued input still begins once in Event order. In the TUI,
+  one non-repeated `Escape` exercises this public path, while an open command or
+  Thread picker consumes `Escape` without interrupting. Consecutive transcript
+  Agent rows retain one visible `JIXU` role marker per uninterrupted block. A
+  Tool request cancelled before dispatch commits `tool.cancelled` and renders a
+  cancelled receipt; that Event MUST NOT be used for a Tool whose Driver began.
 
 The minimum validation for a code change is targeted tests, typecheck, lint, and
 `git diff --check`. Release work also runs the complete acceptance suite and
@@ -1861,7 +1915,7 @@ Version 0.4 adds `plan.updated` and the `context.compaction_*` Event family,
 Context Manifests, immutable Handoff Artifacts, and running-input queue semantics
 to the pre-release design. These are not aliases for old Run or Session data.
 Persisted pre-release drafts outside the explicitly supported Event schemas 5
-through 8 MUST fail closed; no automatic migration is provided before the first
+through 9 MUST fail closed; no automatic migration is provided before the first
 stable release.
 
 Within the Thread model, Event schema version 5 derives the exposed Plan control
@@ -2322,6 +2376,31 @@ separate opt-in live probe requires an exact paid-request acknowledgement before
 credential access or network dispatch. This adds no Event, State, Reducer,
 Context Manifest, Handoff schema, provider routing, Memory, or stored-data
 migration.
+
+Version 0.4.46 adds durable turn interruption without reusing pause. The public
+`Thread.interrupt()` operation records intent before signalling an active model
+or compaction request, preserves already observed public text in
+`model.cancelled`, records a requested-but-never-dispatched Tool as
+`tool.cancelled`, prevents unstarted continuation work, and terminates through
+`thread.interrupted` before returning to ordinary input or an already accepted
+queued input. Event schema version 10 adds those interruption Events; schemas 5
+through 9 remain readable without rewriting stored data, and Reducer version 16
+invalidates disposable Checkpoints. The reference TUI maps unclaimed `Escape`
+to this operation while preserving the existing Escape behavior of menus and
+Configuration. Consecutive Agent transcript rows now share one visible `JIXU`
+anchor per uninterrupted visual block. The role grouping is presentation-only;
+the interruption path adds no resumable work, second state machine, active Tool
+kill claim, provider retry, or new dependency.
+
+Version 0.4.47 publishes the framework, facade, adapters, Tool packages,
+testkit, and both native CLI packages as `0.3.0`. The release carries the
+durable interruption and uninterrupted Agent transcript grouping specified in
+Version 0.4.46, including Event schema 10 and Reducer version 16. The supported
+native targets remain macOS arm64 and Linux x64 with glibc. Registry tarballs,
+standalone executables, checksums, and release metadata MUST be derived from and
+verified against the same authoritative cross-platform release-candidate run.
+This publication adds no semantics beyond Version 0.4.46, no stored-data
+migration, no target expansion, and no dependency change.
 
 ## 19. Implementation order
 

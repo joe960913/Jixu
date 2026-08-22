@@ -321,6 +321,7 @@ export function AgentWorkspace({
   const pastedImages = useRef<readonly PendingPastedImage[]>([]);
   const pasteTail = useRef(Promise.resolve());
   const [draft, setDraft] = useState("");
+  const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [modePreview, setModePreview] = useState<ThreadMode | null>(null);
   const [composerInspection, setComposerInspection] = useState<
     ThreadControllerSnapshot["inspection"]
@@ -407,6 +408,22 @@ export function AgentWorkspace({
       );
       return next;
     });
+  });
+
+  useKeyboard((key) => {
+    if (
+      key.name !== "escape" ||
+      key.repeated === true ||
+      active === null ||
+      !snapshot.busy ||
+      slashMenuOpen ||
+      snapshot.threadPickerOpen
+    ) {
+      return;
+    }
+    key.preventDefault();
+    key.stopPropagation();
+    void active.controller.interrupt();
   });
 
   const handleClipboardRead = useCallback(
@@ -827,6 +844,7 @@ export function AgentWorkspace({
                 onInsert={setComposerValue}
                 onInvoke={invokeCommand}
                 onModePreview={setModePreview}
+                onOpenChange={setSlashMenuOpen}
               />
 
               <ThreadPicker

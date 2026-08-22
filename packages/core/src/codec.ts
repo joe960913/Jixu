@@ -1350,6 +1350,10 @@ function assertThreadState(
     state.pauseRequested,
     `${label}.pauseRequested`,
   );
+  const interruptRequested =
+    state.interruptRequested === undefined
+      ? false
+      : boolean(state.interruptRequested, `${label}.interruptRequested`);
 
   const effectIds = new Set<string>();
   const pending = object(state.pendingEffects, `${label}.pendingEffects`);
@@ -1461,6 +1465,11 @@ function assertThreadState(
   if (pauseRequested && status !== "running") {
     throw new SchemaValidationError(
       `${label}.pauseRequested requires running status`,
+    );
+  }
+  if (interruptRequested && status !== "running") {
+    throw new SchemaValidationError(
+      `${label}.interruptRequested requires running status`,
     );
   }
   if (unresolvedApprovalCount > 0 && status !== "waiting") {
@@ -1730,6 +1739,7 @@ const eventTypes = new Set<ThreadEventType>([
   "context.compaction_failed",
   "context.compaction_requested",
   "input.received",
+  "model.cancelled",
   "model.completed",
   "model.failed",
   "model.requested",
@@ -1741,7 +1751,10 @@ const eventTypes = new Set<ThreadEventType>([
   "thread.pause_requested",
   "thread.paused",
   "thread.continued",
+  "thread.interrupt_requested",
+  "thread.interrupted",
   "thread.waiting",
+  "tool.cancelled",
   "tool.completed",
   "tool.failed",
   "tool.requested",
@@ -1793,7 +1806,7 @@ function assertEventPayload(
         );
       }
       if (
-        schemaVersion === CURRENT_EVENT_SCHEMA_VERSION &&
+        schemaVersion >= 9 &&
         object(payload.agent, "payload.agent").contextPolicy === undefined
       ) {
         throw new SchemaValidationError(
@@ -1801,7 +1814,7 @@ function assertEventPayload(
         );
       }
       if (
-        schemaVersion === CURRENT_EVENT_SCHEMA_VERSION &&
+        schemaVersion >= 9 &&
         object(payload.agent, "payload.agent").modelCapabilities === undefined
       ) {
         throw new SchemaValidationError(
@@ -1826,6 +1839,15 @@ function assertEventPayload(
     case "thread.paused":
     case "thread.continued":
     case "context.cleared":
+      assertEmptyPayload(payload, "payload");
+      return;
+    case "thread.interrupt_requested":
+    case "thread.interrupted":
+      if (schemaVersion < 10) {
+        throw new SchemaValidationError(
+          "Event schema versions 5 through 9 cannot contain Thread interruption",
+        );
+      }
       assertEmptyPayload(payload, "payload");
       return;
     case "context.compaction_requested": {
@@ -1873,7 +1895,8 @@ function assertEventPayload(
       assertDriverError(payload.error, "payload.error");
       if (
         payload.disposition !== "failed" &&
-        payload.disposition !== "indeterminate"
+        payload.disposition !== "indeterminate" &&
+        (schemaVersion < 10 || payload.disposition !== "cancelled")
       ) {
         throw new SchemaValidationError("payload.disposition is unsupported");
       }
@@ -1920,7 +1943,7 @@ function assertEventPayload(
           );
         }
         if (
-          schemaVersion === CURRENT_EVENT_SCHEMA_VERSION &&
+          schemaVersion >= 9 &&
           (!isJsonObject(effectInput.contextManifest) ||
             effectInput.contextManifest.schemaVersion !==
               CONTEXT_MANIFEST_SCHEMA_VERSION)
@@ -1973,6 +1996,16 @@ function assertEventPayload(
       }
       parseModelResponse(payload.response);
       return;
+    case "model.cancelled":
+      if (schemaVersion < 10) {
+        throw new SchemaValidationError(
+          "Event schema versions 5 through 9 cannot contain model.cancelled",
+        );
+      }
+      parseModelAccounting(payload.accounting, "payload.accounting");
+      string(payload.content, "payload.content");
+      string(payload.effectId, "payload.effectId");
+      return;
     case "plan.updated":
       parsePlanSnapshot(payload.plan, "payload.plan");
       return;
@@ -1986,6 +2019,16 @@ function assertEventPayload(
       if (payload.disposition !== "failed" && payload.disposition !== "indeterminate") {
         throw new SchemaValidationError("payload.disposition is unsupported");
       }
+      return;
+    case "tool.cancelled":
+      if (schemaVersion < 10) {
+        throw new SchemaValidationError(
+          "Event schema versions 5 through 9 cannot contain tool.cancelled",
+        );
+      }
+      string(payload.effectId, "payload.effectId");
+      string(payload.name, "payload.name");
+      string(payload.toolCallId, "payload.toolCallId");
       return;
     case "tool.completed":
       string(payload.effectId, "payload.effectId");

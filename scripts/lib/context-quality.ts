@@ -808,7 +808,9 @@ export async function runRecordedProtocolFixtures(
       const outcome = await compact(effect, contextQualityDriverContext);
       if (outcome.status !== "succeeded") {
         throw new Error(
-          `${protocol} ${testCase.id} fixture failed: ${outcome.error.message}`,
+          outcome.status === "cancelled"
+            ? `${protocol} ${testCase.id} fixture was cancelled`
+            : `${protocol} ${testCase.id} fixture failed: ${outcome.error.message}`,
         );
       }
       const result = evaluateContextQualityCase(

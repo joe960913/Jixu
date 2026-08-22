@@ -7,6 +7,7 @@ import {
   CURRENT_EVENT_SCHEMA_VERSION,
   decodeThreadEvent,
   DEFAULT_CONTEXT_POLICY,
+  EMPTY_MODEL_ACCOUNTING,
   InMemoryEventStore,
   jsonDigest,
   reduce,
@@ -224,8 +225,8 @@ test("JX-AC-053 schema 7 requires mode while schema 6 remains readable as Standa
   );
 });
 
-test("JX-AC-056 schema 8 Context drafts remain readable while schema 9 requires capability metadata", () => {
-  assert.equal(CURRENT_EVENT_SCHEMA_VERSION, 9);
+test("JX-AC-056 JX-AC-059 schema 8 Context drafts remain readable while schemas 9 and 10 fail closed", () => {
+  assert.equal(CURRENT_EVENT_SCHEMA_VERSION, 10);
   const threadId = "thread-schema-8-context";
   const created = createThreadEvent({
     id: "event-created",
@@ -357,6 +358,45 @@ test("JX-AC-056 schema 8 Context drafts remain readable while schema 9 requires 
       ...schema8Requested,
       schemaVersion: CURRENT_EVENT_SCHEMA_VERSION,
     }),
+    SchemaValidationError,
+  );
+
+  assert.equal(
+    decodeThreadEvent({ ...created, schemaVersion: 9 }).type,
+    "thread.created",
+  );
+  const cancelled = createThreadEvent({
+    id: "event-cancelled",
+    payload: {
+      accounting: EMPTY_MODEL_ACCOUNTING,
+      content: "partial response",
+      effectId: effect.id,
+    },
+    threadId,
+    sequence: 4,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type: "model.cancelled",
+  });
+  assert.equal(decodeThreadEvent(cancelled).type, "model.cancelled");
+  assert.throws(
+    () => decodeThreadEvent({ ...cancelled, schemaVersion: 9 }),
+    SchemaValidationError,
+  );
+  const toolCancelled = createThreadEvent({
+    id: "event-tool-cancelled",
+    payload: {
+      effectId: "effect-tool",
+      name: "read",
+      toolCallId: "call-read",
+    },
+    threadId,
+    sequence: 5,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type: "tool.cancelled",
+  });
+  assert.equal(decodeThreadEvent(toolCancelled).type, "tool.cancelled");
+  assert.throws(
+    () => decodeThreadEvent({ ...toolCancelled, schemaVersion: 9 }),
     SchemaValidationError,
   );
 });

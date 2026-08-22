@@ -25,6 +25,7 @@ export interface ModelAccounting {
 
 export interface EffectMetrics {
   readonly attempts: number;
+  readonly cancelled: number;
   readonly calls: number;
   readonly failed: number;
   readonly indeterminate: number;
@@ -68,6 +69,7 @@ export function createInitialThreadMetrics(): ThreadMetrics {
     cost: { pricedOutcomes: 0, unpricedOutcomes: 0, usdNanos: 0 },
     model: {
       attempts: 0,
+      cancelled: 0,
       calls: 0,
       failed: 0,
       indeterminate: 0,
@@ -88,6 +90,7 @@ export function createInitialThreadMetrics(): ThreadMetrics {
     },
     tools: {
       attempts: 0,
+      cancelled: 0,
       calls: 0,
       failed: 0,
       indeterminate: 0,
@@ -216,6 +219,10 @@ function parseEffectMetrics(value: unknown, label: string): EffectMetrics {
   const metrics = object(value, label);
   const parsed: EffectMetrics = {
     attempts: count(metrics.attempts, `${label}.attempts`),
+    cancelled:
+      metrics.cancelled === undefined
+        ? 0
+        : count(metrics.cancelled, `${label}.cancelled`),
     calls: count(metrics.calls, `${label}.calls`),
     failed: count(metrics.failed, `${label}.failed`),
     indeterminate: count(metrics.indeterminate, `${label}.indeterminate`),
@@ -225,7 +232,7 @@ function parseEffectMetrics(value: unknown, label: string): EffectMetrics {
     fail(`${label}.calls`, "cannot exceed attempts");
   }
   if (
-    parsed.succeeded + parsed.failed + parsed.indeterminate >
+    parsed.succeeded + parsed.cancelled + parsed.failed + parsed.indeterminate >
     parsed.attempts
   ) {
     fail(label, "terminal outcomes cannot exceed attempts");
@@ -289,7 +296,8 @@ export function parseThreadMetrics(
     totalTokens: count(tokenValue.totalTokens, `${label}.tokens.totalTokens`),
   };
   const model = parseEffectMetrics(metrics.model, `${label}.model`);
-  const modelOutcomes = model.succeeded + model.failed + model.indeterminate;
+  const modelOutcomes =
+    model.succeeded + model.cancelled + model.failed + model.indeterminate;
   if (cost.pricedOutcomes + cost.unpricedOutcomes !== modelOutcomes) {
     fail(`${label}.cost`, "must account for every terminal model outcome");
   }
@@ -337,7 +345,7 @@ export function recordEffectRequest(
 export function recordEffectOutcome(
   metrics: ThreadMetrics,
   kind: "model" | "tools",
-  outcome: "failed" | "indeterminate" | "succeeded",
+  outcome: "cancelled" | "failed" | "indeterminate" | "succeeded",
 ): ThreadMetrics {
   const current = metrics[kind];
   return effectMetrics(metrics, kind, {

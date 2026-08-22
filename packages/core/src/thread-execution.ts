@@ -65,8 +65,12 @@ export class ThreadExecution implements Thread {
   #commitTail: Promise<void> = Promise.resolve();
   #execution: Promise<void> | null = null;
   #executionError: unknown = null;
+  #interruptCommit: Promise<void> | null = null;
+  #interruptDesired = false;
+  #interruption: Promise<ThreadState> | null = null;
   #rerun = false;
   #state: ThreadState;
+  readonly #undispatchedTools = new Set<string>();
 
   constructor(config: ThreadExecutionConfig) {
     this.id = config.state.threadId;
@@ -108,6 +112,7 @@ export class ThreadExecution implements Thread {
       decision,
       effectId,
     });
+    this.#undispatchedTools.delete(effect.id);
     const proposal =
       decision === "deny"
         ? this.#dispatcher.rejectToolPermission(
@@ -139,11 +144,55 @@ export class ThreadExecution implements Thread {
     return this.#forkThread(this.id, options);
   }
 
+  interrupt(): Promise<ThreadState> {
+    if (this.#interruption !== null) return this.#interruption;
+    const interruption = this.#interruptCurrent();
+    this.#interruption = interruption;
+    const clear = () => {
+      if (this.#interruption === interruption) {
+        this.#interruption = null;
+        this.#interruptCommit = null;
+        this.#interruptDesired = false;
+      }
+    };
+    void interruption.then(clear, clear);
+    return interruption;
+  }
+
+  async #interruptCurrent(): Promise<ThreadState> {
+    if (this.#state.status !== "running") {
+      throw new InvalidTransitionError(
+        `Thread ${this.id} cannot interrupt while ${this.#state.status}`,
+      );
+    }
+    if (this.#state.interruptRequested) return this.wait();
+    if (this.#state.pauseRequested) {
+      throw new InvalidTransitionError(
+        `Thread ${this.id} cannot interrupt after pause was requested`,
+      );
+    }
+    this.#interruptDesired = true;
+    const interruptCommit = this.#commit("thread.interrupt_requested", {}).then(
+      () => {
+        this.#dispatcher.interrupt(this.id);
+        this.#schedule();
+      },
+    );
+    this.#interruptCommit = interruptCommit;
+    await interruptCommit;
+    return this.wait();
+  }
+
   async pause(): Promise<ThreadState> {
     if (this.#state.status === "paused") return this.state();
     if (this.#state.status !== "running") {
       throw new InvalidTransitionError(
         `Thread ${this.id} cannot pause while ${this.#state.status}`,
+      );
+    }
+    if (this.#state.interruptRequested) {
+      throw new InvalidTransitionError(
+        `Thread ${this.id} cannot pause after interrupt was requested`,
       );
     }
     if (!this.#state.pauseRequested) {
@@ -322,6 +371,52 @@ export class ThreadExecution implements Thread {
   async #drive(): Promise<void> {
     while (true) {
       const state = this.#state;
+      if (state.interruptRequested) {
+        const pending = Object.values(state.pendingEffects);
+        const cancellable = pending.find(
+          (effect) =>
+            effect.type === "model.generate" || effect.type === "context.compact",
+        );
+        if (cancellable !== undefined) {
+          const requestEventId = await this.#requestEventId(cancellable.id);
+          await this.#commitProposal(
+            this.#dispatcher.interruptedOutcome(cancellable),
+            requestEventId,
+          );
+          continue;
+        }
+        const pendingTool = pending.find(
+          (effect) =>
+            effect.type === "tool.execute" &&
+            this.#undispatchedTools.has(effect.id),
+        );
+        if (pendingTool?.type === "tool.execute") {
+          await this.#commit("tool.cancelled", {
+            effectId: pendingTool.id,
+            name: pendingTool.input.name,
+            toolCallId: pendingTool.input.toolCallId,
+          });
+          this.#undispatchedTools.delete(pendingTool.id);
+          continue;
+        }
+        const unknownTool = pending.find(
+          (effect) => effect.type === "tool.execute",
+        );
+        if (unknownTool !== undefined) {
+          await this.#commit("thread.waiting", {
+            effectId: unknownTool.id,
+            reasonCode: "effect_outcome_unknown",
+          });
+          this.#dispatcher.clearInterrupt(this.id);
+          this.#clearInterruptBoundary();
+          await this.#writeCheckpoint();
+          return;
+        }
+        await this.#commit("thread.interrupted", {});
+        this.#dispatcher.clearInterrupt(this.id);
+        this.#clearInterruptBoundary();
+        continue;
+      }
       const pendingPlanRejection = state.pendingPlanRejections[0];
       if (pendingPlanRejection !== undefined) {
         await this.#commit("plan.rejected", pendingPlanRejection);
@@ -422,6 +517,7 @@ export class ThreadExecution implements Thread {
   async #dispatchBatch(effects: readonly EffectRequest[]): Promise<void> {
     const prepared: PreparedEffect[] = [];
     for (const effect of effects) {
+      if (await this.#stopBeforeDispatch()) return;
       const committed =
         effect.type === "context.compact"
           ? await this.#commit(
@@ -441,7 +537,13 @@ export class ThreadExecution implements Thread {
                 effect.requestedByEventId,
               );
       prepared.push({ effect, requestEventId: committed.event.id });
+      if (effect.type === "tool.execute") {
+        this.#undispatchedTools.add(effect.id);
+      }
+      if (await this.#stopBeforeDispatch()) return;
     }
+
+    if (await this.#stopBeforeDispatch()) return;
 
     const dispatchable: PreparedEffect[] = [];
     const proposals: Array<{
@@ -481,14 +583,21 @@ export class ThreadExecution implements Thread {
         },
         item.requestEventId,
       );
+      if (await this.#stopBeforeDispatch()) return;
     }
 
+    if (await this.#stopBeforeDispatch()) return;
     proposals.push(
       ...(await Promise.all(
-        dispatchable.map(async ({ effect, requestEventId }) => ({
-          proposal: await this.#dispatcher.dispatch(effect),
-          requestEventId,
-        })),
+        dispatchable.map(async ({ effect, requestEventId }) => {
+          if (effect.type === "tool.execute") {
+            this.#undispatchedTools.delete(effect.id);
+          }
+          return {
+            proposal: await this.#dispatcher.dispatch(effect),
+            requestEventId,
+          };
+        }),
       )),
     );
     for (const { proposal, requestEventId } of proposals) {
@@ -496,22 +605,36 @@ export class ThreadExecution implements Thread {
     }
   }
 
+  async #stopBeforeDispatch(): Promise<boolean> {
+    if (!this.#interruptDesired) return false;
+    const interruptCommit = this.#interruptCommit;
+    if (interruptCommit !== null) await interruptCommit;
+    return this.#state.interruptRequested;
+  }
+
+  #clearInterruptBoundary(): void {
+    this.#interruptCommit = null;
+    this.#interruptDesired = false;
+    this.#interruption = null;
+  }
+
   async #commitProposal(
     proposal: OutcomeProposal,
     causationId: string,
   ): Promise<void> {
+    const accepted = this.#interruptProposal(proposal);
     try {
-      for (const artifact of proposal.artifacts ?? []) {
+      for (const artifact of accepted.artifacts ?? []) {
         await this.#store.putArtifact(artifact.reference, artifact.bytes);
       }
     } catch {
-      if (proposal.type !== "context.compacted") throw new InvalidTransitionError(
+      if (accepted.type !== "context.compacted") throw new InvalidTransitionError(
         "Outcome Artifact could not be stored",
       );
       await this.#commit(
         "context.compaction_failed",
         {
-          accounting: proposal.payload.accounting,
+          accounting: accepted.payload.accounting,
           disposition: "failed",
           effectId: proposal.payload.effectId,
           error: {
@@ -524,27 +647,88 @@ export class ThreadExecution implements Thread {
       );
       return;
     }
-    switch (proposal.type) {
+    switch (accepted.type) {
       case "context.compacted":
-        await this.#commit(proposal.type, proposal.payload, causationId);
+        await this.#commit(accepted.type, accepted.payload, causationId);
         return;
       case "context.compaction_failed":
-        await this.#commit(proposal.type, proposal.payload, causationId);
+        await this.#commit(accepted.type, accepted.payload, causationId);
+        return;
+      case "model.cancelled":
+        await this.#commit(accepted.type, accepted.payload, causationId);
         return;
       case "model.completed": {
-        await this.#commit(proposal.type, proposal.payload, causationId);
+        await this.#commit(accepted.type, accepted.payload, causationId);
         return;
       }
       case "model.failed":
-        await this.#commit(proposal.type, proposal.payload, causationId);
+        await this.#commit(accepted.type, accepted.payload, causationId);
         return;
       case "tool.completed":
-        await this.#commit(proposal.type, proposal.payload, causationId);
+        await this.#commit(accepted.type, accepted.payload, causationId);
         return;
       case "tool.failed":
-        await this.#commit(proposal.type, proposal.payload, causationId);
+        await this.#commit(accepted.type, accepted.payload, causationId);
         return;
     }
+  }
+
+  #interruptProposal(proposal: OutcomeProposal): OutcomeProposal {
+    if (!this.#state.interruptRequested) return proposal;
+    if (proposal.type === "model.completed") {
+      return {
+        payload: {
+          accounting: proposal.payload.accounting,
+          content: proposal.payload.response.content,
+          effectId: proposal.payload.effectId,
+        },
+        type: "model.cancelled",
+      };
+    }
+    if (proposal.type === "model.failed") {
+      return {
+        payload: {
+          accounting: proposal.payload.accounting,
+          content: "",
+          effectId: proposal.payload.effectId,
+        },
+        type: "model.cancelled",
+      };
+    }
+    if (
+      proposal.type === "context.compacted" ||
+      proposal.type === "context.compaction_failed"
+    ) {
+      return {
+        payload: {
+          accounting: proposal.payload.accounting,
+          disposition: "cancelled",
+          effectId: proposal.payload.effectId,
+          error: {
+            code: "context_compaction_cancelled",
+            message: "Context compaction was cancelled",
+            retryable: false,
+          },
+        },
+        type: "context.compaction_failed",
+      };
+    }
+    return proposal;
+  }
+
+  async #requestEventId(effectId: string): Promise<string> {
+    const request = (await this.#store.read(this.id)).findLast(
+      (event) =>
+        (event.type === "model.requested" ||
+          event.type === "context.compaction_requested") &&
+        event.payload.effect.id === effectId,
+    );
+    if (request === undefined) {
+      throw new InvalidTransitionError(
+        `Pending Effect ${effectId} has no durable request Event`,
+      );
+    }
+    return request.id;
   }
 
   async #writeCheckpoint(): Promise<void> {
