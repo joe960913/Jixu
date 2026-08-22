@@ -30,8 +30,13 @@ function toneColor(tone: JixuTone): string {
 
 const markdownTableOptions = {
   columnFitter: "balanced",
+  borderColor: jixuTheme.divider,
+  borderStyle: "rounded",
+  borders: true,
   cellPaddingX: 1,
-  style: "columns",
+  outerBorder: true,
+  selectable: false,
+  style: "grid",
   widthMode: "content",
   wrapMode: "word",
 } as const;

@@ -1386,6 +1386,7 @@ try {
     await activeController.current?.submit("After interrupt");
   });
   await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
     await setup.renderOnce();
     await setup.flush();
   });
@@ -2064,14 +2065,17 @@ try {
   });
   const markdownFrame = setup.captureCharFrame();
   // JX-AC-045: complete Markdown uses semantic blocks instead of exposing
-  // source punctuation, including task state and a compact column table.
+  // source punctuation, including task state and a bordered grid table.
   assert.match(markdownFrame, /Project Overview/);
   assert.match(markdownFrame, /Note: useful guidance with inline code\./);
   assert.match(markdownFrame, /Checklist/);
   assert.match(markdownFrame, /✓\s+Chat: durable context/);
   assert.match(markdownFrame, /○\s+Media: planned/);
-  assert.match(markdownFrame, /Module\s+Status\s+Priority/);
-  assert.match(markdownFrame, /Core\s+Active\s+P0/);
+  assert.match(markdownFrame, /╭─+┬─+┬─+╮/);
+  assert.match(markdownFrame, /│\s+Module\s+│\s+Status\s+│\s+Priority\s+│/);
+  assert.match(markdownFrame, /├─+┼─+┼─+┤/);
+  assert.match(markdownFrame, /│\s+Core\s+│\s+Active\s+│\s+P0\s+│/);
+  assert.match(markdownFrame, /╰─+┴─+┴─+╯/);
   assert.match(markdownFrame, /BASH/);
   assert.match(markdownFrame, /git clone https:\/\/example\.com\/jixu\.git/);
   assert.match(markdownFrame, /─{10}/);
