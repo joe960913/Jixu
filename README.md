@@ -11,6 +11,15 @@ and Skills, and continue its work in a durable Thread.
 
 > Jixu is pre-1.0. The public API may change before 1.0.
 
+> [!WARNING]
+> Jixu can run Bash commands on your machine. Bash is not OS-sandboxed and
+> executes with the permissions of the Jixu process. The current permission
+> controls decide whether a Tool call is dispatched; they do not inspect shell
+> commands or prevent destructive operations such as deleting files. Keep Bash
+> on `ASK` unless you accept that risk, and use a backed-up or disposable
+> workspace. Stronger deletion safeguards and OS sandboxing are planned, not
+> available today.
+
 ![Jixu terminal interface](./assets/jixu-tui.webp)
 
 ## Start
