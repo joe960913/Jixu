@@ -1,10 +1,11 @@
 # Jixu
 
-> Define one Agent. Give it Tools and Skills. Continue its work in a durable
-> Thread.
+> Pick up where you left off.
 
-Jixu is a small single-Agent Harness for TypeScript. Recovery, replay, context
-continuity, and side-effect control stay beneath one direct API.
+Jixu means *continue* in Chinese.
+
+A small single-Agent Harness for TypeScript. Define one Agent, give it Tools
+and Skills, and continue its work in a durable Thread.
 
 > Jixu is pre-1.0. The public API may change before 1.0.
 
@@ -79,32 +80,34 @@ const state = await thread.send("Review this design and identify its main risk."
 console.log(state.result);
 ```
 
-Model capacity is resolved before Agent creation and frozen in its snapshot.
-Jixu accepts authoritative endpoint metadata, a versioned first-party catalogue
-for recognized direct endpoints, or
-`explicit: { contextWindowTokens, maxOutputTokens }` for a custom deployment.
-Ambiguity fails closed. Context Policy works within those verified limits; it
-does not silently tune provider generation defaults.
+Jixu resolves and freezes model capacity before Agent creation. Known endpoints
+use verified metadata or Jixu's versioned catalogue; custom deployments declare
+`explicit: { contextWindowTokens, maxOutputTokens }`. If capacity is uncertain,
+Jixu stops rather than guessing.
 
-Threads begin in `standard` mode. `await thread.setMode("ultra")` durably asks
-the same model and protocol for the strongest compatible reasoning effort.
+Context Policy works within those limits and does not alter provider generation
+defaults.
 
-Thread input can preserve ordered text and image parts. Image bytes are stored
-as verified immutable Artifacts; durable Events contain references, never raw
+Threads start in `standard` mode. `await thread.setMode("ultra")` durably
+requests the strongest compatible reasoning effort without changing the model
+or protocol.
+
+Thread input preserves ordered text and image parts. Images are stored as
+verified immutable Artifacts; durable Events contain references, never raw
 bytes.
 
 ## Design
 
-The Agent is immutable configuration. The Thread is one durable history. The
-ordered Event log is the sole authority, and State is its deterministic
-projection. External work has one path:
+An Agent is immutable configuration. A Thread is its durable history. The
+ordered Event log is the sole authority; State is derived from it. External
+work follows one path:
 
 ```text
 Event -> Reducer -> Effect -> Driver -> Event
 ```
 
-Replay dispatches no live Driver. Unknown persisted data fails closed. Secrets
-never enter Events, State, Checkpoints, errors, or Signals.
+Replay calls no live Driver. Unknown persisted data fails closed. Secrets never
+enter Events, State, Checkpoints, errors, or Signals.
 
 Read [SPEC.md](./SPEC.md) for the product contract and
 [CONTRIBUTING.md](./CONTRIBUTING.md) for development guidance.
