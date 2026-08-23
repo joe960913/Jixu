@@ -8,6 +8,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
+    "pull": "git pull --ff-only && git -C docs pull --ff-only",
     "build:packages": "tsc -b tsconfig.build.json && node scripts/copy-package-assets.ts",
     "build:cli": "pnpm run build:packages && node scripts/build-cli-artifact.ts",
     "clean:packages": "tsc -b tsconfig.build.json --clean",
