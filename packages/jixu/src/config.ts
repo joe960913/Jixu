@@ -21,7 +21,7 @@ import type {
 } from "jixu-core";
 import {
   JINA_TOOL_NAMES,
-  type JinaWebSearchToolName,
+  type JinaToolName,
 } from "jixu-tools-jina";
 import { NODE_TOOL_NAMES } from "jixu-tools-node";
 import type { NodeToolName } from "jixu-tools-node";
@@ -45,7 +45,7 @@ export interface JixuModelCapabilityOverride {
 }
 
 export type JixuFileScope = "process" | "workspace";
-export type JixuToolName = NodeToolName | JinaWebSearchToolName;
+export type JixuToolName = NodeToolName | JinaToolName;
 export type JixuToolPermissionProfile =
   | "balanced"
   | "review"

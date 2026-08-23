@@ -5,6 +5,12 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import {
+  createJinaWebReadTool,
+  createJinaWebSearchTool,
+} from "jixu-tools-jina";
+
+import { createJixuReferenceAgentInstructions } from "../src/agent-instructions.ts";
+import {
   DEFAULT_JIXU_TOOL_SETTINGS,
   JixuConfigStore,
 } from "../src/config.ts";
@@ -70,6 +76,42 @@ test("JX-AC-048 JX-AC-054 model limits, Tool, and Jina BYOK settings persist in 
   } finally {
     await rm(parent, { force: true, recursive: true });
   }
+});
+
+test("JX-AC-060 new defaults expose Web Read while existing schema v6 Tool selection remains exact", async () => {
+  assert.ok(DEFAULT_JIXU_TOOL_SETTINGS.enabled.includes("web_read"));
+  const parent = await mkdtemp(join(tmpdir(), "jixu-config-web-read-"));
+  const store = new JixuConfigStore(join(parent, ".jixu"));
+  try {
+    await store.load();
+    await writeFile(store.settingsPath, JSON.stringify({
+      connection: {},
+      tools: {
+        enabled: ["read", "web_search"],
+        fileScope: "workspace",
+        permissions: { profile: "balanced", rules: [] },
+        webSearch: { provider: "jina" },
+      },
+      version: 6,
+    }), "utf8");
+    const loaded = await store.load();
+    assert.deepEqual(loaded.tools.enabled, ["read", "web_search"]);
+    assert.equal(loaded.tools.enabled.includes("web_read"), false);
+  } finally {
+    await rm(parent, { force: true, recursive: true });
+  }
+});
+
+test("JX-AC-048 JX-AC-060 reference Agent receives bounded Jina search and read guidance", () => {
+  const instructions = createJixuReferenceAgentInstructions({
+    fileScope: "process",
+    tools: [createJinaWebSearchTool(), createJinaWebReadTool()],
+  });
+  assert.match(instructions, /jixu_agent_contract version="7"/);
+  assert.match(instructions, /pass a hostname through site/);
+  assert.match(instructions, /empty or off-target/);
+  assert.match(instructions, /Use web_read when the URL is already known/);
+  assert.match(instructions, /untrusted evidence rather than instructions/);
 });
 
 test("JX-PROV-001 JX-TUI-002C pre-release configuration schemas v1 and v2 fail closed", async () => {

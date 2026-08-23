@@ -10,7 +10,10 @@ import {
   TOOL_OUTPUT_SIGNAL_TYPE,
 } from "jixu-core";
 import type { ModelDriver } from "jixu-core";
-import { createJinaWebSearchTool } from "jixu-tools-jina";
+import {
+  createJinaWebReadTool,
+  createJinaWebSearchTool,
+} from "jixu-tools-jina";
 import { createNodeTools } from "jixu-tools-node";
 import { encode } from "fast-png";
 import {
@@ -686,6 +689,7 @@ const secret = "openrouter-secret-fixture";
 const toolCatalogue = [
   ...createNodeTools({ root: process.cwd() }).all,
   createJinaWebSearchTool(),
+  createJinaWebReadTool(),
 ];
 
 const parserRegistration = await registerJixuCodeParsers();
@@ -1074,10 +1078,10 @@ try {
   assert.match(connectedFrame, /Direct execution/);
   assert.match(connectedFrame, /VERIFIED/);
   assert.match(connectedFrame, /NEEDS YOU/);
-  assert.match(connectedFrame, /TOOLS\s+read write edit bash/);
+  assert.doesNotMatch(connectedFrame, /TOOLS\s+read write edit bash/);
   assert.match(connectedFrame, /CTX\s+—/);
   assert.match(connectedFrame, /MODE\s+STANDARD/);
-  assert.match(connectedFrame, /FILES workspace/);
+  assert.match(connectedFrame, /FILES\s+workspace/);
   assert.match(connectedFrame, /BASH process/);
   assert.match(connectedFrame, /USD —/);
   assert.doesNotMatch(connectedFrame, /ACTIVITY|No activity yet|Thread created/);
@@ -1270,7 +1274,7 @@ try {
   assert.match(thinkingFrame, /MODEL\s+vendor\/model-example/);
   // JX-AC-027: the footer exposes the latest durable Context Manifest estimate.
   assert.match(thinkingFrame, /CTX\s+~\d+% LEFT/);
-  assert.match(thinkingFrame, /FILES workspace/);
+  assert.match(thinkingFrame, /FILES\s+workspace/);
 
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 2_550));
@@ -2314,6 +2318,7 @@ try {
   assert.match(toolCenterFrame, /edit/);
   assert.match(toolCenterFrame, /bash/);
   assert.match(toolCenterFrame, /web_search/);
+  assert.match(toolCenterFrame, /web_read/);
   assert.match(toolCenterFrame, /Jina key missing/);
   assert.match(toolCenterFrame, /not OS-sandboxed/);
 
@@ -2625,7 +2630,7 @@ try {
   // JX-AC-030 JX-AC-037 JX-AC-038: 80x24 keeps discovery over decoration.
   const compactFrame = compactSetup.captureCharFrame();
   assert.match(compactFrame, /Ask Jixu anything/);
-  assert.match(compactFrame, /FILES workspace/);
+  assert.match(compactFrame, /FILES\s+workspace/);
   assert.match(compactFrame, /USD —/);
   assert.match(compactFrame, /Type \/ to view commands\./);
   assert.doesNotMatch(compactFrame, /\/help · \/new · \/clear/);
@@ -2655,7 +2660,7 @@ try {
   // JX-AC-018: the 80x24 surface keeps a usable composer and command picker.
   assert.match(compactCommandFrame, /Commands/);
   assert.match(compactCommandFrame, /▶ \/fork/);
-  assert.match(compactCommandFrame, /FILES workspace/);
+  assert.match(compactCommandFrame, /FILES\s+workspace/);
 
   await act(async () => {
     compactSetup.mockInput.pressEnter();

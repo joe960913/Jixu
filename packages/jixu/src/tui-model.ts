@@ -72,7 +72,13 @@ export type ToolRequestDetail =
   | {
       readonly content: string;
       readonly kind: "text";
-      readonly label: "ARGUMENTS" | "COMMAND" | "CONTENT" | "PATH" | "QUERY";
+      readonly label:
+        | "ARGUMENTS"
+        | "COMMAND"
+        | "CONTENT"
+        | "PATH"
+        | "QUERY"
+        | "URL";
     }
   | {
       readonly after: string;

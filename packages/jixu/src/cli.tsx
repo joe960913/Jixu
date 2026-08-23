@@ -7,7 +7,10 @@ import {
   resolveLLMModelCapabilities,
 } from "jixu-llm";
 import { JsonlEventStore } from "jixu-store-jsonl";
-import { createJinaWebSearchTool } from "jixu-tools-jina";
+import {
+  createJinaWebReadTool,
+  createJinaWebSearchTool,
+} from "jixu-tools-jina";
 import { createNodeTools } from "jixu-tools-node";
 import {
   createClipboard,
@@ -189,12 +192,8 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
     options.api === undefined &&
     options.baseUrl === undefined &&
     options.model === undefined;
-  const createToolCatalogue = (config: JixuConnectionConfig["tools"]) => [
-    ...createNodeTools({
-      filesystemScope: config.fileScope,
-      root: options.root,
-    }).all,
-    createJinaWebSearchTool({
+  const createToolCatalogue = (config: JixuConnectionConfig["tools"]) => {
+    const jina = {
       ...(config.webSearch.apiKey === undefined
         ? {}
         : { apiKey: config.webSearch.apiKey }),
@@ -202,8 +201,16 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
         process.env.JIXU_HOME === undefined
           ? "~/.jixu/settings.json"
           : configStore.settingsPath,
-    }),
-  ];
+    };
+    return [
+      ...createNodeTools({
+        filesystemScope: config.fileScope,
+        root: options.root,
+      }).all,
+      createJinaWebSearchTool(jina),
+      createJinaWebReadTool(jina),
+    ];
+  };
   const toolCatalogue = createToolCatalogue(stored.tools);
 
   let exitReason: JixuExitReason | null = null;

@@ -90,7 +90,7 @@ function ToolRow({
   const enabled = settings.enabled.includes(name);
   const effect = effectiveJixuToolPermission(settings, name);
   const boundary =
-    name === "web_search"
+    name === "web_search" || name === "web_read"
       ? settings.webSearch.apiKey === undefined
         ? "Jina key missing"
         : "Jina configured"
@@ -104,7 +104,7 @@ function ToolRow({
     <box
       backgroundColor={focused ? jixuTheme.elevated : jixuTheme.surface}
       onMouseDown={onPrimaryMouseDown(onCyclePermission)}
-      style={{ flexDirection: "row", height: 2, paddingLeft: 1, paddingRight: 1 }}
+      style={{ flexDirection: "row", height: 1, paddingLeft: 1, paddingRight: 1 }}
     >
       <box
         onMouseDown={onPrimaryMouseDown(onToggle)}
@@ -115,7 +115,7 @@ function ToolRow({
         </text>
       </box>
       <text fg={focused ? jixuTheme.text : jixuTheme.info} selectable={false}>
-        <strong>{name.padEnd(8)}</strong>
+        <strong>{name.padEnd(11)}</strong>
       </text>
       <text fg={jixuTheme.secondary} selectable={false}>
         {`${tool.metadata.origin.padEnd(10)} ${tool.metadata.risk.padEnd(8)} `}
@@ -242,7 +242,7 @@ export function ToolCenter({
           setFocus(0);
           setProfile(cycle(PROFILES, value.permissions.profile));
         })}
-        style={{ flexDirection: "row", height: 2, paddingLeft: 1, paddingRight: 1 }}
+        style={{ flexDirection: "row", height: 1, paddingLeft: 1, paddingRight: 1 }}
       >
         <text fg={jixuTheme.text} selectable={false}><strong>PROFILE</strong></text>
         <text fg={jixuTheme.warning} selectable={false}>{`  ${value.permissions.profile.toUpperCase()}`}</text>
@@ -259,7 +259,7 @@ export function ToolCenter({
             fileScope: value.fileScope === "workspace" ? "process" : "workspace",
           });
         })}
-        style={{ flexDirection: "row", height: 2, paddingLeft: 1, paddingRight: 1 }}
+        style={{ flexDirection: "row", height: 1, paddingLeft: 1, paddingRight: 1 }}
       >
         <text fg={jixuTheme.text} selectable={false}><strong>FILE SCOPE</strong></text>
         <text fg={value.fileScope === "workspace" ? jixuTheme.success : jixuTheme.danger} selectable={false}>
@@ -274,7 +274,7 @@ export function ToolCenter({
 
       <box style={{ flexDirection: "row", height: 1, paddingLeft: 1 }}>
         <text fg={jixuTheme.secondary} selectable={false}>
-          {"STATE    TOOL     ORIGIN     RISK     POLICY  BOUNDARY"}
+          {"STATE    TOOL        ORIGIN     RISK     POLICY  BOUNDARY"}
         </text>
       </box>
       {tools.map((tool, index) => (

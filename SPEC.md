@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.47
+**Version:** 0.4.48
 **Status:** normative, pre-1.0
 **Last updated:** 2026-08-23
 
@@ -855,15 +855,31 @@ continue safely without treating the compacted text as Thread authority.
   Driver I/O.
 - **JX-TOOL-010.** The first-party `web_search` Tool MUST use the Jina Search
   API through one typed, idempotent Tool definition. It MUST accept one bounded
-  query plus optional result-count and site constraints, request JSON from the
-  official Jina Search endpoint, and normalize each result to a title, URL,
-  description, bounded page content, and truncation fact. The Tool MUST bound
-  upstream response bytes, per-result content, total durable output, result
-  count, and execution time before its output enters an Event or model request.
-  A missing Jina Key MUST fail deterministically before network dispatch and
-  identify `~/.jixu/settings.json` as the configuration surface. Credentials,
+  query plus optional result-count and hostname constraint, pass that hostname
+  through Jina's documented `site` request field rather than interpolating a
+  path-bearing search operator or using an undocumented header, request JSON
+  from the official Jina Search endpoint, and normalize each result to a title,
+  URL, description, bounded page content, and truncation fact. Jina's documented
+  no-results assertion MUST normalize to a successful empty result set rather
+  than a failed Tool outcome; every other malformed or rejected request remains
+  a typed failure. The Tool MUST bound upstream response bytes, per-result
+  content, total durable output, result count, and execution time before its
+  output enters an Event or model request. A missing Jina Key MUST fail
+  deterministically before network dispatch and identify
+  `~/.jixu/settings.json` as the configuration surface. Credentials,
   Authorization headers, and unbounded upstream bodies MUST NOT enter Tool
   input, output, Events, Signals, errors, or receipts.
+- **JX-TOOL-011.** The first-party `web_read` Tool MUST use the Jina Reader API
+  through one typed, idempotent Tool definition for a caller-selected public
+  HTTP(S) URL. It MUST reject embedded URL credentials, request bounded JSON
+  from the official Reader endpoint, and normalize the resolved source URL,
+  title, description, bounded content, and truncation fact. It MUST use the
+  same immutable Jina credential closure and network-risk boundary as
+  `web_search`, but remain a distinct Tool action so policy can allow, ask, or
+  deny search and URL reading independently. Response bytes, durable content,
+  execution time, cancellation, authentication, rate limits, upstream failure,
+  and malformed data MUST remain bounded and typed under the same secret-
+  redaction requirements as `JX-TOOL-010`. Replay MUST never call Reader.
 
 ### 11.2 Skills
 
@@ -1390,7 +1406,7 @@ permissions and never records secrets in Thread data.
 | `jixu-store-jsonl` | Inspectable local JSONL Store. |
 | `jixu-store-sqlite` | Local SQLite Store. |
 | `jixu-tools-node` | Opt-in Node file and shell Tools. |
-| `jixu-tools-jina` | Opt-in Jina-backed Web Search Tool. |
+| `jixu-tools-jina` | Opt-in Jina-backed Web Search and URL Reader Tools. |
 | `jixu-testkit` | Store and Driver contract suites. |
 | `jixu-ai` | Public facade, CLI, configuration, and reference TUI. |
 | `jixu-cli-darwin-arm64` | Native reference CLI executable for macOS arm64. |
@@ -1740,12 +1756,15 @@ implement another TUI, Harness, or Thread lifecycle.
   setup path and explains that Jixu must be restarted before the next Thread.
   A deterministic Jina fixture verifies Bearer authentication at the request
   boundary without exposing the Key, normalized
-  search results with source URLs and page content, site and result-count
-  inputs, response and content truncation, timeout, cancellation, malformed
-  JSON, authentication, rate-limit, and upstream failure mapping. The ordinary
-  Harness path records one durable `web_search` receipt, Replay dispatches no
-  request, and the Tool Center presents the network boundary without changing
-  the current Thread's Agent snapshot.
+  search results with source URLs and page content, the documented hostname-only
+  `site` request field, result-count input, response and content truncation,
+  timeout, cancellation, malformed JSON, authentication, rate-limit, and
+  upstream failure mapping. A recorded Jina `42206` no-results assertion
+  produces `results: []` and one successful Tool outcome, while another HTTP
+  422 remains a typed failure. The ordinary Harness path records one durable
+  `web_search` receipt, Replay dispatches no request, and the Tool Center
+  presents the network boundary without changing the current Thread's Agent
+  snapshot.
 - **JX-AC-049 — Causally complete model continuation.** Deterministic fixtures
   for input acceptance, accepted Plan control, rejected Plan control, and Tool
   completion produce `model.requested` Effects with typed continuation reasons,
@@ -1880,6 +1899,19 @@ implement another TUI, Harness, or Thread lifecycle.
   Agent rows retain one visible `JIXU` role marker per uninterrupted block. A
   Tool request cancelled before dispatch commits `tool.cancelled` and renders a
   cancelled receipt; that Event MUST NOT be used for a Tool whose Driver began.
+- **JX-AC-060 — Bounded Jina URL reading.** `web_read` accepts one public
+  HTTP(S) URL, rejects embedded credentials before dispatch, sends Bearer
+  authentication and the URL through the documented Jina Reader JSON request,
+  and returns the resolved source URL, title, description, bounded content, and
+  an exact truncation fact. Deterministic fixtures cover content and response
+  bounds, timeout, cancellation, malformed JSON, malformed or non-HTTP result
+  URLs, authentication, rate limit, and upstream failure without exposing the
+  Key or upstream body. The reference Tool catalogue presents `web_read` with
+  the same configured-or-missing Jina boundary but a distinct permission action,
+  existing settings preserve their exact enabled Tool selection, and a newly
+  accepted configuration may enable it normally. One ordinary Harness call
+  records one durable `web_read` receipt whose bounded source preview survives
+  reopen; Replay dispatches zero Reader requests.
 
 The minimum validation for a code change is targeted tests, typecheck, lint, and
 `git diff --check`. Release work also runs the complete acceptance suite and
@@ -2401,6 +2433,21 @@ standalone executables, checksums, and release metadata MUST be derived from and
 verified against the same authoritative cross-platform release-candidate run.
 This publication adds no semantics beyond Version 0.4.46, no stored-data
 migration, no target expansion, and no dependency change.
+
+Version 0.4.48 corrects the first-party Jina boundary using real Search and
+Reader responses. Search now uses the documented `/search` request shape and
+hostname-only `site` field, and Jina's `42206` no-results assertion becomes a
+successful empty result rather than a generic fatal Tool failure. A separate
+bounded `web_read` Tool reads one known public URL through Jina Reader, sharing
+the immutable BYOK closure while retaining an independent permission action and
+durable receipt. Existing settings keep their exact enabled Tool list, so the
+new network capability is not silently granted to an existing installation;
+the Tool Center exposes it for an accepted save and the reference defaults for
+a new configuration include it. The reference Agent instruction contract
+advances to version 7. Event schema 10, Reducer version 16, Thread authority,
+Replay, and settings schema 6 remain unchanged; this adds no browser
+interaction, crawl, Deep Search, generic MCP runtime, provider router, or new
+dependency.
 
 ## 19. Implementation order
 

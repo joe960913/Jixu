@@ -146,23 +146,23 @@ function costContext(snapshot: ThreadControllerSnapshot): {
 }
 
 function ComposerStatus({
+  bashEnabled,
   compact,
   configured,
   connecting,
   connectionFailed,
   contextBudget,
-  enabledTools,
   fileScope,
   modelContext,
   mode,
   threadCost,
 }: {
+  readonly bashEnabled: boolean;
   readonly compact: boolean;
   readonly configured: boolean;
   readonly connecting: boolean;
   readonly connectionFailed: boolean;
   readonly contextBudget: ThreadControllerSnapshot["contextBudget"];
-  readonly enabledTools: readonly string[];
   readonly fileScope: "process" | "workspace";
   readonly modelContext: string | null;
   readonly mode: ThreadControllerSnapshot["mode"];
@@ -234,13 +234,12 @@ function ComposerStatus({
         }}
       >
         <text fg={jixuTheme.secondary}>
-          <strong>TOOLS</strong>
-          <span fg={jixuTheme.text}>  {enabledTools.join(" ") || "none"}</span>
-          <span fg={jixuTheme.secondary}>  FILES </span>
+          <strong>FILES</strong>
+          <span fg={jixuTheme.secondary}>  </span>
           <span fg={fileScope === "workspace" ? jixuTheme.success : jixuTheme.warning}>
             {fileScope}
           </span>
-          {enabledTools.includes("bash") ? (
+          {bashEnabled ? (
             <span fg={jixuTheme.warning}>  BASH process</span>
           ) : null}
         </text>
@@ -908,12 +907,12 @@ export function AgentWorkspace({
           </box>
 
           <ComposerStatus
+            bashEnabled={active?.config.tools.enabled.includes("bash") ?? false}
             compact={compact}
             configured={configured}
             connecting={connecting}
             connectionFailed={connectionFailed}
             contextBudget={snapshot.contextBudget}
-            enabledTools={active?.config.tools.enabled ?? []}
             fileScope={active?.config.tools.fileScope ?? "workspace"}
             modelContext={modelContext}
             mode={snapshot.mode}

@@ -69,7 +69,10 @@ import { JsonlEventStore } from "jixu-store-jsonl";
 import { SqliteEventStore } from "jixu-store-sqlite";
 import { SequenceModelDriver } from "jixu-testkit";
 import { defineStoreContract } from "jixu-testkit/store-contract";
-import { createJinaWebSearchTool } from "jixu-tools-jina";
+import {
+  createJinaWebReadTool,
+  createJinaWebSearchTool,
+} from "jixu-tools-jina";
 import { createNodeTools } from "jixu-tools-node";
 import { JixuConfigStore } from "jixu-ai";
 
@@ -100,6 +103,7 @@ try {
   sqlite.close();
   assert.equal(createNodeTools({ root }).all.length, 4);
   assert.equal(createJinaWebSearchTool().descriptor.name, "web_search");
+  assert.equal(createJinaWebReadTool().descriptor.name, "web_read");
   assert.equal(typeof defineStoreContract, "function");
   assert.equal(typeof JixuConfigStore, "function");
   assert.equal(
@@ -125,7 +129,10 @@ import { JsonlEventStore } from "jixu-store-jsonl";
 import { SqliteEventStore } from "jixu-store-sqlite";
 import { SequenceModelDriver } from "jixu-testkit";
 import { defineStoreContract } from "jixu-testkit/store-contract";
-import { createJinaWebSearchTool } from "jixu-tools-jina";
+import {
+  createJinaWebReadTool,
+  createJinaWebSearchTool,
+} from "jixu-tools-jina";
 import { createNodeTools } from "jixu-tools-node";
 import { JixuConfigStore } from "jixu-ai";
 
@@ -150,6 +157,7 @@ void SqliteEventStore;
 void defineStoreContract;
 void createNodeTools;
 void createJinaWebSearchTool;
+void createJinaWebReadTool;
 void JixuConfigStore;
 void createLLMModelDriver;
 `;

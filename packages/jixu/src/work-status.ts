@@ -111,6 +111,13 @@ function requestDetail(
       label: "QUERY",
     };
   }
+  if (name === "web_read") {
+    return {
+      content: boundDetail(rawStringArgument(event, "url") ?? "(URL unavailable)"),
+      kind: "text",
+      label: "URL",
+    };
+  }
   return {
     content: boundDetail(JSON.stringify(arguments_, null, 2)),
     kind: "text",
@@ -169,6 +176,14 @@ function toolStatus(
     return {
       detail: stringArgument(event, "query") ?? name,
       label: "Searching",
+      phase: "tool",
+      tone: "info",
+    };
+  }
+  if (name === "web_read") {
+    return {
+      detail: stringArgument(event, "url") ?? name,
+      label: "Reading web",
       phase: "tool",
       tone: "info",
     };
@@ -320,6 +335,22 @@ export function toolOperationForOutcome(
       return {
         ...operation,
         outcome: `${results.length} ${results.length === 1 ? "source" : "sources"} · ${formatBytes(bytes)}${output.truncated === true ? " · truncated" : ""}`,
+        ...(preview === undefined ? {} : { preview }),
+        status: "succeeded",
+      };
+    }
+  }
+
+  if (event.payload.name === "web_read") {
+    const content = typeof output.content === "string" ? output.content : null;
+    const url = typeof output.url === "string" ? truncate(output.url) : undefined;
+    if (content !== null) {
+      const preview = outputPreview(content, "start");
+      const bytes = new TextEncoder().encode(content).byteLength;
+      return {
+        ...operation,
+        ...(url === undefined ? {} : { detail: url }),
+        outcome: `${formatBytes(bytes)} source${output.contentTruncated === true ? " · truncated" : ""}`,
         ...(preview === undefined ? {} : { preview }),
         status: "succeeded",
       };
