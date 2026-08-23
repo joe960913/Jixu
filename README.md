@@ -1,6 +1,8 @@
-# Jixu
+<p align="center">
+  <img src="./assets/jixu-readme-hero-wide.png" alt="Jixu — Your Agent picks up where you left off." width="100%" />
+</p>
 
-> Pick up where you left off.
+# Jixu
 
 Jixu means *continue* in Chinese.
 
