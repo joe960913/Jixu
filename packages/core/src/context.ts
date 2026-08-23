@@ -29,6 +29,7 @@ export const CONTEXT_ESTIMATOR_VERSION = 1;
 export const CONTEXT_MANIFEST_SCHEMA_VERSION = 2;
 export const CONTINUITY_HANDOFF_SCHEMA_VERSION = 1;
 export const MODEL_CONTEXT_SCHEMA_VERSION = 1;
+export const MODEL_RUNTIME_CONTEXT_SCHEMA_VERSION = 2;
 export const MAX_PLAN_REPAIR_ATTEMPTS = 1;
 
 const MAX_HANDOFF_FACTS = 64;
@@ -47,30 +48,39 @@ export type ModelContinuationReason =
   | "input_received"
   | "plan_rejected"
   | "plan_updated"
-  | "tool_completed";
+  | "tool_completed"
+  | "tool_failed"
+  | "tool_indeterminate";
 
 export type ModelContextObligation =
+  | "explain_unknown_tool_outcome"
+  | "handle_tool_failure"
   | "repair_plan_control"
   | "respond_or_act";
 
 export type ModelContextProhibition =
+  | "assume_failed_tool_succeeded"
+  | "perform_tool_or_plan_actions"
   | "repeat_accepted_plan_change"
   | "repeat_rejected_plan_change";
 
 export interface ModelContextReceipt {
   readonly errorCode?: string;
   readonly errorMessage?: string;
+  readonly errorRetryable?: boolean;
   readonly eventId: string;
   readonly planId?: string;
   readonly planRevision?: number;
   readonly planStatus?: PlanSnapshot["status"];
   readonly toolCallId?: string;
+  readonly toolDisposition?: "failed" | "indeterminate";
   readonly toolName?: string;
   readonly type:
     | "input.received"
     | "plan.rejected"
     | "plan.updated"
-    | "tool.completed";
+    | "tool.completed"
+    | "tool.failed";
 }
 
 export interface ModelRuntimeContext {
@@ -85,7 +95,7 @@ export interface ModelRuntimeContext {
     readonly limit: number;
   } | null;
   readonly prohibitions: readonly ModelContextProhibition[];
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 1 | 2;
 }
 
 export type ModelContextSourceKind =
@@ -199,6 +209,13 @@ export type ModelContinuation =
       readonly reason: "tool_completed";
       readonly toolCallId: string;
       readonly toolName: string;
+    }
+  | {
+      readonly error: DriverError;
+      readonly eventId: string;
+      readonly reason: "tool_failed" | "tool_indeterminate";
+      readonly toolCallId: string;
+      readonly toolName: string;
     };
 
 export interface ContextCompactionInput {
@@ -258,10 +275,27 @@ function receiptFor(continuation: ModelContinuation): ModelContextReceipt {
         toolName: continuation.toolName,
         type: "tool.completed",
       };
+    case "tool_failed":
+    case "tool_indeterminate":
+      return {
+        errorCode: continuation.error.code,
+        errorMessage: normalizeRuntimeError(continuation.error.message),
+        errorRetryable: continuation.error.retryable,
+        eventId: continuation.eventId,
+        toolCallId: continuation.toolCallId,
+        toolDisposition:
+          continuation.reason === "tool_failed" ? "failed" : "indeterminate",
+        toolName: continuation.toolName,
+        type: "tool.failed",
+      };
   }
 }
 
 function normalizePlanRejectionFeedback(message: string): string {
+  return normalizeRuntimeError(message);
+}
+
+function normalizeRuntimeError(message: string): string {
   return message.trim().replace(/\s+/gu, " ").slice(0, 500);
 }
 
@@ -270,6 +304,8 @@ function runtimeContext(
   continuation: ModelContinuation,
 ): ModelRuntimeContext {
   const repairing = continuation.reason === "plan_rejected";
+  const handlingToolFailure = continuation.reason === "tool_failed";
+  const explainingIndeterminate = continuation.reason === "tool_indeterminate";
   return {
     continuation: {
       causedByEventId: continuation.eventId,
@@ -278,7 +314,11 @@ function runtimeContext(
     },
     obligations: repairing
       ? ["repair_plan_control", "respond_or_act"]
-      : ["respond_or_act"],
+      : explainingIndeterminate
+        ? ["explain_unknown_tool_outcome"]
+        : handlingToolFailure
+          ? ["handle_tool_failure", "respond_or_act"]
+          : ["respond_or_act"],
     planRepair:
       state.planRepairAttempts === 0 && !repairing
         ? null
@@ -291,8 +331,17 @@ function runtimeContext(
         ? ["repeat_accepted_plan_change"]
         : continuation.reason === "plan_rejected"
           ? ["repeat_rejected_plan_change"]
-          : [],
-    schemaVersion: MODEL_CONTEXT_SCHEMA_VERSION,
+          : explainingIndeterminate
+            ? [
+                "assume_failed_tool_succeeded",
+                "perform_tool_or_plan_actions",
+              ]
+            : handlingToolFailure
+              ? ["assume_failed_tool_succeeded"]
+              : [],
+    schemaVersion: handlingToolFailure || explainingIndeterminate
+      ? MODEL_RUNTIME_CONTEXT_SCHEMA_VERSION
+      : MODEL_CONTEXT_SCHEMA_VERSION,
   };
 }
 

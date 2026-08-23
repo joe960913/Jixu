@@ -51,7 +51,11 @@ import {
 import { createThreadController } from "../src/thread-controller.ts";
 import type { ThreadController } from "../src/thread-controller.ts";
 import { jixuNipponColors, jixuTheme } from "../src/theme.ts";
-import { installJixuSelectionClipboard } from "../src/tui-clipboard.ts";
+import {
+  createSelectionCopyFeedback,
+  installJixuSelectionClipboard,
+  SELECTION_COPY_FEEDBACK_DURATION_MS,
+} from "../src/tui-clipboard.ts";
 import { ULTRA_COMPOSER_BORDER_CADENCE_MS } from "../src/tui-composer-frame.tsx";
 import { BUTTERFLY_MOTION_CADENCE_MS } from "../src/tui-creation-mark.tsx";
 import { CODE_BLOCK_MAX_CONTENT_HEIGHT } from "../src/tui-markdown.ts";
@@ -781,6 +785,19 @@ function composerPerimeterColors(
   return colors;
 }
 
+let expireMainCopyFeedback: (() => void) | undefined;
+let mainCopyFeedbackDuration: number | undefined;
+const mainCopyFeedback = createSelectionCopyFeedback({
+  schedule: (callback, delayMs) => {
+    expireMainCopyFeedback = callback;
+    mainCopyFeedbackDuration = delayMs;
+    return () => {
+      if (expireMainCopyFeedback === callback) {
+        expireMainCopyFeedback = undefined;
+      }
+    };
+  },
+});
 const setup = await testRender(
   <JixuApp
     connect={async (config, controls) => {
@@ -790,6 +807,7 @@ const setup = await testRender(
     }}
     initial={{ api: "openai-chat-completions" }}
     onQuit={() => undefined}
+    selectionCopyFeedback={mainCopyFeedback}
     toolCatalogue={toolCatalogue}
     workspace="/workspace"
   />,
@@ -808,6 +826,31 @@ try {
   assert.match(initialFrame, /Use \/config to connect a model/);
   assert.match(initialFrame, /Model not configured · use \/config/);
   assert.match(initialFrame, /USD —/);
+  act(() => {
+    mainCopyFeedback.copySucceeded();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.equal(
+    mainCopyFeedbackDuration,
+    SELECTION_COPY_FEEDBACK_DURATION_MS,
+  );
+  assert.match(setup.captureCharFrame(), /COPIED  TO CLIPBOARD/);
+  assert.notEqual(
+    setup.renderer.root.findDescendantById("composer-copy-status"),
+    undefined,
+  );
+  act(() => {
+    expireMainCopyFeedback?.();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  assert.doesNotMatch(setup.captureCharFrame(), /COPIED  TO CLIPBOARD/);
+  assert.match(setup.captureCharFrame(), /FILES/);
   assert.match(initialFrame, /NOW/);
   assert.match(initialFrame, /PLAN/);
   assert.match(initialFrame, /Direct execution/);
@@ -2242,6 +2285,7 @@ try {
   assert.match(returnedFrame, /vendor\/model-example/);
   assert.equal(activeController.current, controllerBeforeConfiguration);
 } finally {
+  mainCopyFeedback.dispose();
   act(() => {
     setup.renderer.destroy();
   });
@@ -2899,6 +2943,17 @@ let failNextClipboardWrite = false;
 let nextClipboardWriteGate:
   | { readonly started: () => void; readonly wait: Promise<void> }
   | undefined;
+let expireSelectionCopyFeedback: (() => void) | undefined;
+const selectionCopyFeedback = createSelectionCopyFeedback({
+  schedule: (callback) => {
+    expireSelectionCopyFeedback = callback;
+    return () => {
+      if (expireSelectionCopyFeedback === callback) {
+        expireSelectionCopyFeedback = undefined;
+      }
+    };
+  },
+});
 const selectionClipboard = installJixuSelectionClipboard(
   selectionClipboardSetup.renderer,
   {
@@ -2918,6 +2973,7 @@ const selectionClipboard = installJixuSelectionClipboard(
       throw new Error("Clipboard failure fixture");
     },
   },
+  { feedback: selectionCopyFeedback },
 );
 
 try {
@@ -2954,6 +3010,9 @@ try {
   assert.deepEqual(clipboardWrites, [
     { destination: "best-available", text: firstSelectedText },
   ]);
+  assert.equal(selectionCopyFeedback.getSnapshot(), "copied");
+  expireSelectionCopyFeedback?.();
+  assert.equal(selectionCopyFeedback.getSnapshot(), "idle");
 
   failNextClipboardWrite = true;
   await act(async () => {
@@ -2967,11 +3026,14 @@ try {
   const secondSelectedText =
     selectionClipboardSetup.renderer.getSelection()?.getSelectedText();
   assert.notEqual(secondSelectedText, undefined);
+  await selectionClipboard.settled();
+  assert.equal(selectionCopyFeedback.getSnapshot(), "idle");
   clipboardEditor?.setSelection(0, 6);
   act(() => {
     selectionClipboardSetup.mockInput.pressKey("c", { super: true });
   });
   await selectionClipboard.settled();
+  assert.equal(selectionCopyFeedback.getSnapshot(), "copied");
   // Scoped UI regression: failure is contained and editor selection wins.
   assert.deepEqual(clipboardWrites.slice(1), [
     { destination: "best-available", text: secondSelectedText },
@@ -3038,6 +3100,7 @@ try {
   assert.equal(clipboardWrites.length, writesBeforeDispose);
 } finally {
   await selectionClipboard.dispose();
+  selectionCopyFeedback.dispose();
   act(() => {
     selectionClipboardSetup.renderer.destroy();
   });

@@ -17,6 +17,7 @@ import {
   AgentWorkspace,
   type JixuActiveConnection,
 } from "./tui-workspace.tsx";
+import type { SelectionCopyFeedbackSource } from "./tui-clipboard.ts";
 
 export type { JixuInitialConfiguration } from "./tui-setup.tsx";
 
@@ -34,6 +35,7 @@ export interface JixuAppProps {
   readonly initial?: JixuInitialConfiguration;
   readonly motion?: boolean;
   readonly onQuit: () => void;
+  readonly selectionCopyFeedback?: SelectionCopyFeedbackSource;
   readonly toolCatalogue?: readonly ExecutableTool[];
   readonly workspace: string;
 }
@@ -69,6 +71,7 @@ export function JixuApp({
   initial,
   motion = true,
   onQuit,
+  selectionCopyFeedback,
   toolCatalogue = [],
   workspace,
 }: JixuAppProps) {
@@ -160,6 +163,7 @@ export function JixuApp({
       }}
       onQuit={onQuit}
       pendingModel={configuration?.model ?? null}
+      selectionCopyFeedback={selectionCopyFeedback}
       workspace={workspace}
     />
   );

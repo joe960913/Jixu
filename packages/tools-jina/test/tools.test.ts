@@ -9,6 +9,7 @@ import {
 } from "jixu-core";
 import type {
   ModelDriver,
+  ModelGenerateEffect,
   ModelOutcome,
   ToolExecutionContext,
 } from "jixu-core";
@@ -285,6 +286,91 @@ test("JX-AC-048 ordinary Harness dispatch is durable and Replay performs no Jina
   assert.equal(fetchCalls, 1);
 
   await thread.replay();
+  assert.equal(fetchCalls, 1);
+});
+
+test("JX-AC-010 JX-AC-048 JX-AC-049 Jina HTTP 503 remains Agent-visible and does not terminate the turn", async () => {
+  let fetchCalls = 0;
+  const effects: ModelGenerateEffect[] = [];
+  const webSearch = createJinaWebSearchTool({
+    apiKey: "fixture-secret",
+    fetch: async () => {
+      fetchCalls += 1;
+      return new Response("upstream-secret-body", { status: 503 });
+    },
+  });
+  const driver: ModelDriver = {
+    generate(effect): Promise<ModelOutcome> {
+      effects.push(structuredClone(effect));
+      return Promise.resolve(
+        effects.length === 1
+          ? {
+              status: "succeeded",
+              value: {
+                content: "",
+                toolCalls: [
+                  {
+                    arguments: { query: "repository image outage" },
+                    id: "search-503",
+                    name: "web_search",
+                  },
+                ],
+              },
+            }
+          : {
+              status: "succeeded",
+              value: {
+                content: "Jina Search is temporarily unavailable; retry later.",
+                toolCalls: [],
+              },
+            },
+      );
+    },
+  };
+  const store = new InMemoryEventStore();
+  const thread = await createHarness({
+    agent: defineAgent({
+      instructions: "Search before answering and explain Tool failures.",
+      model: { model: "deterministic", provider: "mock" },
+      modelCapabilities: TEST_MODEL_CAPABILITIES,
+      tools: [webSearch],
+    }),
+    modelDrivers: { mock: driver },
+    store,
+  }).createThread();
+
+  const state = await thread.send("Investigate the outage");
+  const failure = (await thread.events()).findLast(
+    (event) => event.type === "tool.failed",
+  );
+  assert.equal(fetchCalls, 1);
+  assert.equal(failure?.payload.error.code, "jina_upstream_unavailable");
+  assert.equal(failure?.payload.error.retryable, true);
+  assert.doesNotMatch(failure?.payload.error.message ?? "", /fixture-secret|upstream-secret-body/);
+  assert.equal(effects.length, 2);
+  assert.equal(
+    effects[1]?.input.runtimeContext?.continuation.reason,
+    "tool_failed",
+  );
+  assert.deepEqual(effects[1]?.input.messages.at(-1), {
+    disposition: "failed",
+    error: {
+      code: "jina_upstream_unavailable",
+      message: "Jina Search returned HTTP 503",
+      retryable: true,
+    },
+    name: "web_search",
+    role: "tool",
+    toolCallId: "search-503",
+  });
+  assert.equal(state.status, "idle");
+  assert.equal(state.error, null);
+  assert.equal(
+    state.result,
+    "Jina Search is temporarily unavailable; retry later.",
+  );
+
+  assert.deepEqual(await thread.replay(), state);
   assert.equal(fetchCalls, 1);
 });
 

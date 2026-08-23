@@ -18,7 +18,7 @@ import type { ModelAccounting } from "./metrics.ts";
 import type { PlanSnapshot, PlanUpdateProposal } from "./plan.ts";
 import type { AcceptedInput } from "./input.ts";
 
-export const CURRENT_EVENT_SCHEMA_VERSION = 10;
+export const CURRENT_EVENT_SCHEMA_VERSION = 11;
 
 export function isSupportedEventSchemaVersion(value: number): boolean {
   return (
@@ -27,6 +27,7 @@ export function isSupportedEventSchemaVersion(value: number): boolean {
     value === 7 ||
     value === 8 ||
     value === 9 ||
+    value === 10 ||
     value === CURRENT_EVENT_SCHEMA_VERSION
   );
 }

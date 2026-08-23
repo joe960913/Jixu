@@ -8,6 +8,10 @@ import type {
   ToolApprovalDecision,
 } from "./domain.ts";
 import type { EffectRequest } from "./effects.ts";
+import {
+  isRetainedIndeterminateToolEffect,
+  isToolIndeterminateExplanationEffect,
+} from "./effects.ts";
 import type { EffectDispatcher, OutcomeProposal } from "./effect-dispatcher.ts";
 import {
   InvalidTransitionError,
@@ -465,7 +469,31 @@ export class ThreadExecution implements Thread {
       }
 
       const pending = Object.values(state.pendingEffects);
+      const pendingExplanation = pending.find(
+        isToolIndeterminateExplanationEffect,
+      );
+      if (pendingExplanation !== undefined) {
+        await this.#dispatchBatch([
+          { ...pendingExplanation, attempt: pendingExplanation.attempt + 1 },
+        ]);
+        continue;
+      }
+      const readyExplanation = state.readyEffects.find(
+        isToolIndeterminateExplanationEffect,
+      );
+      if (readyExplanation !== undefined) {
+        await this.#dispatchBatch([readyExplanation]);
+        continue;
+      }
       if (pending.length > 0) {
+        const actionable = pending.filter(
+          (effect): boolean =>
+            !isRetainedIndeterminateToolEffect(
+              effect,
+              state.messages,
+              state.messageSources,
+            ),
+        );
         const exhaustedPlanRepair = pending.find(
           (effect) =>
             effect.type === "model.generate" &&
@@ -485,7 +513,7 @@ export class ThreadExecution implements Thread {
           });
           continue;
         }
-        const unsafe = pending.find(
+        const unsafe = actionable.find(
           (effect) =>
             effect.type === "tool.execute" &&
             effect.input.idempotency !== "idempotent",
@@ -498,8 +526,31 @@ export class ThreadExecution implements Thread {
           await this.#writeCheckpoint();
           return;
         }
+        if (actionable.length === 0) {
+          const unknown = pending.find((effect) =>
+            isRetainedIndeterminateToolEffect(
+              effect,
+              state.messages,
+              state.messageSources,
+            ),
+          );
+          if (unknown === undefined) {
+            throw new InvalidTransitionError(
+              `Running Thread ${this.id} has no actionable pending Effect`,
+            );
+          }
+          await this.#commit("thread.waiting", {
+            effectId: unknown.id,
+            reasonCode: "effect_outcome_unknown",
+          });
+          await this.#writeCheckpoint();
+          return;
+        }
         await this.#dispatchBatch(
-          pending.map((effect) => ({ ...effect, attempt: effect.attempt + 1 })),
+          actionable.map((effect) => ({
+            ...effect,
+            attempt: effect.attempt + 1,
+          })),
         );
         continue;
       }

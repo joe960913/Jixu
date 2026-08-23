@@ -43,6 +43,7 @@ import {
 import type {
   PasteFallback,
   PendingPastedImage,
+  SelectionCopyFeedbackSource,
 } from "./tui-clipboard.ts";
 import {
   normalizePastedImage,
@@ -71,6 +72,7 @@ interface AgentWorkspaceProps {
   readonly onConfigure: () => void;
   readonly onQuit: () => void;
   readonly pendingModel: string | null;
+  readonly selectionCopyFeedback: SelectionCopyFeedbackSource | undefined;
   readonly workspace: string;
 }
 
@@ -101,6 +103,8 @@ const inactiveSnapshot: ThreadControllerSnapshot = Object.freeze({
 
 const getInactiveSnapshot = (): ThreadControllerSnapshot => inactiveSnapshot;
 const subscribeInactive = (): (() => void) => () => undefined;
+const getIdleCopyFeedback = () => "idle" as const;
+const subscribeIdleCopyFeedback = (): (() => void) => () => undefined;
 // Border, vertical padding, and one editor row make the rendered minimum five.
 const COMPOSER_MIN_HEIGHT = 5;
 const COMPOSER_MAX_HEIGHT = 8;
@@ -155,6 +159,7 @@ function ComposerStatus({
   fileScope,
   modelContext,
   mode,
+  selectionCopyFeedback,
   threadCost,
 }: {
   readonly bashEnabled: boolean;
@@ -166,6 +171,7 @@ function ComposerStatus({
   readonly fileScope: "process" | "workspace";
   readonly modelContext: string | null;
   readonly mode: ThreadControllerSnapshot["mode"];
+  readonly selectionCopyFeedback: "copied" | "idle";
   readonly threadCost: ReturnType<typeof costContext>;
 }) {
   return (
@@ -233,16 +239,29 @@ function ComposerStatus({
           width: "100%",
         }}
       >
-        <text fg={jixuTheme.secondary}>
-          <strong>FILES</strong>
-          <span fg={jixuTheme.secondary}>  </span>
-          <span fg={fileScope === "workspace" ? jixuTheme.success : jixuTheme.warning}>
-            {fileScope}
-          </span>
-          {bashEnabled ? (
-            <span fg={jixuTheme.warning}>  BASH process</span>
-          ) : null}
-        </text>
+        {selectionCopyFeedback === "copied" ? (
+          <text fg={jixuTheme.success} id="composer-copy-status">
+            <strong>COPIED</strong>
+            <span fg={jixuTheme.secondary}>  TO CLIPBOARD</span>
+          </text>
+        ) : (
+          <text fg={jixuTheme.secondary}>
+            <strong>FILES</strong>
+            <span fg={jixuTheme.secondary}>  </span>
+            <span
+              fg={
+                fileScope === "workspace"
+                  ? jixuTheme.success
+                  : jixuTheme.warning
+              }
+            >
+              {fileScope}
+            </span>
+            {bashEnabled ? (
+              <span fg={jixuTheme.warning}>  BASH process</span>
+            ) : null}
+          </text>
+        )}
         <box style={{ flexGrow: 1 }} />
         <text fg={threadCost.partial ? jixuTheme.warning : jixuTheme.success}>
           {threadCost.label}
@@ -264,12 +283,18 @@ export function AgentWorkspace({
   onConfigure,
   onQuit,
   pendingModel,
+  selectionCopyFeedback,
   workspace,
 }: AgentWorkspaceProps) {
   const controllerSnapshot = useSyncExternalStore(
     active?.controller.subscribe ?? subscribeInactive,
     active?.controller.getSnapshot ?? getInactiveSnapshot,
     active?.controller.getSnapshot ?? getInactiveSnapshot,
+  );
+  const copyFeedback = useSyncExternalStore(
+    selectionCopyFeedback?.subscribe ?? subscribeIdleCopyFeedback,
+    selectionCopyFeedback?.getSnapshot ?? getIdleCopyFeedback,
+    selectionCopyFeedback?.getSnapshot ?? getIdleCopyFeedback,
   );
   const { height, width } = useTerminalDimensions();
   const outerPadding = 1;
@@ -916,6 +941,7 @@ export function AgentWorkspace({
             fileScope={active?.config.tools.fileScope ?? "workspace"}
             modelContext={modelContext}
             mode={snapshot.mode}
+            selectionCopyFeedback={copyFeedback}
             threadCost={threadCost}
           />
         </box>

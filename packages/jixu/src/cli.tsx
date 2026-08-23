@@ -34,7 +34,10 @@ import type {
 import { createThreadController } from "./thread-controller.ts";
 import { jixuTheme } from "./theme.ts";
 import { JixuApp } from "./tui.tsx";
-import { installJixuSelectionClipboard } from "./tui-clipboard.ts";
+import {
+  createSelectionCopyFeedback,
+  installJixuSelectionClipboard,
+} from "./tui-clipboard.ts";
 import { registerJixuCodeParsers } from "./tui-parsers.ts";
 
 interface CliOptions {
@@ -284,7 +287,12 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
     host: createHostClipboard(),
     terminal: createRendererClipboardAdapter(renderer),
   });
-  const selectionClipboard = installJixuSelectionClipboard(renderer, clipboard);
+  const selectionCopyFeedback = createSelectionCopyFeedback();
+  const selectionClipboard = installJixuSelectionClipboard(
+    renderer,
+    clipboard,
+    { feedback: selectionCopyFeedback },
+  );
   const root = createRoot(renderer);
   const stopOnInterrupt = () => requestQuit("interrupt");
   const stopOnTerminate = () => requestQuit("terminate");
@@ -308,6 +316,7 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
         }}
         motion={process.env.JIXU_MOTION !== "off"}
         onQuit={quitInteractively}
+        selectionCopyFeedback={selectionCopyFeedback}
         toolCatalogue={toolCatalogue}
         workspace={options.root}
       />,
@@ -320,6 +329,7 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
       await selectionClipboard.dispose();
     } finally {
       root.unmount();
+      selectionCopyFeedback.dispose();
       renderer.destroy();
     }
   }

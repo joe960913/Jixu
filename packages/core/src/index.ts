@@ -33,6 +33,7 @@ export {
   estimateContextTokens,
   MAX_PLAN_REPAIR_ATTEMPTS,
   MODEL_CONTEXT_SCHEMA_VERSION,
+  MODEL_RUNTIME_CONTEXT_SCHEMA_VERSION,
   parseContinuityHandoffBody,
 } from "./context.ts";
 export type {
@@ -96,8 +97,10 @@ export type {
   ToolApprovalDecision,
   ToolApprovalWaitingReason,
   ToolDescriptor,
+  ToolFailureMessage,
   ToolIdempotency,
   ToolMessage,
+  ToolSuccessMessage,
   UserMessage,
   WaitingReason,
 } from "./domain.ts";

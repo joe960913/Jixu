@@ -36,6 +36,7 @@ import type {
   PlanUpdateProposal,
   ProgressControlDescriptor,
   ToolDescriptor,
+  ToolMessage,
 } from "jixu-core";
 
 import { modelAccounting } from "./accounting.ts";
@@ -90,6 +91,7 @@ export interface AnthropicToolUseBlock {
 
 export interface AnthropicToolResultBlock {
   readonly content: string;
+  readonly is_error?: boolean;
   readonly tool_use_id: string;
   readonly type: "tool_result";
 }
@@ -301,7 +303,7 @@ async function toChatMessages(
       continue;
     }
     input.push({
-      content: jsonString(message.output),
+      content: jsonString(toolMessageContent(message)),
       role: "tool",
       tool_call_id: message.toolCallId,
     });
@@ -315,6 +317,19 @@ async function toChatMessages(
     input.push({ content: runtimeContext, role: "system" });
   }
   return input;
+}
+
+function toolMessageContent(message: ToolMessage): JsonValue {
+  return "output" in message
+    ? message.output
+    : {
+        disposition: message.disposition,
+        error: {
+          code: message.error.code,
+          message: message.error.message,
+          retryable: message.error.retryable,
+        },
+      };
 }
 
 function toChatTool(
@@ -415,7 +430,8 @@ async function toAnthropicMessages(
       const candidate = messages[cursor];
       if (candidate?.role !== "tool") break;
       results.push({
-        content: jsonString(candidate.output),
+        content: jsonString(toolMessageContent(candidate)),
+        ...("error" in candidate ? { is_error: true } : {}),
         tool_use_id: candidate.toolCallId,
         type: "tool_result",
       });
@@ -448,7 +464,7 @@ const COMPACTION_SYSTEM_PROMPT = [
 
 function compactionSourceAnchor(message: ModelMessage): string {
   const source = message.role === "tool"
-    ? `${message.name} ${jsonString(message.output)}`
+    ? `${message.name} ${jsonString(toolMessageContent(message))}`
     : message.role === "assistant"
     ? [
         message.content,

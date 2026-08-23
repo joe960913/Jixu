@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.49
+**Version:** 0.4.50
 **Status:** normative, pre-1.0
 **Last updated:** 2026-08-24
 
@@ -190,9 +190,17 @@ A Thread has one status:
 | `paused` | Administratively stopped at a safe dispatch boundary. |
 
 When the accepted input queue is empty, the end of an Agent reply returns the
-Thread to `idle`; it does not complete the Thread. Model or Tool failures are
-durable turn outcomes and return the Thread to `idle` with `lastError`, unless an
-indeterminate external outcome requires `waiting`.
+Thread to `idle`; it does not complete the Thread. A model failure is a durable
+turn outcome and returns the Thread to `idle` with `lastError`, unless an
+indeterminate external outcome requires `waiting`. A deterministic Tool failure
+is instead a durable observation inside the current Agent loop: it keeps the
+Thread `running`, is supplied to the next model request, and lets the Agent
+explain, recover, or choose another action. An indeterminate Tool outcome records
+the same bounded failure evidence and permits one explanation-only model
+continuation before entering `waiting`, because Jixu cannot safely claim whether
+the external action occurred. That continuation is observational: Tool calls and
+Plan actions in its response are durably auditable but MUST NOT be materialized
+or dispatched.
 
 - **JX-THREAD-001.** Creating a Thread MUST durably record its Agent snapshot
   before the Thread becomes visible.
@@ -304,9 +312,9 @@ interface ThreadEvent<TType extends string, TPayload> {
 - **JX-EVT-004.** Events MUST be immutable after append.
 - **JX-EVT-005.** Correlation metadata MAY group work but MUST NOT replace
   Thread or Event identity.
-- **JX-EVT-006.** Event schema version 10 is the current Thread schema. Versions
-  5 through 9 remain readable for their historical Event shapes so existing
-  Threads can continue by appending version 10 Events. Version 5 MUST reject
+- **JX-EVT-006.** Event schema version 11 is the current Thread schema. Versions
+  5 through 10 remain readable for their historical Event shapes so existing
+  Threads can continue by appending version 11 Events. Version 5 MUST reject
   structured input fields introduced by version 6; versions 5 and 6 MUST reject
   mode fields and `thread.mode_changed` introduced by version 7; and versions 5
   through 7 MUST reject bounded Context fields and compaction Events introduced
@@ -316,11 +324,15 @@ interface ThreadEvent<TType extends string, TPayload> {
   earliest pre-release Agent snapshots and model requests MAY omit bounded
   Context fields. Those known omissions are interpreted with the frozen
   32,768/4,096 portable profile and derived default Context Policy without
-  rewriting stored Events. Schemas 9 and 10 require both immutable Agent fields
-  and a capability-bearing bounded Context Manifest. Schema 10 adds durable
+  rewriting stored Events. Schemas 9 through 11 require both immutable Agent
+  fields and a capability-bearing bounded Context Manifest. Schema 10 adds durable
   turn interruption plus the `model.cancelled` and pre-dispatch
   `tool.cancelled` outcomes; those Event types MUST be rejected under every
-  earlier schema. Every other Event schema version MUST fail closed.
+  earlier schema. Schema 11 adds failed Tool messages and the `tool_failed`
+  Model Runtime Context continuation. Those shapes MUST be rejected under every
+  earlier schema, whose already-recorded deterministic Tool failures retain
+  their historical terminal projection during Replay. Every other Event schema
+  version MUST fail closed.
 
 The v0.4 families are:
 
@@ -394,8 +406,17 @@ Every Effect carries `id`, `threadId`, `type`, `input`, and idempotency metadata
 - **JX-EFF-007.** A Tool implementation MAY reject a request with a typed,
   deterministic execution error before an external outcome becomes unknown.
   The Tool Driver MUST preserve that error code, message, retryability, and
-  `failed` disposition. An untyped exception after Tool dispatch MUST remain
-  `indeterminate`; the Driver MUST NOT guess that no side effect occurred.
+  `failed` disposition. The Reducer MUST project that exact bounded error as a
+  failed Tool message and request the model again with a causal `tool_failed`
+  receipt; it MUST NOT misrepresent the failure as successful output or settle
+  the Thread before the Agent can handle it. An untyped exception after Tool
+  dispatch MUST preserve its bounded error evidence but remain `indeterminate`;
+  the Driver MUST NOT guess that no side effect occurred. After every already-
+  returned outcome in the current Tool batch is projected, the Kernel MUST permit
+  one explanation-only model continuation containing the complete known failure
+  evidence, then enter `waiting`. The continuation MUST NOT materialize or
+  dispatch Tool or Plan actions, and the Kernel MUST NOT automatically retry the
+  unknown Tool Effect.
 - **JX-EFF-008.** A Tool permission decision MUST be resolved from the parsed
   Tool input before Driver dispatch. `allow` proceeds through the ordinary
   durable Tool request, `deny` records a deterministic `tool.failed` outcome
@@ -756,6 +777,28 @@ metadata. It is not the default for a new current-schema Agent.
   using the network, keep credentials out of configuration and reports, and emit
   redacted quality and accounting observations. Evaluation artifacts are
   maintainer evidence, not Thread authority, model routing, or runtime telemetry.
+- **JX-CTX-018.** A deterministic `tool.failed` Event under the current schema
+  MUST create a `tool_failed` continuation whose receipt preserves the Tool
+  name, Tool-call identity, disposition, error code, bounded message, and
+  retryability. Its Runtime Context MUST require the model to handle the Tool
+  failure and respond or act, and MUST prohibit assuming that the failed Tool
+  succeeded. The matching model message MUST remain structurally distinguishable
+  from successful Tool output; provider adapters MUST use their native failed-
+  Tool representation when one exists. Failure evidence MUST remain available
+  to Context compilation, compaction, Replay, Fork, and later Thread turns.
+- **JX-CTX-019.** An `indeterminate` `tool.failed` Event under the current schema
+  MUST create a `tool_indeterminate` explanation continuation whose receipt
+  preserves the same bounded Tool identity and failure fields as JX-CTX-018.
+  The Runtime Context MUST require a user-facing explanation of the unknown
+  outcomes and prohibit Tool or Plan action until every indeterminate Effect is
+  externally resolved. All known failures from the current parallel Tool batch
+  MUST be present before the explanation request is dispatched. Reducer projection of
+  the explanation response MUST retain only public assistant content, suppress
+  Tool calls and Plan updates regardless of provider output, retain every
+  indeterminate Tool Effect as pending, and enter `waiting`. Explanation failure
+  or cancellation MUST also settle at the same waiting boundary without losing
+  the original Tool error evidence or redispatching any unknown Effect. Resolving
+  fewer than all retained indeterminate Effects MUST NOT resume ordinary work.
 
 ### 10.3 Adaptive compaction and Continuity Handoff
 
@@ -1483,8 +1526,16 @@ implement another TUI, Harness, or Thread lifecycle.
   projection from before the clear.
 - **JX-AC-004 — Crash recovery.** Recovery after an accepted Effect request
   resumes only work allowed by its delivery contract.
-- **JX-AC-005 — Indeterminate Tool outcome.** An unknown non-idempotent outcome
-  enters `waiting` and is not repeated automatically.
+- **JX-AC-005 — Indeterminate Tool outcome.** Every unknown Tool outcome records
+  a durable failed Tool message containing its bounded reason and retains its
+  exact pending Effect identity. One explanation-only model request is produced
+  after all known outcomes in the current Tool batch are projected. Its public
+  text is retained, any returned Tool calls or Plan updates are suppressed, and the
+  Thread then enters `waiting` without repeating the unknown Tool Effect.
+  Explanation failure or cancellation enters the same wait. Replay invokes no
+  live Driver; recovery may resume only the already-requested explanation Effect
+  and never a retained indeterminate Tool Effect. Ordinary work cannot resume
+  until every retained unknown Effect has been externally resolved.
 - **JX-AC-006 — Fork.** Forking at Event N creates an atomic child Thread with
   exact parent State at N and leaves the parent unchanged.
 - **JX-AC-007 — Replay safety.** Replay invokes zero live Drivers and reproduces
@@ -1493,8 +1544,12 @@ implement another TUI, Harness, or Thread lifecycle.
   Checkpoints all recover the same State from Events.
 - **JX-AC-009 — Pause and continue.** Pause settles at a safe boundary,
   survives restart, and only explicit continue restarts dispatch.
-- **JX-AC-010 — Failed turn continuity.** A typed model or Tool failure is
-  durable and does not erase earlier Thread context.
+- **JX-AC-010 — Failed turn continuity.** A typed model failure is durable and
+  does not erase earlier Thread context. A typed deterministic Tool failure is
+  durable but does not terminate the turn: the next model request receives one
+  structurally failed Tool message plus a causal `tool_failed` receipt, and a
+  later ordinary model response settles the Thread. Permission denial and a
+  first-party Tool's typed upstream failure use this same path.
 - **JX-AC-011 — Unknown Event.** Unsupported persisted data fails closed.
 - **JX-AC-012 — Concurrency rejection.** Conflicting writers cannot both commit
   the same next sequence.
@@ -1766,16 +1821,23 @@ implement another TUI, Harness, or Thread lifecycle.
   presents the network boundary without changing the current Thread's Agent
   snapshot.
 - **JX-AC-049 — Causally complete model continuation.** Deterministic fixtures
-  for input acceptance, accepted Plan control, rejected Plan control, and Tool
-  completion produce `model.requested` Effects with typed continuation reasons,
-  causal receipts, remaining obligations, do-not-repeat constraints, and the
-  applicable Plan-repair budget. Their redacted Context Manifests identify the
+  for input acceptance, accepted Plan control, rejected Plan control, Tool
+  completion, and deterministic Tool failure produce `model.requested` Effects
+  with typed continuation reasons, causal receipts, remaining obligations,
+  do-not-repeat constraints, and the applicable Plan-repair budget. A Tool
+  failure fixture proves that OpenAI-compatible requests receive structured
+  failed Tool content and Anthropic requests additionally mark the native
+  `tool_result` as an error. Their redacted Context Manifests identify the
   included Agent, message, Plan, Tool, and runtime sources with stable digests
   and produce the same logical request digest during Replay and recovery.
   OpenAI Chat Completions and Anthropic Messages format the same Runtime Context
   semantics without changing the immutable Agent instructions. A historical
   pending model request created by the former unbounded Plan-repair loop is
   settled with typed `plan_repair_exhausted` instead of being redispatched.
+  An indeterminate Tool fixture produces a `tool_indeterminate` explanation
+  continuation containing all known failures in a parallel batch, mechanically
+  suppresses returned Tool and Plan actions, preserves every unknown Tool Effect,
+  and enters `waiting` after explanation success, failure, or cancellation.
 - **JX-AC-050 — Installed CLI dispatch.** The exact packed `jixu-ai` artifact and
   one target-compatible platform artifact install in clean npm, pnpm, Yarn,
   and Bun consumers with dependency lifecycle scripts disabled. Their package
@@ -2460,6 +2522,32 @@ release metadata MUST be derived from and verified against the same
 authoritative cross-platform release-candidate run. This publication adds no
 semantics beyond Version 0.4.48, no Event or Reducer schema change, no stored-
 data migration, no target expansion, and no dependency change.
+
+Version 0.4.50 corrects deterministic Tool failure continuity after a real Jina
+Search HTTP 503 exposed that `tool.failed` returned the Thread to `idle` before
+the Agent could observe or explain the failure. Event schema 11 projects a
+typed failed Tool message and a provider-neutral `tool_failed` Runtime Context
+receipt, keeps the current turn `running`, and continues through the ordinary
+model Effect. OpenAI-compatible adapters serialize structured failed Tool
+content, while Anthropic additionally uses native `tool_result.is_error`.
+Indeterminate Tool outcomes preserve every bounded reason, retain every pending
+Effect, and create one `tool_indeterminate` explanation-only model
+continuation after the current Tool batch is fully projected. The Reducer
+mechanically suppresses Tool calls and Plan updates from that response, preserves
+all unknown Effect identities and errors, and then enters `waiting`; explanation
+failure or cancellation reaches the same boundary. Recovery may resume a durable
+explanation request but never redispatches an unknown Tool Effect; resolving
+fewer than all retained unknown Effects cannot resume ordinary work. Reducer
+version 17 invalidates disposable Checkpoints. Schemas 5
+through 10 remain readable without rewriting stored Events; their historical
+deterministic Tool failures retain their terminal Replay projection so opening
+an old Thread cannot create a new paid model request. A new input appended to
+such a Thread uses schema 11 and the corrected behavior. A historical
+indeterminate Tool failure instead projects the already-required safe `waiting`
+boundary while retaining its pending Effect and Event error; it does not gain a
+schema-11 failed Tool message or dispatch work. This change adds no automatic
+retry policy, second state machine, provider-specific core semantics, settings
+migration, or dependency.
 
 ## 19. Implementation order
 

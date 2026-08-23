@@ -12,6 +12,10 @@ import type {
   ToolExecuteEffect,
 } from "./effects.ts";
 import {
+  isRetainedIndeterminateToolEffect,
+  isToolIndeterminateExplanationEffect,
+} from "./effects.ts";
+import {
   compileContext,
   MAX_PLAN_REPAIR_ATTEMPTS,
 } from "./context.ts";
@@ -35,7 +39,7 @@ import {
   samePlan,
 } from "./plan.ts";
 
-export const REDUCER_VERSION = 16;
+export const REDUCER_VERSION = 17;
 
 export interface TransitionResult {
   readonly effects: readonly EffectRequest[];
@@ -94,6 +98,13 @@ function withoutApproval(
       },
     };
   }
+  if (state.waitingReason?.reasonCode === "effect_outcome_unknown") {
+    return {
+      status: "waiting",
+      toolApprovals,
+      waitingReason: state.waitingReason,
+    };
+  }
   return {
     status: state.status === "waiting" ? "running" : state.status,
     toolApprovals,
@@ -102,6 +113,83 @@ function withoutApproval(
         ? null
         : state.waitingReason,
   };
+}
+
+interface ToolFailureProvenance {
+  readonly disposition: "failed" | "indeterminate";
+  readonly error: DriverError;
+  readonly eventId: string;
+  readonly toolCallId: string;
+  readonly toolName: string;
+}
+
+function toolFailuresInCurrentOperation(
+  state: ThreadState,
+): readonly ToolFailureProvenance[] {
+  const assistantIndex = state.messages.findLastIndex(
+    (message) => message.role === "assistant",
+  );
+  const failures: ToolFailureProvenance[] = [];
+  for (let index = assistantIndex + 1; index < state.messages.length; index += 1) {
+    const message = state.messages[index];
+    if (message?.role !== "tool" || !("error" in message)) continue;
+    const source = state.messageSources[index];
+    if (source === undefined) {
+      throw new InvalidTransitionError(
+        `Thread ${state.threadId} has incomplete Tool failure provenance`,
+      );
+    }
+    failures.push({
+      disposition: message.disposition,
+      error: message.error,
+      eventId: source.eventId,
+      toolCallId: message.toolCallId,
+      toolName: message.name,
+    });
+  }
+  return failures;
+}
+
+function latestToolFailureInCurrentOperation(
+  state: ThreadState,
+): ToolFailureProvenance | null {
+  return toolFailuresInCurrentOperation(state).at(-1) ?? null;
+}
+
+function latestIndeterminateToolFailure(
+  state: ThreadState,
+): ToolFailureProvenance | null {
+  return (
+    toolFailuresInCurrentOperation(state).findLast(
+      (failure) => failure.disposition === "indeterminate",
+    ) ?? null
+  );
+}
+
+function retainedIndeterminateToolEffects(
+  state: ThreadState,
+): readonly ToolExecuteEffect[] {
+  return Object.values(state.pendingEffects)
+    .filter((effect) =>
+      isRetainedIndeterminateToolEffect(
+        effect,
+        state.messages,
+        state.messageSources,
+      ),
+    )
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function hasUnresolvedPendingToolEffect(state: ThreadState): boolean {
+  return Object.values(state.pendingEffects).some(
+    (effect) =>
+      effect.type === "tool.execute" &&
+      !isRetainedIndeterminateToolEffect(
+        effect,
+        state.messages,
+        state.messageSources,
+      ),
+  );
 }
 
 function removePending(
@@ -325,6 +413,95 @@ function withReadyEffects(
     state: advance(state, sequence, {
       ...updates,
       readyEffects: effects,
+    }),
+  };
+}
+
+function continueAfterToolOutcome(
+  state: ThreadState,
+  sequence: number,
+  fallback: ModelContinuation,
+): TransitionResult {
+  if (state.interruptRequested) {
+    return {
+      effects: [],
+      state: advance(state, sequence, { readyEffects: [] }),
+    };
+  }
+  const indeterminateFailure = latestIndeterminateToolFailure(state);
+  if (indeterminateFailure !== null) {
+    if (
+      hasUnresolvedPendingToolEffect(state) ||
+      Object.values(state.pendingEffects).some(
+        isToolIndeterminateExplanationEffect,
+      )
+    ) {
+      return {
+        effects: [],
+        state: advance(state, sequence, { readyEffects: [] }),
+      };
+    }
+    const effects = [
+      createContextEffect(
+        state,
+        {
+          error: indeterminateFailure.error,
+          eventId: indeterminateFailure.eventId,
+          reason: "tool_indeterminate",
+          toolCallId: indeterminateFailure.toolCallId,
+          toolName: indeterminateFailure.toolName,
+        },
+        0,
+      ),
+    ];
+    return withReadyEffects(
+      advance(state, sequence, {
+        status: "running",
+        waitingReason: null,
+      }),
+      sequence,
+      effects,
+    );
+  }
+  if (
+    state.waitingReason?.reasonCode === "effect_outcome_unknown" ||
+    Object.values(state.pendingEffects).some(
+      (effect) => effect.type === "tool.execute",
+    )
+  ) {
+    return {
+      effects: [],
+      state: advance(state, sequence, { readyEffects: [] }),
+    };
+  }
+  const effects = [createContextEffect(state, fallback, 0)];
+  return withReadyEffects(state, sequence, effects);
+}
+
+function waitForIndeterminateToolOutcomes(
+  state: ThreadState,
+  sequence: number,
+): TransitionResult {
+  const retained = retainedIndeterminateToolEffects(state);
+  const first = retained[0];
+  if (first === undefined) {
+    throw new InvalidTransitionError(
+      `Thread ${state.threadId} has no retained indeterminate Tool Effect`,
+    );
+  }
+  return {
+    effects: [],
+    state: advance(state, sequence, {
+      interruptRequested: false,
+      pauseRequested: false,
+      pendingPlanRejections: [],
+      pendingPlanUpdates: [],
+      readyEffects: [],
+      status: "waiting",
+      waitingReason: {
+        effectId: first.id,
+        reasonCode: "effect_outcome_unknown",
+      },
     }),
   };
 }
@@ -602,12 +779,14 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         event.payload.effectId,
         "context.compact",
       );
+      const explainsIndeterminate =
+        effect.input.continuation.reason === "tool_indeterminate";
       const nextState = advance(state, event.sequence, {
         acceptedHandoff: {
           artifact: event.payload.artifact,
           handoff: event.payload.handoff,
         },
-        error: null,
+        error: explainsIndeterminate ? state.error : null,
         metrics: recordModelAccounting(
           recordEffectOutcome(state.metrics, "model", "succeeded"),
           event.payload.accounting,
@@ -625,6 +804,14 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
 
     case "context.compaction_failed": {
       requireStatus(state, event.type, "running");
+      const effect = state.pendingEffects[event.payload.effectId];
+      if (effect === undefined || effect.type !== "context.compact") {
+        throw new InvalidTransitionError(
+          `Effect ${event.payload.effectId} is not pending as context.compact`,
+        );
+      }
+      const explainsIndeterminate =
+        effect.input.continuation.reason === "tool_indeterminate";
       const remaining = removePending(
         state,
         event.payload.effectId,
@@ -648,6 +835,9 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           );
         }
         return { effects: [], state: nextState };
+      }
+      if (explainsIndeterminate) {
+        return waitForIndeterminateToolOutcomes(nextState, event.sequence);
       }
       return settleTurn(nextState, event.sequence, {
         error: event.payload.error,
@@ -890,6 +1080,39 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         "model.generate",
       );
       const response = event.payload.response;
+      const explainsIndeterminate =
+        completedEffect.input.runtimeContext?.continuation.reason ===
+        "tool_indeterminate";
+      if (explainsIndeterminate) {
+        const hasContent = response.content.trim().length > 0;
+        const nextState = advance(state, event.sequence, {
+          messages: hasContent
+            ? [
+                ...state.messages,
+                {
+                  content: response.content,
+                  role: "assistant",
+                  toolCalls: [],
+                },
+              ]
+            : state.messages,
+          messageSources: hasContent
+            ? [
+                ...state.messageSources,
+                { eventId: event.id, sequence: event.sequence },
+              ]
+            : state.messageSources,
+          metrics: recordModelAccounting(
+            recordEffectOutcome(state.metrics, "model", "succeeded"),
+            event.payload.accounting,
+          ),
+          pendingEffects: remaining,
+          pendingPlanRejections: [],
+          pendingPlanUpdates: [],
+          result: hasContent ? response.content : null,
+        });
+        return waitForIndeterminateToolOutcomes(nextState, event.sequence);
+      }
       const identitySeed = `sequence-${event.sequence}`;
       const repairAttempt =
         Math.max(
@@ -995,38 +1218,60 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           "Model cancellation requires an interrupt request",
         );
       }
+      const effect = state.pendingEffects[event.payload.effectId];
+      if (effect === undefined || effect.type !== "model.generate") {
+        throw new InvalidTransitionError(
+          `Effect ${event.payload.effectId} is not pending as model.generate`,
+        );
+      }
+      const explainsIndeterminate =
+        effect.input.runtimeContext?.continuation.reason ===
+        "tool_indeterminate";
       const remaining = removePending(
         state,
         event.payload.effectId,
         "model.generate",
       );
       const hasContent = event.payload.content.trim().length > 0;
+      const nextState = advance(state, event.sequence, {
+        messages: hasContent
+          ? [
+              ...state.messages,
+              {
+                content: event.payload.content,
+                role: "assistant",
+                toolCalls: [],
+              },
+            ]
+          : state.messages,
+        messageSources: hasContent
+          ? [
+              ...state.messageSources,
+              { eventId: event.id, sequence: event.sequence },
+            ]
+          : state.messageSources,
+        metrics: recordModelAccounting(
+          recordEffectOutcome(state.metrics, "model", "cancelled"),
+          event.payload.accounting,
+        ),
+        pendingEffects: remaining,
+        result: hasContent ? event.payload.content : null,
+      });
+      if (explainsIndeterminate) {
+        return {
+          effects: [],
+          state: advance(nextState, event.sequence, {
+            pendingPlanRejections: [],
+            pendingPlanUpdates: [],
+            readyEffects: [],
+            status: "running",
+            waitingReason: null,
+          }),
+        };
+      }
       return {
         effects: [],
-        state: advance(state, event.sequence, {
-          messages: hasContent
-            ? [
-                ...state.messages,
-                {
-                  content: event.payload.content,
-                  role: "assistant",
-                  toolCalls: [],
-                },
-              ]
-            : state.messages,
-          messageSources: hasContent
-            ? [
-                ...state.messageSources,
-                { eventId: event.id, sequence: event.sequence },
-              ]
-            : state.messageSources,
-          metrics: recordModelAccounting(
-            recordEffectOutcome(state.metrics, "model", "cancelled"),
-            event.payload.accounting,
-          ),
-          pendingEffects: remaining,
-          result: hasContent ? event.payload.content : null,
-        }),
+        state: nextState,
       };
     }
 
@@ -1161,23 +1406,39 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           "Interrupted model work must commit model.cancelled",
         );
       }
+      const effect = state.pendingEffects[event.payload.effectId];
+      if (effect === undefined || effect.type !== "model.generate") {
+        throw new InvalidTransitionError(
+          `Effect ${event.payload.effectId} is not pending as model.generate`,
+        );
+      }
+      const explainsIndeterminate =
+        effect.input.runtimeContext?.continuation.reason ===
+        "tool_indeterminate";
       const remaining = removePending(
         state,
         event.payload.effectId,
         "model.generate",
       );
-      return settleTurn(
-        advance(state, event.sequence, {
-          metrics: recordModelAccounting(
-            recordEffectOutcome(
-              state.metrics,
-              "model",
-              event.payload.disposition,
-            ),
-            event.payload.accounting,
+      const nextState = advance(state, event.sequence, {
+        metrics: recordModelAccounting(
+          recordEffectOutcome(
+            state.metrics,
+            "model",
+            event.payload.disposition,
           ),
-          pendingEffects: remaining,
-        }),
+          event.payload.accounting,
+        ),
+        pendingEffects: remaining,
+      });
+      if (explainsIndeterminate) {
+        return waitForIndeterminateToolOutcomes(
+          advance(nextState, event.sequence, { result: null }),
+          event.sequence,
+        );
+      }
+      return settleTurn(
+        nextState,
         event.sequence,
         { error: event.payload.error, result: null },
       );
@@ -1221,34 +1482,25 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         pendingEffects: remaining,
         ...withoutApproval(state, event.payload.effectId),
       });
-      const hasPendingTools = Object.values(remaining).some(
-        (effect) => effect.type === "tool.execute",
+      const toolFailure = latestToolFailureInCurrentOperation(nextState);
+      return continueAfterToolOutcome(
+        nextState,
+        event.sequence,
+        toolFailure === null
+          ? {
+              eventId: event.id,
+              reason: "tool_completed",
+              toolCallId: event.payload.toolCallId,
+              toolName: event.payload.name,
+            }
+          : {
+              error: toolFailure.error,
+              eventId: toolFailure.eventId,
+              reason: "tool_failed",
+              toolCallId: toolFailure.toolCallId,
+              toolName: toolFailure.toolName,
+            },
       );
-      if (hasPendingTools) {
-        return { effects: [], state: nextState };
-      }
-      if (nextState.interruptRequested) {
-        return { effects: [], state: nextState };
-      }
-      if (nextState.error !== null) {
-        return settleTurn(nextState, event.sequence, {
-          error: nextState.error,
-          result: null,
-        });
-      }
-      const effects = [
-        createContextEffect(
-          nextState,
-          {
-            eventId: event.id,
-            reason: "tool_completed",
-            toolCallId: event.payload.toolCallId,
-            toolName: event.payload.name,
-          },
-          0,
-        ),
-      ];
-      return withReadyEffects(nextState, event.sequence, effects);
     }
 
     case "tool.cancelled": {
@@ -1296,8 +1548,93 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         event.payload.effectId,
         "tool.execute",
       );
+      if (
+        event.schemaVersion < 11 &&
+        event.payload.disposition === "failed"
+      ) {
+        const nextState = advance(state, event.sequence, {
+          ...withoutApproval(state, event.payload.effectId),
+          metrics: recordEffectOutcome(
+            state.metrics,
+            "tools",
+            event.payload.disposition,
+          ),
+          pendingEffects: remaining,
+        });
+        if (nextState.interruptRequested) {
+          return { effects: [], state: nextState };
+        }
+        return failAfterToolOutcome(
+          nextState,
+          event.sequence,
+          remaining,
+          event.payload.error,
+        );
+      }
+
+      const approval = withoutApproval(state, event.payload.effectId);
+      const failedMessage = {
+        disposition: event.payload.disposition,
+        error: event.payload.error,
+        name: event.payload.name,
+        role: "tool" as const,
+        toolCallId: event.payload.toolCallId,
+      };
+      if (event.payload.disposition === "indeterminate") {
+        const interrupted = state.interruptRequested;
+        const recordsFailureMessage = event.schemaVersion >= 11;
+        const nextState = advance(state, event.sequence, {
+          ...approval,
+          error: state.error ?? event.payload.error,
+          messages: recordsFailureMessage
+            ? [...state.messages, failedMessage]
+            : state.messages,
+          messageSources: recordsFailureMessage
+            ? [
+                ...state.messageSources,
+                { eventId: event.id, sequence: event.sequence },
+              ]
+            : state.messageSources,
+          metrics: recordEffectOutcome(
+            state.metrics,
+            "tools",
+            event.payload.disposition,
+          ),
+          pendingEffects: state.pendingEffects,
+          readyEffects: [],
+          status: interrupted ? "running" : approval.status,
+          waitingReason: interrupted ? null : approval.waitingReason,
+        });
+        if (!recordsFailureMessage) {
+          return {
+            effects: [],
+            state: advance(nextState, event.sequence, {
+              status: interrupted ? "running" : "waiting",
+              waitingReason: interrupted
+                ? null
+                : {
+                    effectId: event.payload.effectId,
+                    reasonCode: "effect_outcome_unknown",
+                  },
+            }),
+          };
+        }
+        return continueAfterToolOutcome(nextState, event.sequence, {
+          error: event.payload.error,
+          eventId: event.id,
+          reason: "tool_indeterminate",
+          toolCallId: event.payload.toolCallId,
+          toolName: event.payload.name,
+        });
+      }
+
       const nextState = advance(state, event.sequence, {
-        ...withoutApproval(state, event.payload.effectId),
+        ...approval,
+        messages: [...state.messages, failedMessage],
+        messageSources: [
+          ...state.messageSources,
+          { eventId: event.id, sequence: event.sequence },
+        ],
         metrics: recordEffectOutcome(
           state.metrics,
           "tools",
@@ -1305,22 +1642,13 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         ),
         pendingEffects: remaining,
       });
-      if (nextState.interruptRequested) {
-        return { effects: [], state: nextState };
-      }
-      return failAfterToolOutcome(
-        advance(state, event.sequence, {
-          ...withoutApproval(state, event.payload.effectId),
-          metrics: recordEffectOutcome(
-            state.metrics,
-            "tools",
-            event.payload.disposition,
-          ),
-        }),
-        event.sequence,
-        remaining,
-        event.payload.error,
-      );
+      return continueAfterToolOutcome(nextState, event.sequence, {
+        error: event.payload.error,
+        eventId: event.id,
+        reason: "tool_failed",
+        toolCallId: event.payload.toolCallId,
+        toolName: event.payload.name,
+      });
     }
 
     default: {

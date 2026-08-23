@@ -230,6 +230,80 @@ test("JX-AC-004 JX-AC-005 recovery does not repeat an unsafe pending Tool", asyn
   assert.equal(state.waitingReason?.reasonCode, "effect_outcome_unknown");
 });
 
+test("JX-AC-004 JX-AC-005 recovery resumes only a durable indeterminate explanation", async () => {
+  const inner = new InMemoryEventStore();
+  const store = new CrashStore(
+    inner,
+    (event) =>
+      event.type === "model.completed" &&
+      event.payload.response.content === "First explanation",
+  );
+  let executions = 0;
+  const tool = defineTool({
+    description: "Idempotent call with an unknown observed outcome",
+    execute: () => {
+      executions += 1;
+      throw new Error("The external outcome is unknown");
+    },
+    idempotency: "idempotent",
+    input: objectSchema,
+    name: "unknown_recovery",
+    output: stringSchema,
+  });
+  const agent = defineTestAgent([tool]);
+  const originalModel = new SequenceModelDriver([
+    succeed({
+      content: "",
+      toolCalls: [
+        { arguments: {}, id: "unknown-recovery-1", name: "unknown_recovery" },
+      ],
+    }),
+    succeed({ content: "First explanation", toolCalls: [] }),
+  ]);
+  const thread = await createHarness({
+    agent,
+    ids: new SequenceIdGenerator(),
+    modelDrivers: { mock: originalModel },
+    store,
+  }).createThread();
+
+  await assert.rejects(thread.send("Run it once"), /simulated process stop/);
+  assert.equal(executions, 1);
+  assert.equal(originalModel.effects.length, 2);
+
+  const recoveryModel = new SequenceModelDriver([
+    succeed({ content: "Recovered explanation", toolCalls: [] }),
+  ]);
+  const recovered = await createHarness({
+    agent,
+    ids: new SequenceIdGenerator(100),
+    modelDrivers: { mock: recoveryModel },
+    store,
+  }).openThread(thread.id);
+  const state = await recovered.wait();
+  const events = await recovered.events();
+
+  assert.equal(executions, 1);
+  assert.equal(recoveryModel.effects.length, 1);
+  assert.equal(recoveryModel.effects[0]?.attempt, 2);
+  assert.equal(
+    recoveryModel.effects[0]?.input.runtimeContext?.continuation.reason,
+    "tool_indeterminate",
+  );
+  assert.equal(state.status, "waiting");
+  assert.equal(state.result, "Recovered explanation");
+  assert.equal(Object.keys(state.pendingEffects).length, 1);
+  assert.equal(
+    events.filter((event) => event.type === "tool.requested").length,
+    1,
+  );
+  assert.equal(
+    events.filter((event) => event.type === "model.requested").length,
+    3,
+  );
+  assert.deepEqual(await recovered.replay(), state);
+});
+
 test("JX-AC-004 JX-AC-047 pending Tool approval survives restart", async () => {
   const store = new InMemoryEventStore();
   let executions = 0;
@@ -767,6 +841,90 @@ test("JX-AC-059 interrupt durably cancels one model turn without creating resuma
   assert.equal(next.status, "idle");
   assert.equal(next.result, "A new answer");
   assert.equal(next.messages.at(-1)?.role, "assistant");
+});
+
+test("JX-AC-005 JX-AC-059 cancelling an indeterminate explanation still waits for the unknown Tool", async () => {
+  let explanationStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    explanationStarted = resolve;
+  });
+  let modelCall = 0;
+  const driver: ModelDriver = {
+    async generate(_effect, context) {
+      modelCall += 1;
+      if (modelCall === 1) {
+        return succeed({
+          content: "",
+          toolCalls: [
+            { arguments: {}, id: "unknown-1", name: "unknown_interrupt" },
+          ],
+        });
+      }
+      explanationStarted();
+      return await new Promise((resolve) => {
+        context.cancellation.addEventListener(
+          "abort",
+          () =>
+            resolve({
+              accounting: EMPTY_MODEL_ACCOUNTING,
+              cancelledContent: "The outcome is still unknown.",
+              status: "cancelled",
+            }),
+          { once: true },
+        );
+      });
+    },
+  };
+  let executions = 0;
+  const tool = defineTool({
+    description: "Unknown external effect",
+    execute: () => {
+      executions += 1;
+      throw new Error("External effect may have happened");
+    },
+    input: objectSchema,
+    name: "unknown_interrupt",
+    output: stringSchema,
+  });
+  const store = new InMemoryEventStore();
+  const thread = await createHarness({
+    agent: defineTestAgent([tool]),
+    modelDrivers: { mock: driver },
+    store,
+  }).createThread();
+  const sending = thread.send("Run the unknown Tool");
+  await started;
+
+  const [interrupted, sendResult] = await Promise.all([
+    thread.interrupt(),
+    sending,
+  ]);
+  const events = await thread.events();
+
+  assert.equal(executions, 1);
+  assert.equal(modelCall, 2);
+  assert.equal(interrupted.status, "waiting");
+  assert.equal(sendResult.status, "waiting");
+  assert.equal(interrupted.result, "The outcome is still unknown.");
+  assert.equal(interrupted.error?.code, "tool_driver_exception");
+  assert.equal(interrupted.interruptRequested, false);
+  assert.equal(Object.keys(interrupted.pendingEffects).length, 1);
+  assert.deepEqual(
+    events.slice(-3).map((event) => event.type),
+    ["thread.interrupt_requested", "model.cancelled", "thread.waiting"],
+  );
+  assert.deepEqual(await thread.replay(), interrupted);
+
+  const reopenedModel = new SequenceModelDriver([
+    succeed({ content: "must not run", toolCalls: [] }),
+  ]);
+  const reopened = await createHarness({
+    agent: defineTestAgent([tool]),
+    modelDrivers: { mock: reopenedModel },
+    store,
+  }).openThread(thread.id);
+  assert.equal((await reopened.state()).status, "waiting");
+  assert.equal(reopenedModel.effects.length, 0);
 });
 
 test("JX-AC-059 interrupt cancels a durably requested Tool before Driver dispatch", async () => {

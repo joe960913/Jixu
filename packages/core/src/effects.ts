@@ -16,6 +16,7 @@ import type {
   ContinuityHandoff,
   ContinuityHandoffBody,
   ModelContextManifest,
+  ModelMessageSource,
   ModelRuntimeContext,
 } from "./context.ts";
 
@@ -67,6 +68,43 @@ export type EffectRequest =
   | ContextCompactEffect
   | ModelGenerateEffect
   | ToolExecuteEffect;
+
+export function isToolIndeterminateExplanationEffect(
+  effect: EffectRequest,
+): boolean {
+  if (effect.type === "model.generate") {
+    return (
+      effect.input.runtimeContext?.continuation.reason === "tool_indeterminate"
+    );
+  }
+  return (
+    effect.type === "context.compact" &&
+    effect.input.continuation.reason === "tool_indeterminate"
+  );
+}
+
+export function isRetainedIndeterminateToolEffect(
+  effect: EffectRequest,
+  messages: readonly ModelMessage[],
+  messageSources: readonly ModelMessageSource[],
+): effect is ToolExecuteEffect {
+  if (effect.type !== "tool.execute") return false;
+  const requestIndex = messageSources.findIndex(
+    (source, index) =>
+      source.eventId === effect.requestedByEventId &&
+      messages[index]?.role === "assistant",
+  );
+  if (requestIndex < 0) return false;
+  return messages.some(
+    (message, index) =>
+      index > requestIndex &&
+      message.role === "tool" &&
+      "error" in message &&
+      message.disposition === "indeterminate" &&
+      message.name === effect.input.name &&
+      message.toolCallId === effect.input.toolCallId,
+  );
+}
 
 export interface DriverSuccess<T> {
   readonly status: "succeeded";

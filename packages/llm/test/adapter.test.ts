@@ -162,6 +162,37 @@ function effect(
   };
 }
 
+function failedToolEffect(provider: string): ModelGenerateEffect {
+  const base = effect(provider, "fixture-model", null);
+  return {
+    ...base,
+    input: {
+      ...base.input,
+      messages: [
+        { content: "Search for it", role: "user" },
+        {
+          content: "",
+          role: "assistant",
+          toolCalls: [
+            { arguments: { query: "Jixu" }, id: "call-search", name: "search" },
+          ],
+        },
+        {
+          disposition: "failed",
+          error: {
+            code: "jina_upstream_unavailable",
+            message: "Jina Search returned HTTP 503",
+            retryable: true,
+          },
+          name: "search",
+          role: "tool",
+          toolCallId: "call-search",
+        },
+      ],
+    },
+  };
+}
+
 function context(
   signals: Signal[] = [],
   cancellation = new AbortController().signal,
@@ -771,6 +802,62 @@ test("JX-PROV-002 JX-PROV-003 JX-AC-016 OpenAI Chat Completions normalizes contr
     threadId: "thread-1",
     type: "model.progress",
   });
+});
+
+test("JX-PROV-002 JX-PROV-004 JX-AC-010 JX-AC-049 both protocols preserve native failed Tool semantics", async () => {
+  const chatClient = new FakeOpenAIChatClient(chatChunks());
+  const anthropicClient = new FakeAnthropicClient(anthropicEvents());
+
+  assert.equal(
+    (await createLLMModelDriver({
+      api: "openai-chat-completions",
+      baseURL: "https://chat.example/v1",
+      openAIChatCompletionsClient: chatClient,
+      provider: "chat-provider",
+    }).generate(failedToolEffect("chat-provider"), context())).status,
+    "succeeded",
+  );
+  assert.equal(
+    (await createLLMModelDriver({
+      anthropicMessagesClient: anthropicClient,
+      api: "anthropic-messages",
+      baseURL: "https://api.anthropic.test",
+      provider: "anthropic",
+    }).generate(failedToolEffect("anthropic"), context())).status,
+    "succeeded",
+  );
+
+  const chatResult = chatClient.body?.messages.at(-1);
+  assert.equal(chatResult?.role, "tool");
+  assert.deepEqual(
+    JSON.parse(String(chatResult?.content)),
+    {
+      disposition: "failed",
+      error: {
+        code: "jina_upstream_unavailable",
+        message: "Jina Search returned HTTP 503",
+        retryable: true,
+      },
+    },
+  );
+  const anthropicResultMessage = anthropicClient.body?.messages.at(-1);
+  assert.equal(anthropicResultMessage?.role, "user");
+  assert.ok(Array.isArray(anthropicResultMessage?.content));
+  assert.deepEqual(anthropicResultMessage.content, [
+    {
+      content: JSON.stringify({
+        disposition: "failed",
+        error: {
+          code: "jina_upstream_unavailable",
+          message: "Jina Search returned HTTP 503",
+          retryable: true,
+        },
+      }),
+      is_error: true,
+      tool_use_id: "call-search",
+      type: "tool_result",
+    },
+  ]);
 });
 
 test("JX-PROV-008 JX-AC-053 Ultra maps to the strongest compatible native effort without prompt changes", async () => {

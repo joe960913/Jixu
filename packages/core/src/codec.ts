@@ -6,6 +6,7 @@ import {
   CONTEXT_MANIFEST_SCHEMA_VERSION,
   MAX_PLAN_REPAIR_ATTEMPTS,
   MODEL_CONTEXT_SCHEMA_VERSION,
+  MODEL_RUNTIME_CONTEXT_SCHEMA_VERSION,
   estimateContextTokens,
   parseContinuityHandoffBody,
 } from "./context.ts";
@@ -208,6 +209,7 @@ function assertAgentSnapshot(
 function assertModelMessage(
   value: JsonValue | undefined,
   label: string,
+  eventSchemaVersion: number,
 ): void {
   const item = object(value, label);
   const role = string(item.role, `${label}.role`);
@@ -228,8 +230,25 @@ function assertModelMessage(
   if (role === "tool") {
     string(item.name, `${label}.name`);
     string(item.toolCallId, `${label}.toolCallId`);
-    if (item.output === undefined) {
+    if (item.output !== undefined) {
+      if (item.error !== undefined || item.disposition !== undefined) {
+        throw new SchemaValidationError(
+          `${label} cannot contain both Tool output and failure fields`,
+        );
+      }
+      return;
+    }
+    if (eventSchemaVersion < 11) {
       throw new SchemaValidationError(`${label}.output is required`);
+    }
+    assertDriverError(item.error, `${label}.error`);
+    if (
+      item.disposition !== "failed" &&
+      item.disposition !== "indeterminate"
+    ) {
+      throw new SchemaValidationError(
+        `${label}.disposition is unsupported`,
+      );
     }
     return;
   }
@@ -349,10 +368,26 @@ function assertPlanRejection(
 function assertModelRuntimeContext(
   value: JsonValue | undefined,
   label: string,
+  eventSchemaVersion: number,
 ): void {
   const runtime = object(value, label);
-  if (runtime.schemaVersion !== MODEL_CONTEXT_SCHEMA_VERSION) {
+  const runtimeSchemaVersion = integer(
+    runtime.schemaVersion,
+    `${label}.schemaVersion`,
+  );
+  if (
+    runtimeSchemaVersion !== MODEL_CONTEXT_SCHEMA_VERSION &&
+    runtimeSchemaVersion !== MODEL_RUNTIME_CONTEXT_SCHEMA_VERSION
+  ) {
     throw new SchemaValidationError(`${label}.schemaVersion is unsupported`);
+  }
+  if (
+    runtimeSchemaVersion === MODEL_RUNTIME_CONTEXT_SCHEMA_VERSION &&
+    eventSchemaVersion < 11
+  ) {
+    throw new SchemaValidationError(
+      `${label}.schemaVersion requires Event schema 11`,
+    );
   }
   const continuation = object(runtime.continuation, `${label}.continuation`);
   string(continuation.causedByEventId, `${label}.continuation.causedByEventId`);
@@ -361,9 +396,19 @@ function assertModelRuntimeContext(
     reason !== "input_received" &&
     reason !== "plan_rejected" &&
     reason !== "plan_updated" &&
-    reason !== "tool_completed"
+    reason !== "tool_completed" &&
+    reason !== "tool_failed" &&
+    reason !== "tool_indeterminate"
   ) {
     throw new SchemaValidationError(`${label}.continuation.reason is unsupported`);
+  }
+  if (
+    (reason === "tool_failed" || reason === "tool_indeterminate") !==
+    (runtimeSchemaVersion === MODEL_RUNTIME_CONTEXT_SCHEMA_VERSION)
+  ) {
+    throw new SchemaValidationError(
+      `${label}.schemaVersion does not match continuation reason`,
+    );
   }
   const receipt = object(
     continuation.receipt,
@@ -378,7 +423,8 @@ function assertModelRuntimeContext(
     receiptType !== "input.received" &&
     receiptType !== "plan.rejected" &&
     receiptType !== "plan.updated" &&
-    receiptType !== "tool.completed"
+    receiptType !== "tool.completed" &&
+    receiptType !== "tool.failed"
   ) {
     throw new SchemaValidationError(
       `${label}.continuation.receipt.type is unsupported`,
@@ -389,6 +435,8 @@ function assertModelRuntimeContext(
     plan_rejected: "plan.rejected",
     plan_updated: "plan.updated",
     tool_completed: "tool.completed",
+    tool_failed: "tool.failed",
+    tool_indeterminate: "tool.failed",
   }[reason];
   if (receiptType !== expectedReceiptType) {
     throw new SchemaValidationError(
@@ -405,6 +453,12 @@ function assertModelRuntimeContext(
     receipt.errorMessage,
     `${label}.continuation.receipt.errorMessage`,
   );
+  if (receipt.errorRetryable !== undefined) {
+    boolean(
+      receipt.errorRetryable,
+      `${label}.continuation.receipt.errorRetryable`,
+    );
+  }
   optionalString(receipt.planId, `${label}.continuation.receipt.planId`);
   if (receipt.planRevision !== undefined) {
     const revision = integer(
@@ -430,16 +484,32 @@ function assertModelRuntimeContext(
     );
   }
   optionalString(receipt.toolCallId, `${label}.continuation.receipt.toolCallId`);
+  if (
+    receipt.toolDisposition !== undefined &&
+    receipt.toolDisposition !== "failed" &&
+    receipt.toolDisposition !== "indeterminate"
+  ) {
+    throw new SchemaValidationError(
+      `${label}.continuation.receipt.toolDisposition is unsupported`,
+    );
+  }
   optionalString(receipt.toolName, `${label}.continuation.receipt.toolName`);
   array(runtime.obligations, `${label}.obligations`).forEach((value, index) => {
-    if (value !== "repair_plan_control" && value !== "respond_or_act") {
+    if (
+      value !== "handle_tool_failure" &&
+      value !== "explain_unknown_tool_outcome" &&
+      value !== "repair_plan_control" &&
+      value !== "respond_or_act"
+    ) {
       throw new SchemaValidationError(`${label}.obligations[${index}] is unsupported`);
     }
   });
   array(runtime.prohibitions, `${label}.prohibitions`).forEach((value, index) => {
     if (
       value !== "repeat_accepted_plan_change" &&
-      value !== "repeat_rejected_plan_change"
+      value !== "repeat_rejected_plan_change" &&
+      value !== "assume_failed_tool_succeeded" &&
+      value !== "perform_tool_or_plan_actions"
     ) {
       throw new SchemaValidationError(
         `${label}.prohibitions[${index}] is unsupported`,
@@ -457,13 +527,24 @@ function assertModelRuntimeContext(
   const expectedObligations =
     reason === "plan_rejected"
       ? ["repair_plan_control", "respond_or_act"]
-      : ["respond_or_act"];
+      : reason === "tool_indeterminate"
+        ? ["explain_unknown_tool_outcome"]
+        : reason === "tool_failed"
+          ? ["handle_tool_failure", "respond_or_act"]
+          : ["respond_or_act"];
   const expectedProhibitions =
     reason === "plan_rejected"
       ? ["repeat_rejected_plan_change"]
       : reason === "plan_updated"
         ? ["repeat_accepted_plan_change"]
-        : [];
+        : reason === "tool_indeterminate"
+          ? [
+              "assume_failed_tool_succeeded",
+              "perform_tool_or_plan_actions",
+            ]
+          : reason === "tool_failed"
+            ? ["assume_failed_tool_succeeded"]
+            : [];
   if (
     !jsonEquals(runtime.obligations, expectedObligations) ||
     !jsonEquals(runtime.prohibitions, expectedProhibitions)
@@ -498,6 +579,20 @@ function assertModelRuntimeContext(
   ) {
     throw new SchemaValidationError(
       `${label} completed Tool continuation is incomplete`,
+    );
+  }
+  if (
+    (reason === "tool_failed" || reason === "tool_indeterminate") &&
+    (receipt.errorCode === undefined ||
+      receipt.errorMessage === undefined ||
+      receipt.errorRetryable === undefined ||
+      receipt.toolCallId === undefined ||
+      receipt.toolDisposition !==
+        (reason === "tool_failed" ? "failed" : "indeterminate") ||
+      receipt.toolName === undefined)
+  ) {
+    throw new SchemaValidationError(
+      `${label} failed Tool continuation is incomplete`,
     );
   }
 }
@@ -1080,6 +1175,7 @@ function assertAcceptedHandoff(
 function assertModelContinuation(
   value: JsonValue | undefined,
   label: string,
+  eventSchemaVersion: number,
 ): void {
   const continuation = object(value, label);
   string(continuation.eventId, `${label}.eventId`);
@@ -1098,6 +1194,17 @@ function assertModelContinuation(
     string(continuation.toolName, `${label}.toolName`);
     return;
   }
+  if (reason === "tool_failed" || reason === "tool_indeterminate") {
+    if (eventSchemaVersion < 11) {
+      throw new SchemaValidationError(
+        `${label}.reason requires Event schema 11`,
+      );
+    }
+    assertDriverError(continuation.error, `${label}.error`);
+    string(continuation.toolCallId, `${label}.toolCallId`);
+    string(continuation.toolName, `${label}.toolName`);
+    return;
+  }
   throw new SchemaValidationError(`${label}.reason is unsupported`);
 }
 
@@ -1105,6 +1212,7 @@ function assertContextCompactionInput(
   input: JsonObject,
   label: string,
   allowLegacyModelCapabilities = false,
+  eventSchemaVersion = CURRENT_EVENT_SCHEMA_VERSION,
 ): void {
   if (input.activePlan !== null) {
     parsePlanSnapshot(input.activePlan, `${label}.activePlan`);
@@ -1112,7 +1220,11 @@ function assertContextCompactionInput(
   if (input.clearBoundary !== null) {
     assertContextBoundary(input.clearBoundary, `${label}.clearBoundary`);
   }
-  assertModelContinuation(input.continuation, `${label}.continuation`);
+  assertModelContinuation(
+    input.continuation,
+    `${label}.continuation`,
+    eventSchemaVersion,
+  );
   const model = object(input.model, `${label}.model`);
   string(model.model, `${label}.model.model`);
   string(model.provider, `${label}.model.provider`);
@@ -1190,8 +1302,13 @@ function assertContextCompactionInput(
       `${label}.sourceMessageThroughSequence is outside the source range`,
     );
   }
-  array(input.sourceMessages, `${label}.sourceMessages`).forEach((message, index) =>
-    assertModelMessage(message, `${label}.sourceMessages[${index}]`),
+  array(input.sourceMessages, `${label}.sourceMessages`).forEach(
+    (message, index) =>
+      assertModelMessage(
+        message,
+        `${label}.sourceMessages[${index}]`,
+        eventSchemaVersion,
+      ),
   );
   string(input.sourceThreadId, `${label}.sourceThreadId`);
   if (integer(input.targetTokens, `${label}.targetTokens`) < 1) {
@@ -1210,6 +1327,7 @@ function assertThreadState(
   value: JsonValue | undefined,
   label: string,
   checkpointThreadId: string,
+  eventSchemaVersion: number,
 ): void {
   const state = object(value, label);
   const threadId = string(state.threadId, `${label}.threadId`);
@@ -1319,7 +1437,11 @@ function assertThreadState(
   });
 
   array(state.messages, `${label}.messages`).forEach((message, index) =>
-    assertModelMessage(message, `${label}.messages[${index}]`),
+    assertModelMessage(
+      message,
+      `${label}.messages[${index}]`,
+      eventSchemaVersion,
+    ),
   );
   const messageSources = array(
     state.messageSources,
@@ -1358,7 +1480,12 @@ function assertThreadState(
   const effectIds = new Set<string>();
   const pending = object(state.pendingEffects, `${label}.pendingEffects`);
   for (const [key, effectValue] of Object.entries(pending)) {
-    const effect = parseEffect(effectValue, `${label}.pendingEffects.${key}`, threadId);
+    const effect = parseEffect(
+      effectValue,
+      `${label}.pendingEffects.${key}`,
+      threadId,
+      eventSchemaVersion,
+    );
     if (effect.id !== key) {
       throw new SchemaValidationError(
         `${label}.pendingEffects.${key} has a mismatched Effect ID`,
@@ -1372,6 +1499,7 @@ function assertThreadState(
         effectValue,
         `${label}.readyEffects[${index}]`,
         threadId,
+        eventSchemaVersion,
       );
       if (effectIds.has(effect.id)) {
         throw new SchemaValidationError(
@@ -1541,6 +1669,7 @@ function parseEffect(
       input,
       `${label}.input`,
       allowLegacyModelCapabilities,
+      eventSchemaVersion,
     );
     if (input.sourceThreadId !== threadId) {
       throw new SchemaValidationError(
@@ -1584,6 +1713,7 @@ function parseEffect(
       assertModelRuntimeContext(
         input.runtimeContext,
         `${label}.input.runtimeContext`,
+        eventSchemaVersion,
       );
       assertContextManifest(
         input.contextManifest,
@@ -1616,7 +1746,11 @@ function parseEffect(
     string(model.model, `${label}.input.model.model`);
     string(model.provider, `${label}.input.model.provider`);
     array(input.messages, `${label}.input.messages`).forEach((message, index) =>
-      assertModelMessage(message, `${label}.input.messages[${index}]`),
+      assertModelMessage(
+        message,
+        `${label}.input.messages[${index}]`,
+        eventSchemaVersion,
+      ),
     );
     const planControl = object(input.planControl, `${label}.input.planControl`);
     if (
@@ -2085,9 +2219,17 @@ export function decodeCheckpoint(value: unknown): Checkpoint {
   if (sequence < 1) {
     throw new SchemaValidationError("Checkpoint.sequence must be positive");
   }
-  integer(checkpoint.eventSchemaVersion, "Checkpoint.eventSchemaVersion");
+  const eventSchemaVersion = integer(
+    checkpoint.eventSchemaVersion,
+    "Checkpoint.eventSchemaVersion",
+  );
   integer(checkpoint.reducerVersion, "Checkpoint.reducerVersion");
-  assertThreadState(checkpoint.state, "Checkpoint.state", threadId);
+  assertThreadState(
+    checkpoint.state,
+    "Checkpoint.state",
+    threadId,
+    eventSchemaVersion,
+  );
   string(checkpoint.stateDigest, "Checkpoint.stateDigest");
   return cloneJson(checkpoint) as unknown as Checkpoint;
 }

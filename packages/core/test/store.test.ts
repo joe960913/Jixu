@@ -226,7 +226,7 @@ test("JX-AC-053 schema 7 requires mode while schema 6 remains readable as Standa
 });
 
 test("JX-AC-056 JX-AC-059 schema 8 Context drafts remain readable while schemas 9 and 10 fail closed", () => {
-  assert.equal(CURRENT_EVENT_SCHEMA_VERSION, 10);
+  assert.equal(CURRENT_EVENT_SCHEMA_VERSION, 11);
   const threadId = "thread-schema-8-context";
   const created = createThreadEvent({
     id: "event-created",

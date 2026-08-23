@@ -4,10 +4,12 @@ import { test } from "node:test";
 import {
   CURRENT_EVENT_SCHEMA_VERSION,
   createHarness,
+  decodeThreadEvent,
   defineAgent,
   defineSchema,
   defineTool,
   InMemoryEventStore,
+  replayEvents,
   ToolExecutionError,
 } from "../src/index.ts";
 import type {
@@ -21,6 +23,7 @@ import type {
 } from "../src/index.ts";
 import {
   FixedClock,
+  fail,
   SequenceIdGenerator,
   SequenceModelDriver,
   succeed,
@@ -269,7 +272,7 @@ test("JX-AC-047 Tool ask is durable and only allow_once dispatches the pending E
   );
 });
 
-test("JX-AC-047 denied Tool Effects fail deterministically without driver execution", async () => {
+test("JX-AC-010 JX-AC-047 JX-AC-049 denied Tool Effects remain in the Agent loop without driver execution", async () => {
   let executions = 0;
   const tool = defineTool({
     description: "Dangerous operation",
@@ -299,6 +302,8 @@ test("JX-AC-047 denied Tool Effects fail deterministically without driver execut
 
   const state = await thread.send("Try it");
   assert.equal(state.status, "idle");
+  assert.equal(state.error, null);
+  assert.equal(state.result, "The operation was denied.");
   assert.equal(executions, 0);
   const failure = (await thread.events()).findLast(
     (event) => event.type === "tool.failed",
@@ -308,9 +313,41 @@ test("JX-AC-047 denied Tool Effects fail deterministically without driver execut
     assert.equal(failure.payload.error.code, "tool_permission_denied");
     assert.equal(failure.payload.disposition, "failed");
   }
+  assert.equal(model.effects.length, 2);
+  assert.deepEqual(model.effects[1]?.input.messages.at(-1), {
+    disposition: "failed",
+    error: {
+      code: "tool_permission_denied",
+      message: "Tool danger is denied by the configured permission policy",
+      retryable: false,
+    },
+    name: "danger",
+    role: "tool",
+    toolCallId: "danger-1",
+  });
+  assert.deepEqual(model.effects[1]?.input.runtimeContext, {
+    continuation: {
+      causedByEventId: failure?.id,
+      reason: "tool_failed",
+      receipt: {
+        errorCode: "tool_permission_denied",
+        errorMessage: "Tool danger is denied by the configured permission policy",
+        errorRetryable: false,
+        eventId: failure?.id,
+        toolCallId: "danger-1",
+        toolDisposition: "failed",
+        toolName: "danger",
+        type: "tool.failed",
+      },
+    },
+    obligations: ["handle_tool_failure", "respond_or_act"],
+    planRepair: null,
+    prohibitions: ["assume_failed_tool_succeeded"],
+    schemaVersion: 2,
+  });
 });
 
-test("JX-AC-039 typed Tool rejection stays failed while unknown exceptions stay indeterminate", async () => {
+test("JX-AC-010 JX-AC-039 JX-AC-049 typed Tool rejection is model-visible and continues the turn", async () => {
   const typed = defineTool({
     description: "Reject outside scope",
     execute: () => {
@@ -323,6 +360,126 @@ test("JX-AC-039 typed Tool rejection stays failed while unknown exceptions stay 
     name: "typed",
     output: stringSchema,
   });
+  const model = new SequenceModelDriver([
+    succeed({
+      content: "",
+      toolCalls: [{ arguments: {}, id: "typed-1", name: "typed" }],
+    }),
+    succeed({ content: "That path is outside the configured scope.", toolCalls: [] }),
+  ]);
+  const thread = await createHarness({
+    agent: agentWith([typed]),
+    modelDrivers: { mock: model },
+  }).createThread();
+
+  const state = await thread.send("Call typed");
+  const failure = (await thread.events()).findLast(
+    (event) => event.type === "tool.failed",
+  );
+  assert.equal(failure?.payload.disposition, "failed");
+  assert.equal(failure?.payload.error.code, "tool_path_outside_scope");
+  assert.equal(state.status, "idle");
+  assert.equal(state.result, "That path is outside the configured scope.");
+  assert.equal(model.effects.length, 2);
+  assert.deepEqual(model.effects[1]?.input.messages.at(-1), {
+    disposition: "failed",
+    error: {
+      code: "tool_path_outside_scope",
+      message: "Path escapes the configured scope",
+      retryable: false,
+    },
+    name: "typed",
+    role: "tool",
+    toolCallId: "typed-1",
+  });
+  assert.equal(
+    model.effects[1]?.input.runtimeContext?.continuation.reason,
+    "tool_failed",
+  );
+
+  const events = await thread.events();
+  const failureIndex = events.findIndex((event) => event.id === failure?.id);
+  const legacyEvents = events
+    .slice(0, failureIndex + 1)
+    .map((event) => ({ ...event, schemaVersion: 10 }));
+  const legacyState = replayEvents(thread.id, legacyEvents);
+  assert.equal(legacyState.status, "idle");
+  assert.equal(legacyState.error?.code, "tool_path_outside_scope");
+  assert.equal(
+    legacyState.messages.some(
+      (message) => message.role === "tool" && "error" in message,
+    ),
+    false,
+  );
+  const currentContinuation = events.find(
+    (event, index) => index > failureIndex && event.type === "model.requested",
+  );
+  assert.ok(currentContinuation !== undefined);
+  assert.throws(
+    () => decodeThreadEvent({ ...currentContinuation, schemaVersion: 10 }),
+    /requires Event schema 11/,
+  );
+});
+
+test("JX-AC-001 JX-AC-010 JX-AC-049 a mixed Tool batch waits for every receipt and continues from its failure", async () => {
+  const bad = defineTool({
+    description: "Fail deterministically",
+    execute: () => {
+      throw new ToolExecutionError("fixture_failed", "Fixture failed", true);
+    },
+    input: objectSchema,
+    name: "bad",
+    output: stringSchema,
+  });
+  const good = defineTool({
+    description: "Succeed deterministically",
+    execute: () => "ok",
+    input: objectSchema,
+    name: "good",
+    output: stringSchema,
+  });
+  const model = new SequenceModelDriver([
+    succeed({
+      content: "",
+      toolCalls: [
+        { arguments: {}, id: "bad-1", name: "bad" },
+        { arguments: {}, id: "good-1", name: "good" },
+      ],
+    }),
+    succeed({ content: "One Tool failed and the other succeeded.", toolCalls: [] }),
+  ]);
+  const thread = await createHarness({
+    agent: agentWith([bad, good]),
+    modelDrivers: { mock: model },
+  }).createThread();
+
+  const state = await thread.send("Run both");
+  assert.equal(state.status, "idle");
+  assert.equal(state.result, "One Tool failed and the other succeeded.");
+  assert.deepEqual(
+    model.effects[1]?.input.messages.slice(-2).map((message) =>
+      message.role === "tool" && "error" in message
+        ? { disposition: message.disposition, name: message.name }
+        : message.role === "tool"
+          ? { name: message.name, output: message.output }
+          : message
+    ),
+    [
+      { disposition: "failed", name: "bad" },
+      { name: "good", output: "ok" },
+    ],
+  );
+  assert.equal(
+    model.effects[1]?.input.runtimeContext?.continuation.reason,
+    "tool_failed",
+  );
+  assert.equal(
+    model.effects[1]?.input.runtimeContext?.continuation.receipt.toolCallId,
+    "bad-1",
+  );
+});
+
+test("JX-AC-004 JX-AC-005 JX-AC-039 JX-AC-049 indeterminate Tool failure is explained once and waits without redispatch", async () => {
   const unknown = defineTool({
     description: "Throw an unknown exception",
     execute: () => {
@@ -333,28 +490,266 @@ test("JX-AC-039 typed Tool rejection stays failed while unknown exceptions stay 
     output: stringSchema,
   });
 
-  for (const [tool, name, disposition, code] of [
-    [typed, "typed", "failed", "tool_path_outside_scope"],
-    [unknown, "unknown", "indeterminate", "tool_driver_exception"],
-  ] as const) {
-    const model = new SequenceModelDriver([
-      succeed({
-        content: "",
-        toolCalls: [{ arguments: {}, id: `${name}-1`, name }],
-      }),
-    ]);
-    const thread = await createHarness({
-      agent: agentWith([tool]),
-      modelDrivers: { mock: model },
-    }).createThread();
+  const store = new InMemoryEventStore();
+  const agent = agentWith([unknown]);
+  const model = new SequenceModelDriver([
+    succeed({
+      content: "",
+      toolCalls: [{ arguments: {}, id: "unknown-1", name: "unknown" }],
+    }),
+    succeed({
+      content: "The Tool outcome is unknown, so I stopped before taking more action.",
+      toolCalls: [],
+    }),
+  ]);
+  const thread = await createHarness({
+    agent,
+    modelDrivers: { mock: model },
+    store,
+  }).createThread();
 
-    await thread.send(`Call ${name}`);
-    const failure = (await thread.events()).findLast(
-      (event) => event.type === "tool.failed",
-    );
-    assert.equal(failure?.payload.disposition, disposition);
-    assert.equal(failure?.payload.error.code, code);
+  const state = await thread.send("Call unknown");
+  const failure = (await thread.events()).findLast(
+    (event) => event.type === "tool.failed",
+  );
+  assert.equal(failure?.payload.disposition, "indeterminate");
+  assert.equal(failure?.payload.error.code, "tool_driver_exception");
+  assert.equal(state.status, "waiting");
+  assert.deepEqual(state.waitingReason, {
+    effectId: failure?.payload.effectId,
+    reasonCode: "effect_outcome_unknown",
+  });
+  assert.equal(state.pendingEffects[failure?.payload.effectId ?? ""]?.attempt, 1);
+  assert.equal(model.effects.length, 2);
+  assert.deepEqual(state.messages.at(-2), {
+    disposition: "indeterminate",
+    error: {
+      code: "tool_driver_exception",
+      message: "Unknown execution state",
+      retryable: false,
+    },
+    name: "unknown",
+    role: "tool",
+    toolCallId: "unknown-1",
+  });
+  assert.deepEqual(model.effects[1]?.input.runtimeContext, {
+    continuation: {
+      causedByEventId: failure?.id,
+      reason: "tool_indeterminate",
+      receipt: {
+        errorCode: "tool_driver_exception",
+        errorMessage: "Unknown execution state",
+        errorRetryable: false,
+        eventId: failure?.id,
+        toolCallId: "unknown-1",
+        toolDisposition: "indeterminate",
+        toolName: "unknown",
+        type: "tool.failed",
+      },
+    },
+    obligations: ["explain_unknown_tool_outcome"],
+    planRepair: null,
+    prohibitions: [
+      "assume_failed_tool_succeeded",
+      "perform_tool_or_plan_actions",
+    ],
+    schemaVersion: 2,
+  });
+  const explanationRequest = (await thread.events()).findLast(
+    (event) => event.type === "model.requested",
+  );
+  assert.ok(explanationRequest !== undefined);
+  assert.deepEqual(decodeThreadEvent(explanationRequest), explanationRequest);
+  assert.equal(
+    state.result,
+    "The Tool outcome is unknown, so I stopped before taking more action.",
+  );
+  assert.deepEqual(await thread.replay(), state);
+
+  const recoveryModel = new SequenceModelDriver([
+    succeed({ content: "must not run", toolCalls: [] }),
+  ]);
+  const reopened = await createHarness({
+    agent,
+    modelDrivers: { mock: recoveryModel },
+    store,
+  }).openThread(thread.id);
+  assert.equal((await reopened.state()).status, "waiting");
+  assert.equal(recoveryModel.effects.length, 0);
+
+  const events = await thread.events();
+  const failureIndex = events.findIndex((event) => event.id === failure?.id);
+  const legacyState = replayEvents(
+    thread.id,
+    events
+      .slice(0, failureIndex + 1)
+      .map((event) => ({ ...event, schemaVersion: 10 })),
+  );
+  assert.equal(legacyState.status, "waiting");
+  assert.equal(legacyState.error?.code, "tool_driver_exception");
+  assert.equal(
+    legacyState.messages.some(
+      (message) => message.role === "tool" && "error" in message,
+    ),
+    false,
+  );
+});
+
+test("JX-AC-005 JX-AC-049 multiple indeterminate Tool outcomes share one constrained explanation", async () => {
+  let executions = 0;
+  const unknownTool = (name: string) =>
+    defineTool({
+      description: `Unknown ${name}`,
+      execute: () => {
+        executions += 1;
+        throw new Error(`${name} outcome unknown`);
+      },
+      input: objectSchema,
+      name,
+      output: stringSchema,
+    });
+  const first = unknownTool("unknown_first");
+  const second = unknownTool("unknown_second");
+  const model = new SequenceModelDriver([
+    succeed({
+      content: "",
+      toolCalls: [
+        { arguments: {}, id: "unknown-1", name: "unknown_first" },
+        { arguments: {}, id: "unknown-2", name: "unknown_second" },
+      ],
+    }),
+    succeed({
+      content: "Both Tool outcomes are unknown; no further action was taken.",
+      planUpdates: [
+        planUpdate("create", "Must be suppressed", ["pending"], null),
+      ],
+      toolCalls: [
+        { arguments: {}, id: "must-not-run", name: "unknown_first" },
+      ],
+    }),
+  ]);
+  const thread = await createHarness({
+    agent: agentWith([first, second]),
+    modelDrivers: { mock: model },
+  }).createThread();
+
+  const state = await thread.send("Run both unknown Tools");
+  const events = await thread.events();
+  const failures = events.filter((event) => event.type === "tool.failed");
+  const pending = Object.values(state.pendingEffects);
+
+  assert.equal(executions, 2);
+  assert.equal(failures.length, 2);
+  assert.equal(model.effects.length, 2);
+  assert.equal(state.status, "waiting");
+  assert.equal(state.activePlan, null);
+  assert.equal(state.pendingPlanUpdates.length, 0);
+  assert.equal(pending.length, 2);
+  assert.ok(pending.every((effect) => effect.type === "tool.execute"));
+  assert.ok(
+    pending.every((effect) =>
+      failures.some(
+        (failure) =>
+          failure.type === "tool.failed" &&
+          failure.payload.effectId === effect.id &&
+          failure.payload.disposition === "indeterminate",
+      ),
+    ),
+  );
+  assert.ok(state.waitingReason !== null);
+  assert.ok(
+    pending.some((effect) => effect.id === state.waitingReason?.effectId),
+  );
+  assert.deepEqual(
+    model.effects[1]?.input.messages
+      .filter((message) => message.role === "tool" && "error" in message)
+      .map((message) =>
+        message.role === "tool" && "error" in message
+          ? {
+              disposition: message.disposition,
+              message: message.error.message,
+              name: message.name,
+            }
+          : null
+      ),
+    [
+      {
+        disposition: "indeterminate",
+        message: "unknown_first outcome unknown",
+        name: "unknown_first",
+      },
+      {
+        disposition: "indeterminate",
+        message: "unknown_second outcome unknown",
+        name: "unknown_second",
+      },
+    ],
+  );
+  assert.equal(
+    model.effects[1]?.input.runtimeContext?.continuation.reason,
+    "tool_indeterminate",
+  );
+  assert.deepEqual(state.messages.at(-1), {
+    content: "Both Tool outcomes are unknown; no further action was taken.",
+    role: "assistant",
+    toolCalls: [],
+  });
+  assert.equal(
+    events.filter((event) => event.type === "model.requested").length,
+    2,
+  );
+  assert.equal(
+    events.filter((event) => event.type === "tool.requested").length,
+    2,
+  );
+  assert.equal(events.some((event) => event.type === "plan.updated"), false);
+  const explanation = events.findLast(
+    (event) => event.type === "model.completed",
+  );
+  assert.equal(explanation?.type, "model.completed");
+  if (explanation?.type === "model.completed") {
+    assert.equal(explanation.payload.response.toolCalls.length, 1);
+    assert.equal(explanation.payload.response.planUpdates?.length, 1);
   }
+  assert.deepEqual(await thread.replay(), state);
+});
+
+test("JX-AC-005 indeterminate explanation failure preserves the unknown Tool wait", async () => {
+  const unknown = defineTool({
+    description: "Unknown outcome",
+    execute: () => {
+      throw new Error("Side effect may have happened");
+    },
+    input: objectSchema,
+    name: "unknown_failure",
+    output: stringSchema,
+  });
+  const model = new SequenceModelDriver([
+    succeed({
+      content: "",
+      toolCalls: [
+        { arguments: {}, id: "unknown-failure-1", name: "unknown_failure" },
+      ],
+    }),
+    fail("explanation_unavailable", "Could not explain", true),
+  ]);
+  const thread = await createHarness({
+    agent: agentWith([unknown]),
+    modelDrivers: { mock: model },
+  }).createThread();
+
+  const state = await thread.send("Run it");
+  assert.equal(state.status, "waiting");
+  assert.equal(state.error?.code, "tool_driver_exception");
+  assert.equal(state.result, null);
+  assert.equal(Object.keys(state.pendingEffects).length, 1);
+  assert.equal(model.effects.length, 2);
+  assert.equal(
+    (await thread.events()).findLast((event) => event.type === "model.failed")
+      ?.payload.error.code,
+    "explanation_unavailable",
+  );
+  assert.deepEqual(await thread.replay(), state);
 });
 
 test("JX-AC-028 Thread metrics durably project tokens, USD cost, and Tool efficiency", async () => {

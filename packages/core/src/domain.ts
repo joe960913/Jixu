@@ -69,12 +69,22 @@ export interface AssistantMessage {
   readonly toolCalls: readonly ToolCall[];
 }
 
-export interface ToolMessage {
+export interface ToolSuccessMessage {
   readonly name: string;
   readonly output: JsonValue;
   readonly role: "tool";
   readonly toolCallId: string;
 }
+
+export interface ToolFailureMessage {
+  readonly disposition: "failed" | "indeterminate";
+  readonly error: DriverError;
+  readonly name: string;
+  readonly role: "tool";
+  readonly toolCallId: string;
+}
+
+export type ToolMessage = ToolFailureMessage | ToolSuccessMessage;
 
 export type ModelMessage = AssistantMessage | ToolMessage | UserMessage;
 

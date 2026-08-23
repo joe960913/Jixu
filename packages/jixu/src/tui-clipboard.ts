@@ -22,6 +22,76 @@ interface SelectionClipboardService {
   ) => Promise<unknown>;
 }
 
+export const SELECTION_COPY_FEEDBACK_DURATION_MS = 1_000;
+
+export type SelectionCopyFeedbackState = "copied" | "idle";
+
+export interface SelectionCopyFeedbackSource {
+  readonly getSnapshot: () => SelectionCopyFeedbackState;
+  readonly subscribe: (listener: () => void) => () => void;
+}
+
+export interface SelectionCopyFeedback extends SelectionCopyFeedbackSource {
+  readonly copySucceeded: () => void;
+  readonly dispose: () => void;
+}
+
+export interface SelectionCopyFeedbackOptions {
+  readonly durationMs?: number;
+  readonly schedule?: (callback: () => void, delayMs: number) => () => void;
+}
+
+function scheduleTimeout(callback: () => void, delayMs: number): () => void {
+  const timeout = setTimeout(callback, delayMs);
+  return () => clearTimeout(timeout);
+}
+
+export function createSelectionCopyFeedback(
+  options: SelectionCopyFeedbackOptions = {},
+): SelectionCopyFeedback {
+  const durationMs =
+    options.durationMs ?? SELECTION_COPY_FEEDBACK_DURATION_MS;
+  const schedule = options.schedule ?? scheduleTimeout;
+  const listeners = new Set<() => void>();
+  let active = true;
+  let cancelExpiry: (() => void) | undefined;
+  let state: SelectionCopyFeedbackState = "idle";
+
+  const publish = () => {
+    for (const listener of listeners) listener();
+  };
+  const setState = (next: SelectionCopyFeedbackState) => {
+    if (state === next) return;
+    state = next;
+    publish();
+  };
+
+  return {
+    copySucceeded: () => {
+      if (!active) return;
+      cancelExpiry?.();
+      setState("copied");
+      cancelExpiry = schedule(() => {
+        cancelExpiry = undefined;
+        setState("idle");
+      }, durationMs);
+    },
+    dispose: () => {
+      active = false;
+      cancelExpiry?.();
+      cancelExpiry = undefined;
+      state = "idle";
+      listeners.clear();
+    },
+    getSnapshot: () => state,
+    subscribe: (listener) => {
+      if (!active) return () => undefined;
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+}
+
 export interface PendingPastedImage {
   readonly bytes: Uint8Array;
   readonly mediaType: ImageMediaType;
@@ -185,6 +255,10 @@ export interface JixuSelectionClipboardBinding {
   readonly settled: () => Promise<void>;
 }
 
+export interface JixuSelectionClipboardOptions {
+  readonly feedback?: Pick<SelectionCopyFeedback, "copySucceeded">;
+}
+
 const writeOptions = Object.freeze({
   destination: "best-available" as const,
 });
@@ -192,6 +266,7 @@ const writeOptions = Object.freeze({
 export function installJixuSelectionClipboard(
   renderer: CliRenderer,
   clipboard: SelectionClipboardService,
+  options: JixuSelectionClipboardOptions = {},
 ): JixuSelectionClipboardBinding {
   let accepting = true;
   let writes = Promise.resolve();
@@ -202,6 +277,7 @@ export function installJixuSelectionClipboard(
     writes = writes.then(async () => {
       try {
         await clipboard.writeText(text, writeOptions);
+        options.feedback?.copySucceeded();
       } catch {
         // Clipboard failures are presentation-local and must not stop later copies.
       }
