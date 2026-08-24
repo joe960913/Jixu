@@ -1,6 +1,6 @@
 {
   "name": "jixu-llm",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Provider-neutral LLM adapters for Jixu.",
   "type": "module",
   "license": "MIT",

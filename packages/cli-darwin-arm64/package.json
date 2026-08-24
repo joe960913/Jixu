@@ -1,6 +1,6 @@
 {
   "name": "jixu-cli-darwin-arm64",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Jixu native TUI for macOS arm64.",
   "license": "MIT",
   "repository": {

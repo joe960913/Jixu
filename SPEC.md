@@ -1,8 +1,8 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.48
+**Version:** 0.4.49
 **Status:** normative, pre-1.0
-**Last updated:** 2026-08-23
+**Last updated:** 2026-08-24
 
 ## 1. Product definition
 
@@ -2448,6 +2448,18 @@ advances to version 7. Event schema 10, Reducer version 16, Thread authority,
 Replay, and settings schema 6 remain unchanged; this adds no browser
 interaction, crawl, Deep Search, generic MCP runtime, provider router, or new
 dependency.
+
+Version 0.4.49 publishes the framework, facade, adapters, Tool packages,
+testkit, and both supported native CLI packages as `0.4.0`. The release carries
+the Jina Search correction and bounded `web_read` capability specified in
+Version 0.4.48. Existing settings retain their exact enabled Tool selection;
+newly accepted configuration may enable the Reader through the ordinary Tool
+Center and permission path. The supported native targets remain macOS arm64 and
+Linux x64 with glibc. Registry tarballs, standalone executables, checksums, and
+release metadata MUST be derived from and verified against the same
+authoritative cross-platform release-candidate run. This publication adds no
+semantics beyond Version 0.4.48, no Event or Reducer schema change, no stored-
+data migration, no target expansion, and no dependency change.
 
 ## 19. Implementation order
 

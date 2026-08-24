@@ -1,6 +1,6 @@
 {
   "name": "jixu-tools-node",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Opt-in Node file and local shell Tools for Jixu.",
   "type": "module",
   "license": "MIT",
