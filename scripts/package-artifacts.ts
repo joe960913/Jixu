@@ -290,10 +290,10 @@ async function inspectTarball(
     assert.equal(path.startsWith("test/"), false, `${manifest.name} packed test ${path}`);
     assert.equal(path.endsWith(".tsbuildinfo"), false, `${manifest.name} packed ${path}`);
   }
+  assert.ok(files.has("README.md"), `${manifest.name} tarball misses README.md`);
 
   if (manifest.name === "jixu-ai") {
     assert.equal(manifest.bin?.jixu, "./dist/cli-bin.js");
-    assert.ok(files.has("README.md"), "jixu-ai tarball misses README.md");
     assert.equal(files.has("dist/jixu"), false, "jixu-ai tarball embeds a native executable");
     assert.ok(files.has("dist/cli-bin.js"), "jixu-ai tarball misses its command launcher");
     for (const path of [
@@ -313,6 +313,7 @@ async function inspectTarball(
     assert.ok(binaryPath, `${manifest.name} misses its executable file declaration`);
     assert.deepEqual([...files.keys()].sort(), [
       "LICENSE",
+      "README.md",
       "THIRD_PARTY_NOTICES.md",
       binaryPath,
       "package.json",

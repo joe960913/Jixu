@@ -2,12 +2,23 @@
   "name": "jixu-store-sqlite",
   "version": "0.4.0",
   "description": "Local SQLite Event Store for Jixu.",
+  "keywords": [
+    "ai-agent",
+    "event-sourcing",
+    "event-store",
+    "sqlite",
+    "typescript"
+  ],
+  "homepage": "https://jixu.dev/docs",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/joe960913/Jixu.git",
     "directory": "packages/store-sqlite"
+  },
+  "bugs": {
+    "url": "https://github.com/joe960913/Jixu/issues"
   },
   "engines": {
     "node": ">=22.19.0"

@@ -1,13 +1,25 @@
 {
   "name": "jixu-core",
   "version": "0.4.0",
-  "description": "Durable single-Agent Harness and Thread kernel for Jixu.",
+  "description": "Durable single-Agent Harness, Thread API, and deterministic Kernel for Jixu.",
+  "keywords": [
+    "agent-harness",
+    "agent-runtime",
+    "ai-agent",
+    "durable-execution",
+    "event-sourcing",
+    "typescript"
+  ],
+  "homepage": "https://jixu.dev/docs",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/joe960913/Jixu.git",
     "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/joe960913/Jixu/issues"
   },
   "engines": {
     "node": ">=22.19.0"

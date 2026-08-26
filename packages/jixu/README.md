@@ -1,18 +1,14 @@
 # Jixu
 
-Jixu is a durable single-Agent Harness for TypeScript. Install the TUI, run
-`jixu`, and continue work in a durable Thread.
+Jixu is a durable single-Agent Harness for TypeScript. Install the native TUI,
+run `jixu`, and continue work in a durable Thread.
 
 > Jixu is pre-1.0. The public API may change before 1.0.
 
 > [!WARNING]
-> Jixu can run Bash commands on your machine. Bash is not OS-sandboxed and
-> executes with the permissions of the Jixu process. The current permission
-> controls decide whether a Tool call is dispatched; they do not inspect shell
-> commands or prevent destructive operations such as deleting files. Keep Bash
-> on `ASK` unless you accept that risk, and use a backed-up or disposable
-> workspace. Stronger deletion safeguards and OS sandboxing are planned, not
-> available today.
+> Jixu's Bash Tool is not OS-sandboxed and runs with the permissions of the Jixu
+> process. Permission controls approve Tool calls, not individual shell
+> operations. Keep Bash on `ASK` and use a backed-up or disposable workspace.
 
 ![Jixu terminal interface](https://raw.githubusercontent.com/joe960913/Jixu/main/assets/jixu-tui.webp)
 
@@ -20,17 +16,11 @@ Jixu is a durable single-Agent Harness for TypeScript. Install the TUI, run
 
 ```bash
 npm install -g jixu-ai
-# pnpm add -g jixu-ai
-# bun add -g jixu-ai
-```
-
-Then start Jixu from any terminal:
-
-```bash
 jixu
 ```
 
-Ephemeral execution is also supported:
+Global installation also works with `pnpm add -g jixu-ai` and
+`bun add -g jixu-ai`. To run without installing:
 
 ```bash
 npx jixu-ai
@@ -39,13 +29,13 @@ npx jixu-ai
 # bunx jixu-ai
 ```
 
-Supported native targets are macOS arm64 and Linux x64 with glibc. Intel macOS
-x64 is not supported. Node.js 22.19.0 or newer is required. Bun is not required
-at runtime.
+The launcher requires Node.js 22.19.0 or newer. Native targets are macOS arm64
+and Linux x64 with glibc.
 
-## Agent Framework
+## Framework
 
-The Framework packages remain independently installable:
+`jixu-ai` is also the framework entry point. The TUI uses the same public
+Agent, Harness, Thread, Store, and Driver APIs as any other Jixu application.
 
 ```bash
 npm install jixu-core jixu-llm jixu-store-sqlite
@@ -58,8 +48,12 @@ external work follows one path:
 Event -> Reducer -> Effect -> Driver -> Event
 ```
 
-See the [repository](https://github.com/joe960913/Jixu) for the specification,
-documentation, and source code.
+## Links
+
+- [Documentation](https://jixu.dev/docs)
+- [GitHub](https://github.com/joe960913/Jixu)
+- [Specification](https://github.com/joe960913/Jixu/blob/main/SPEC.md)
+- [Discussions](https://github.com/joe960913/Jixu/discussions)
 
 ## License
 

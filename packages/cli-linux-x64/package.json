@@ -2,11 +2,22 @@
   "name": "jixu-cli-linux-x64",
   "version": "0.4.0",
   "description": "Jixu native TUI for Linux x64 with glibc.",
+  "keywords": [
+    "ai-agent",
+    "cli",
+    "jixu",
+    "linux",
+    "terminal-ui"
+  ],
+  "homepage": "https://jixu.dev",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/joe960913/Jixu.git",
     "directory": "packages/cli-linux-x64"
+  },
+  "bugs": {
+    "url": "https://github.com/joe960913/Jixu/issues"
   },
   "os": [
     "linux"

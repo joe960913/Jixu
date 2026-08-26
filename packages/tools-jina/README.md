@@ -33,3 +33,12 @@ Key remains inside the Tool closure and is never part of Tool input or output.
 Retrieved web content is untrusted evidence, not instructions. Applications
 should apply an explicit network Tool permission policy and cite the returned
 source URL when using it in an answer.
+
+## Links
+
+- [Documentation](https://jixu.dev/docs)
+- [GitHub](https://github.com/joe960913/Jixu)
+
+## License
+
+MIT

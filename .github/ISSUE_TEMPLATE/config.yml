@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and early ideas
+    url: https://github.com/joe960913/Jixu/discussions
+    about: Ask for help or discuss an idea before turning it into a concrete proposal.
+  - name: Security vulnerability
+    url: https://github.com/joe960913/Jixu/security/advisories/new
+    about: Report suspected vulnerabilities privately.

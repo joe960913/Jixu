@@ -2,12 +2,23 @@
   "name": "jixu-testkit",
   "version": "0.4.0",
   "description": "Deterministic fixtures and Store contracts for Jixu.",
+  "keywords": [
+    "ai-agent",
+    "deterministic-testing",
+    "event-store",
+    "testing",
+    "typescript"
+  ],
+  "homepage": "https://jixu.dev/docs",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/joe960913/Jixu.git",
     "directory": "packages/testkit"
+  },
+  "bugs": {
+    "url": "https://github.com/joe960913/Jixu/issues"
   },
   "engines": {
     "node": ">=22.19.0"

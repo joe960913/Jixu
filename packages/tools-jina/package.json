@@ -2,12 +2,23 @@
   "name": "jixu-tools-jina",
   "version": "0.4.0",
   "description": "Opt-in Jina-backed Web Search and URL Reader Tools for Jixu.",
+  "keywords": [
+    "agent-tools",
+    "ai-agent",
+    "jina-ai",
+    "typescript",
+    "web-search"
+  ],
+  "homepage": "https://jixu.dev/docs",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/joe960913/Jixu.git",
     "directory": "packages/tools-jina"
+  },
+  "bugs": {
+    "url": "https://github.com/joe960913/Jixu/issues"
   },
   "engines": {
     "node": ">=22.19.0"

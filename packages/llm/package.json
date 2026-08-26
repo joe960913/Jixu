@@ -1,13 +1,25 @@
 {
   "name": "jixu-llm",
   "version": "0.4.0",
-  "description": "Provider-neutral LLM adapters for Jixu.",
+  "description": "OpenAI Chat Completions and Anthropic Messages Drivers for Jixu.",
+  "keywords": [
+    "ai-agent",
+    "anthropic",
+    "llm",
+    "model-driver",
+    "openai",
+    "typescript"
+  ],
+  "homepage": "https://jixu.dev/docs",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/joe960913/Jixu.git",
     "directory": "packages/llm"
+  },
+  "bugs": {
+    "url": "https://github.com/joe960913/Jixu/issues"
   },
   "engines": {
     "node": ">=22.19.0"

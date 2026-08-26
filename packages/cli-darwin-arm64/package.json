@@ -2,11 +2,22 @@
   "name": "jixu-cli-darwin-arm64",
   "version": "0.4.0",
   "description": "Jixu native TUI for macOS arm64.",
+  "keywords": [
+    "ai-agent",
+    "cli",
+    "jixu",
+    "macos",
+    "terminal-ui"
+  ],
+  "homepage": "https://jixu.dev",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/joe960913/Jixu.git",
     "directory": "packages/cli-darwin-arm64"
+  },
+  "bugs": {
+    "url": "https://github.com/joe960913/Jixu/issues"
   },
   "os": [
     "darwin"

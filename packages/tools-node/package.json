@@ -1,13 +1,24 @@
 {
   "name": "jixu-tools-node",
   "version": "0.4.0",
-  "description": "Opt-in Node file and local shell Tools for Jixu.",
+  "description": "Opt-in file and unsandboxed local shell Tools for Jixu.",
+  "keywords": [
+    "agent-tools",
+    "ai-agent",
+    "filesystem",
+    "shell",
+    "typescript"
+  ],
+  "homepage": "https://jixu.dev/docs",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/joe960913/Jixu.git",
     "directory": "packages/tools-node"
+  },
+  "bugs": {
+    "url": "https://github.com/joe960913/Jixu/issues"
   },
   "engines": {
     "node": ">=22.19.0"

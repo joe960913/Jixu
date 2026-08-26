@@ -1,0 +1,56 @@
+name: Feature proposal
+description: Propose a concrete addition to the Jixu public contract
+title: "[Proposal] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Jixu is a single-Agent Harness with one durable Thread model. Open-ended
+        questions and early ideas are welcome in Discussions; use this form when
+        the behavior is concrete enough to evaluate.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What developer or runtime problem is not handled today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the observable API or behavior, not only an implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: fit
+    attributes:
+      label: Fit with Jixu
+      description: How does this fit one Agent, one durable Thread, and the Event/Reducer/Effect/Driver path?
+    validations:
+      required: true
+
+  - type: textarea
+    id: failure
+    attributes:
+      label: Failure and recovery
+      description: What should happen on failure, cancellation, Replay, or Fork?
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What can applications do today, and why is that insufficient?
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing Issues and Discussions for related work.
+          required: true
+        - label: This proposal does not require a second Agent or workflow runtime.
+          required: true

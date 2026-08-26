@@ -1,0 +1,85 @@
+name: Bug report
+description: Report reproducible behavior in Jixu
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Please reproduce it on the latest Jixu
+        release when possible. Do not include API keys, credentials, or private
+        Thread data.
+
+  - type: input
+    id: version
+    attributes:
+      label: Jixu version
+      description: Run `jixu --version` or provide the installed package version.
+      placeholder: 0.4.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - Native TUI / jixu-ai
+        - Harness or Thread API / jixu-core
+        - Model Driver / jixu-llm
+        - JSONL Store / jixu-store-jsonl
+        - SQLite Store / jixu-store-sqlite
+        - Node Tools / jixu-tools-node
+        - Jina Tools / jixu-tools-jina
+        - Testkit or custom adapter
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, architecture, Node.js version, and package manager.
+      placeholder: macOS 26 arm64, Node.js 24.13.1, pnpm 11.12.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include the smallest code sample or exact terminal steps that reproduce the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: What happened? Include redacted errors or Events when useful.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect Jixu to do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add relevant configuration, screenshots, or a repository link.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing Issues and Discussions for the same problem.
+          required: true
+        - label: I removed API keys, credentials, and private data from this report.
+          required: true

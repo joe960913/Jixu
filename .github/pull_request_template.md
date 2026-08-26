@@ -13,10 +13,10 @@ behavior:
 
 ## Architecture check
 
-- [ ] The durable Event log remains the only Run authority.
+- [ ] The durable Event log remains the only Thread authority.
 - [ ] No canonical concept gained a second name or competing lifecycle.
 - [ ] External work still crosses the Effect/Driver boundary.
-- [ ] Replay performs no live Effects, and Fork creates a new Run.
+- [ ] Replay performs no live Effects, and Fork creates a new child Thread.
 - [ ] Kernel code does not depend on adapters.
 
 ## Validation
