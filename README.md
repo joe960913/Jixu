@@ -191,13 +191,13 @@ Jixu keeps operational facts inside the same durable model:
 | Package | Purpose |
 | --- | --- |
 | [`jixu-ai`](https://www.npmjs.com/package/jixu-ai) | Framework entry point and installable reference TUI. |
-| `jixu-core` | The single-Agent Harness, Thread API, deterministic Kernel, and public ports. |
-| `jixu-llm` | Provider-neutral model Drivers for OpenAI Chat Completions and Anthropic Messages. |
-| `jixu-store-jsonl` | Inspectable local JSONL Event Store. |
-| `jixu-store-sqlite` | Local SQLite Event Store. |
-| `jixu-tools-node` | Opt-in Node file and unsandboxed local shell Tools. |
-| `jixu-tools-jina` | Opt-in Jina-backed Web Search and URL Reader Tools. |
-| `jixu-testkit` | Deterministic fixtures and shared Store contracts for adapter authors. |
+| [`jixu-core`](https://www.npmjs.com/package/jixu-core) | The single-Agent Harness, Thread API, deterministic Kernel, and public ports. |
+| [`jixu-llm`](https://www.npmjs.com/package/jixu-llm) | Provider-neutral model Drivers for OpenAI Chat Completions and Anthropic Messages. |
+| [`jixu-store-jsonl`](https://www.npmjs.com/package/jixu-store-jsonl) | Inspectable local JSONL Event Store. |
+| [`jixu-store-sqlite`](https://www.npmjs.com/package/jixu-store-sqlite) | Local SQLite Event Store. |
+| [`jixu-tools-node`](https://www.npmjs.com/package/jixu-tools-node) | Opt-in Node file and unsandboxed local shell Tools. |
+| [`jixu-tools-jina`](https://www.npmjs.com/package/jixu-tools-jina) | Opt-in Jina-backed Web Search and URL Reader Tools. |
+| [`jixu-testkit`](https://www.npmjs.com/package/jixu-testkit) | Deterministic fixtures and shared Store contracts for adapter authors. |
 
 Model providers, Tools, Stores, and UIs use the runtime's public ports. Thread
 state still belongs to the core runtime.
