@@ -9,20 +9,35 @@ Jixu means *continue* in Chinese.
 A small single-Agent Harness for TypeScript. Define one Agent, give it Tools
 and Skills, and continue its work in a durable Thread.
 
+The core API stays small: `createHarness`, `createThread`, and `thread.send`.
+Underneath it, Jixu records execution, context decisions, and external work so
+the same Thread can recover, Replay, or Fork without a second runtime.
+
 > Jixu is pre-1.0. The public API may change before 1.0.
 
 > [!WARNING]
-> Jixu can run Bash commands on your machine. Bash is not OS-sandboxed and
-> executes with the permissions of the Jixu process. The current permission
-> controls decide whether a Tool call is dispatched; they do not inspect shell
-> commands or prevent destructive operations such as deleting files. Keep Bash
-> on `ASK` unless you accept that risk, and use a backed-up or disposable
-> workspace. Stronger deletion safeguards and OS sandboxing are planned, not
-> available today.
+> Jixu's Bash Tool is not OS-sandboxed and runs with the permissions of the Jixu
+> process. Permission controls approve Tool calls, not individual shell
+> operations. Keep Bash on `ASK` and use a backed-up or disposable workspace.
 
 ![Jixu terminal interface](./assets/jixu-tui.webp)
 
+## Why Jixu
+
+Agent loops are easy to start. Resuming one safely is harder: a Tool call may be
+in flight, the process may stop between writes, or the model may run out of
+context.
+
+Jixu records the work as ordered Events. State is derived from them, and
+external work is recorded before it is dispatched. That is what lets a Thread
+recover, Replay, Fork, or continue later.
+
+Each Harness has one immutable Agent definition. Its Threads hold that Agent's
+durable history. There is no workflow graph or second execution engine.
+
 ## Start
+
+Install and open the reference TUI:
 
 ```bash
 npm install -g jixu-ai
@@ -43,7 +58,10 @@ The package launcher requires Node.js 22.19.0 or newer. The native TUI supports
 macOS arm64 and Linux x64 with glibc; Intel macOS is not supported. Bun is not
 required at runtime.
 
-## Framework
+The TUI uses the same public Agent, Harness, Thread, Store, and Driver APIs as
+any other Jixu application.
+
+## Use Jixu as a framework
 
 ```bash
 npm install jixu-core jixu-llm jixu-store-sqlite
@@ -91,37 +109,112 @@ const state = await thread.send("Review this design and identify its main risk."
 console.log(state.result);
 ```
 
-Jixu resolves and freezes model capacity before Agent creation. Known endpoints
-use verified metadata or Jixu's versioned catalogue; custom deployments declare
-`explicit: { contextWindowTokens, maxOutputTokens }`. If capacity is uncertain,
-Jixu stops rather than guessing.
+The Agent definition is immutable. Each `send` continues the same durable
+Thread.
 
-Context Policy works within those limits and does not alter provider generation
-defaults.
+## Thread operations
 
-Threads start in `standard` mode. `await thread.setMode("ultra")` durably
-requests the strongest compatible reasoning effort without changing the model
-or protocol.
+The public Harness creates, opens, and lists Threads. A Thread exposes one
+coherent surface for ordinary work and continuity operations:
 
-Thread input preserves ordered text and image parts. Images are stored as
-verified immutable Artifacts; durable Events contain references, never raw
-bytes.
+| Operation | Meaning |
+| --- | --- |
+| `send(input)` | Durably accepts ordered text and image input. Input received while work is running is queued in Event order. |
+| `state()` | Returns the current deterministic projection of the Thread's Events. |
+| `events()` | Reads the immutable durable facts behind that State. |
+| `stream()` | Observes committed Events and transient Signals through one ordered surface. |
+| `wait()` | Waits until the Thread is no longer `running`. |
+| `pause()` | Records pause intent and settles at a safe append/dispatch boundary. |
+| `continue()` | Durably continues a paused Thread before dispatch resumes. |
+| `interrupt()` | Stops the current turn without turning it into resumable paused work. |
+| `clear()` | Advances the model-visible context boundary while retaining the Thread and its durable history. |
+| `replay()` | Rebuilds State from Events with zero live Driver calls. |
+| `fork({ at, input })` | Creates a new child Thread from the exact State at one selected Event. |
+| `setMode(mode)` | Durably selects `standard` or the strongest compatible `ultra` reasoning effort without changing the Agent or model. |
 
-## Design
-
-An Agent is immutable configuration. A Thread is its durable history. The
-ordered Event log is the sole authority; State is derived from it. External
-work follows one path:
+## One authoritative execution path
 
 ```text
-Event -> Reducer -> Effect -> Driver -> Event
+durable Event -> pure Reducer -> explicit Effect -> Driver -> durable Event
 ```
 
-Replay calls no live Driver. Unknown persisted data fails closed. Secrets never
-enter Events, State, Checkpoints, errors, or Signals.
+The Kernel reduces Events into State and Effects without performing I/O. Drivers
+execute external work and append the result as another Event. Replay only
+reduces recorded Events; it never calls a live model or Tool.
 
-Read [SPEC.md](./SPEC.md) for the product contract and
-[CONTRIBUTING.md](./CONTRIBUTING.md) for development guidance.
+Jixu retries only when the Effect's delivery contract makes that safe:
+
+- a deterministic Tool failure is recorded and returned to the Agent as a
+  failed Tool result so the same turn can recover or explain;
+- an unknown non-idempotent outcome is retained and enters `waiting` rather
+  than being silently repeated;
+- `allow`, `ask`, and `deny` Tool policy decisions are resolved before Driver
+  dispatch, and approvals are durable decisions for one exact pending Effect.
+
+Jixu does not claim generic exactly-once execution. That guarantee requires an
+enforceable idempotency contract in the downstream system.
+
+## Context engineering
+
+Each model request is assembled from the Thread's durable material: Agent
+instructions, relevant Events, the active Plan, Skills, Tool schemas, Artifacts,
+and recent work. A redacted Context Manifest records what was selected and why.
+
+Jixu resolves the model's context window and output limit before Agent creation.
+If capacity is unknown, it stops instead of guessing. When older work must be
+compacted, Jixu writes a source-linked Continuity Handoff and keeps a bounded
+tail of complete recent operations. The underlying Events are not rewritten.
+
+## Plans
+
+A Plan is optional Event-backed coordination data. It can record acceptance
+criteria, steps, evidence, blockers, and the next safe action, but it cannot
+dispatch Effects, approve a Tool call, or widen user scope.
+
+A Thread has at most one Plan and one active step. Changes are validated and
+committed before related Effects can dispatch; rejected changes remain visible
+in Event history.
+
+## Inspectable execution
+
+Jixu keeps operational facts inside the same durable model:
+
+- logical model and Tool calls remain distinct from dispatch attempts;
+- reported token usage stays distinct from unavailable values, and unknown
+  pricing remains unknown instead of rendering as zero;
+- ordered text and image input is preserved, while image bytes live in verified
+  immutable Artifacts rather than Events;
+- Secrets never enter Events, State, Checkpoints, errors, or Signals.
+
+## Packages
+
+| Package | Purpose |
+| --- | --- |
+| [`jixu-ai`](https://www.npmjs.com/package/jixu-ai) | Framework entry point and installable reference TUI. |
+| `jixu-core` | The single-Agent Harness, Thread API, deterministic Kernel, and public ports. |
+| `jixu-llm` | Provider-neutral model Drivers for OpenAI Chat Completions and Anthropic Messages. |
+| `jixu-store-jsonl` | Inspectable local JSONL Event Store. |
+| `jixu-store-sqlite` | Local SQLite Event Store. |
+| `jixu-tools-node` | Opt-in Node file and unsandboxed local shell Tools. |
+| `jixu-tools-jina` | Opt-in Jina-backed Web Search and URL Reader Tools. |
+| `jixu-testkit` | Deterministic fixtures and shared Store contracts for adapter authors. |
+
+Model providers, Tools, Stores, and UIs use the runtime's public ports. Thread
+state still belongs to the core runtime.
+
+## What Jixu is not
+
+Jixu is not a multi-Agent orchestrator, workflow engine, or hosted control
+plane. It does not add Agent graphs, supervisors, queues, schedulers, or a
+generic exactly-once guarantee. External systems remain ordinary Tools and do
+not change the single-Agent model.
+
+## Documentation
+
+- [Documentation](https://jixu.dev/docs)
+- [Specification](./SPEC.md)
+- [Contributing](./CONTRIBUTING.md)
+- [npm package](https://www.npmjs.com/package/jixu-ai)
 
 ## License
 
