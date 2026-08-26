@@ -405,6 +405,10 @@ export async function buildPackageArtifacts(
     await copyFile(cliArtifact.binaryPath, packagedBinary);
     await chmod(packagedBinary, 0o755);
     await copyFile(
+      join(repositoryRoot, "LICENSE"),
+      join(cliPackageRoot, "LICENSE"),
+    );
+    await copyFile(
       join(repositoryRoot, "packages", "jixu", "THIRD_PARTY_NOTICES.md"),
       join(cliPackageRoot, "THIRD_PARTY_NOTICES.md"),
     );
@@ -449,10 +453,7 @@ export async function buildPackageArtifacts(
       "THIRD_PARTY_NOTICES.md",
     ]);
     assert.equal(manifest.preferUnplugged, true);
-    assert.deepEqual(manifest.publishConfig, {
-      access: "public",
-      executableFiles: [`bin/${target.executable}`],
-    });
+    assert.deepEqual(manifest.publishConfig, { access: "public" });
     assert.equal(
       manifest.repository.directory,
       `packages/${target.packageDirectory}`,
@@ -486,7 +487,9 @@ export async function buildPackageArtifacts(
     const tarballPath = await pack(packageRoot, {
       destination: resolvedDestination,
       ignoreScripts: true,
-      packageManager: "pnpm",
+      // npm preserves the chmod'd native executable without pnpm-only
+      // publishConfig metadata that npm warns about during publication.
+      packageManager: sourceManifest.name.startsWith("jixu-cli-") ? "npm" : "pnpm",
     });
     const candidate = await inspectTarball(
       tarballPath,

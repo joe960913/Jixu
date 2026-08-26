@@ -7,6 +7,7 @@ coverage/
 .artifacts/
 /packages/cli-*/bin/jixu
 /packages/cli-*/THIRD_PARTY_NOTICES.md
+/packages/cli-*/LICENSE
 *.tsbuildinfo
 *.log
 .env

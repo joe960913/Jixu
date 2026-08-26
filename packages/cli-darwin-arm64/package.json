@@ -31,9 +31,6 @@
   ],
   "preferUnplugged": true,
   "publishConfig": {
-    "access": "public",
-    "executableFiles": [
-      "bin/jixu"
-    ]
+    "access": "public"
   }
 }
