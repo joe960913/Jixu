@@ -1,6 +1,6 @@
 {
   "name": "jixu-llm",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "OpenAI Chat Completions and Anthropic Messages Drivers for Jixu.",
   "keywords": [
     "ai-agent",

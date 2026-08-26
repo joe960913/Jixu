@@ -1,6 +1,6 @@
 {
   "name": "jixu-ai",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Jixu framework entry point and installable native TUI.",
   "keywords": [
     "ai-agent",

@@ -1,6 +1,6 @@
 {
   "name": "jixu-tools-node",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Opt-in file and unsandboxed local shell Tools for Jixu.",
   "keywords": [
     "agent-tools",
