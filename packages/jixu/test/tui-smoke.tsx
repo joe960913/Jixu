@@ -1526,12 +1526,24 @@ try {
     releaseContinuation();
     await directSubmission;
   });
-  await act(async () => {
-    await setup.renderOnce();
-    await setup.flush();
-  });
+  let directFrame = "";
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    await act(async () => {
+      await setup.renderOnce();
+      await setup.flush();
+    });
+    directFrame = setup.captureCharFrame();
+    if (
+      directFrame
+        .split("\n")
+        .filter((line) => line.includes("The durable run completed."))
+        .length >= 2
+    ) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
   // JX-AC-021 JX-AC-037 JX-AC-040: a completed simple Tool turn keeps receipts.
-  const directFrame = setup.captureCharFrame();
   assert.match(directFrame, /Direct task/);
   assert.match(directFrame, /Direct execution/);
   assert.match(directFrame, /Response committed/);
@@ -1541,9 +1553,11 @@ try {
   assert.match(directFrame, /edit/);
   assert.match(directFrame, /cat > \/tmp\/hello\.html\s+· exit 0/);
   assert.match(directFrame, /demo\.html\s+· 1 replacement/);
-  const finalAssistantRow = directFrame
+  const completedAssistantRows = directFrame
     .split("\n")
-    .findLast((line) => line.includes("The durable run completed."));
+    .filter((line) => line.includes("The durable run completed."));
+  assert.equal(completedAssistantRows.length, 2);
+  const finalAssistantRow = completedAssistantRows.at(-1);
   assert.doesNotMatch(finalAssistantRow ?? "", /JIXU/);
   assert.doesNotMatch(directFrame, /Ctrl\+O/);
   assert.doesNotMatch(directFrame, /fixture output/);
@@ -3374,14 +3388,14 @@ try {
 
   await act(async () => {
     multimodalSetup.mockInput.pressEnter();
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
       if (
         multimodalEffects.length === 1 &&
         multimodalController?.getSnapshot().busy === false
       ) {
         break;
       }
-      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setTimeout(resolve, 10));
     }
   });
   await act(async () => {
