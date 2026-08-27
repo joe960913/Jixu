@@ -1,6 +1,6 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.53
+**Version:** 0.4.54
 **Status:** normative, pre-1.0
 **Last updated:** 2026-08-28
 
@@ -1024,6 +1024,27 @@ continue safely without treating the compacted text as Thread authority.
   execution time, cancellation, authentication, rate limits, upstream failure,
   and malformed data MUST remain bounded and typed under the same secret-
   redaction requirements as `JX-TOOL-010`. Replay MUST never call Reader.
+- **JX-TOOL-012.** The first-party Node `bash` Tool MUST treat its configured
+  timeout and execution cancellation as bounds on the foreground process
+  lifecycle rather than as a signal to only the immediate shell wrapper. On
+  POSIX it MUST launch each command in a dedicated process group, request
+  graceful termination for that group, escalate remaining group members to
+  forced termination after one fixed bounded grace period, and bound final
+  stdout/stderr drain independently. On Windows it MUST use a platform tree
+  termination mechanism rather than claiming that terminating one PID contains
+  its descendants. A confirmed bounded timeout or cancellation result MUST
+  preserve the already-admitted stdout/stderr and live-output bound and
+  distinguish `timedOut` from `cancelled`. A timeout MUST settle within the
+  configured command limit plus the fixed termination and drain budgets;
+  cancellation MUST settle within those fixed budgets after cancellation. If
+  required tree termination cannot be issued, or inherited output pipes remain
+  open after the forced-termination drain deadline, execution MUST throw across
+  the Tool boundary so the existing Driver exception path records an
+  indeterminate outcome instead of a false completed timeout. Dedicated process
+  groups are lifecycle management, not an OS sandbox or a claim that a process
+  which deliberately creates a new session remains contained. This foreground
+  contract MUST NOT silently adopt the command as a background task, invent a
+  process authority beside the Event log, or dispatch any process during Replay.
 
 ### 11.2 Skills
 
@@ -2157,6 +2178,21 @@ implement another TUI, Harness, or Thread lifecycle.
   empty result settles with a typed error. Recovery resumes only an already
   durable repair Effect, Replay dispatches zero Drivers, and schema 5-12
   histories retain their recorded pre-repair control behavior.
+- **JX-AC-064 — Bounded foreground process-tree termination.** Deterministic
+  first-party Node Tool fixtures launch a shell whose descendant inherits an
+  output pipe and ignores graceful termination. One fixture reaches the
+  configured Bash timeout and another receives cancellation after dispatch.
+  Each preserves bounded partial output, distinguishes timeout from
+  cancellation, escalates the whole POSIX process group or uses the Windows
+  tree terminator, leaves no ordinary fixture descendant alive, and settles
+  within the command limit plus fixed grace and drain budgets rather than
+  waiting forever for pipe EOF. A separate POSIX fixture deliberately creates
+  a new session while retaining the output pipe; expiry of the drain budget
+  rejects the Tool execution, the existing ordinary Driver path records that
+  exception as indeterminate, and test cleanup terminates the exact escaped PID.
+  A normal short command retains its real exit code and output. A
+  termination-mechanism failure is likewise not normalized to `tool.completed`,
+  and no path retries the command automatically.
 
 The minimum validation for a code change is targeted tests, typecheck, lint, and
 `git diff --check`. Release work also runs the complete acceptance suite and
@@ -2796,6 +2832,22 @@ combinators that Anthropic Messages and its routed providers reject.
 Reducer version 19 invalidates disposable Checkpoints. This change adds no
 provider-specific routing, hidden retry inside a Driver, settings migration,
 dependency, second Plan authority, or second execution path.
+
+Version 0.4.54 makes the first-party Node `bash` timeout a real foreground
+process-tree boundary. Commands run in a dedicated POSIX process group;
+timeout and cancellation request graceful group termination, escalate after a
+fixed grace period, and stop waiting for inherited stdout/stderr pipes after a
+separate fixed drain budget. Windows uses its platform tree-termination command
+instead of applying POSIX signal claims. Bounded partial output remains the
+durable Tool result when termination and pipe closure succeed; failure to issue
+tree termination or confirm pipe closure before the drain deadline remains
+indeterminate through the existing Driver exception path. Process-group
+lifecycle does not add an OS sandbox or claim containment of a descendant that
+deliberately creates a new session.
+The public Bash input/output schemas, 30-second default, five-minute maximum,
+Tool permission, Event schemas, Reducer, settings, and Replay semantics do not
+change. This version adds no dependency, automatic background execution,
+managed-process API, hidden retry, sandbox claim, or second process authority.
 
 ## 19. Implementation order
 

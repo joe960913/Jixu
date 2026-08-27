@@ -13,6 +13,97 @@ import type { Signal, ToolExecutionContext } from "jixu-core";
 
 import { createNodeTools } from "../src/index.ts";
 
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ESRCH"
+    ) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function shellArgument(value: string): string {
+  if (process.platform === "win32") return JSON.stringify(value);
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+async function waitForPid(path: string): Promise<number> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    try {
+      const pid = Number.parseInt(await readFile(path, "utf8"), 10);
+      if (Number.isInteger(pid) && pid > 0) return pid;
+    } catch (error) {
+      if (
+        typeof error !== "object" ||
+        error === null ||
+        !("code" in error) ||
+        error.code !== "ENOENT"
+      ) {
+        throw error;
+      }
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+  }
+  throw new Error("fixture descendant did not publish its PID");
+}
+
+async function assertProcessExited(pid: number): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    if (!processExists(pid)) return;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+  }
+  assert.equal(processExists(pid), false, `process ${pid} remained alive`);
+}
+
+async function stubbornProcessTree(root: string, name: string, escaped = false): Promise<{
+  readonly command: string;
+  readonly pidPath: string;
+}> {
+  const childPath = join(root, `${name}-child.mjs`);
+  const parentPath = join(root, `${name}-parent.mjs`);
+  const pidPath = join(root, `${name}.pid`);
+  await writeFile(
+    childPath,
+    [
+      'import { writeFile } from "node:fs/promises";',
+      'process.on("SIGTERM", () => {});',
+      'await writeFile(process.argv[2], String(process.pid), "utf8");',
+      'process.stdout.write("grandchild-ready\\n");',
+      'setInterval(() => {}, 1_000);',
+    ].join("\n"),
+    "utf8",
+  );
+  await writeFile(
+    parentPath,
+    [
+      'import { spawn } from "node:child_process";',
+      'const child = spawn(process.execPath, [process.argv[2], process.argv[3]], {',
+      '  detached: process.argv[4] === "escaped",',
+      '  stdio: ["ignore", "inherit", "inherit"],',
+      '});',
+      'if (process.argv[4] === "escaped") child.unref();',
+      'setInterval(() => {}, 1_000);',
+    ].join("\n"),
+    "utf8",
+  );
+  return {
+    command: [process.execPath, parentPath, childPath, pidPath, escaped ? "escaped" : "grouped"]
+      .map(shellArgument)
+      .join(" "),
+    pidPath,
+  };
+}
+
 function context(
   cancellation = new AbortController().signal,
   signals: ToolExecutionContext["signals"] = { emit() {} },
@@ -172,7 +263,7 @@ test("JX-AC-039 process scope gives file Tools the disclosed shell boundary", as
   }
 });
 
-test("JX-AC-039 JX-AC-041 JX-SEC-005 bash output and live Signals share one bound", async () => {
+test("JX-AC-039 JX-AC-041 JX-AC-064 JX-SEC-005 bash output and live Signals share one bound", async () => {
   const fixture = await workspace();
   try {
     const tools = createNodeTools({
@@ -234,6 +325,105 @@ test("JX-SEC-005 bash propagates cancellation to the local process", async () =>
     assert.equal(output.exitCode, null);
     assert.equal(output.stdout, "");
   } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("JX-AC-064 bash timeout kills descendants that inherit output pipes", async () => {
+  const fixture = await workspace();
+  let descendantPid: number | undefined;
+  try {
+    const processTree = await stubbornProcessTree(fixture.root, "timeout");
+    const tools = createNodeTools({ bashTimeoutMs: 500, root: fixture.root });
+    const startedAt = Date.now();
+    const output = tools.bash.parseOutput(
+      await tools.bash.execute(
+        tools.bash.parseInput({ command: processTree.command }),
+        context(),
+      ),
+    );
+    const elapsedMs = Date.now() - startedAt;
+    descendantPid = await waitForPid(processTree.pidPath);
+
+    assert.equal(output.timedOut, true);
+    assert.equal(output.cancelled, false);
+    assert.match(output.stdout, /grandchild-ready/);
+    assert.ok(elapsedMs < 3_500, `timeout settled after ${elapsedMs}ms`);
+    await assertProcessExited(descendantPid);
+    descendantPid = undefined;
+  } finally {
+    if (descendantPid !== undefined && processExists(descendantPid)) {
+      process.kill(descendantPid, "SIGKILL");
+    }
+    await fixture.cleanup();
+  }
+});
+
+test("JX-AC-064 bash cancellation kills the active foreground process tree", async () => {
+  const fixture = await workspace();
+  let descendantPid: number | undefined;
+  try {
+    const processTree = await stubbornProcessTree(fixture.root, "cancel");
+    const tools = createNodeTools({ bashTimeoutMs: 5_000, root: fixture.root });
+    const cancellation = new AbortController();
+    const execution = tools.bash.execute(
+      tools.bash.parseInput({ command: processTree.command }),
+      context(cancellation.signal),
+    );
+    descendantPid = await waitForPid(processTree.pidPath);
+    const cancelledAt = Date.now();
+    cancellation.abort();
+    const output = tools.bash.parseOutput(await execution);
+    const elapsedMs = Date.now() - cancelledAt;
+
+    assert.equal(output.cancelled, true);
+    assert.equal(output.timedOut, false);
+    assert.match(output.stdout, /grandchild-ready/);
+    assert.ok(elapsedMs < 3_000, `cancellation settled after ${elapsedMs}ms`);
+    await assertProcessExited(descendantPid);
+    descendantPid = undefined;
+  } finally {
+    if (descendantPid !== undefined && processExists(descendantPid)) {
+      process.kill(descendantPid, "SIGKILL");
+    }
+    await fixture.cleanup();
+  }
+});
+
+test("JX-AC-064 escaped pipe holder reaches a bounded indeterminate outcome", {
+  skip: process.platform === "win32",
+}, async () => {
+  const fixture = await workspace();
+  let descendantPid: number | undefined;
+  try {
+    const processTree = await stubbornProcessTree(fixture.root, "escaped", true);
+    const tools = createNodeTools({ bashTimeoutMs: 500, root: fixture.root });
+    const signals: Signal[] = [];
+    const startedAt = Date.now();
+    const execution = tools.bash.execute(
+      tools.bash.parseInput({ command: processTree.command }),
+      context(new AbortController().signal, {
+        emit(signal) {
+          signals.push(signal);
+        },
+      }),
+    );
+    descendantPid = await waitForPid(processTree.pidPath);
+
+    await assert.rejects(execution, /could not be confirmed before the output drain deadline/);
+    const elapsedMs = Date.now() - startedAt;
+    const output = signals
+      .filter((signal) => signal.type === TOOL_OUTPUT_SIGNAL_TYPE)
+      .map((signal) => parseToolOutputDelta(signal.data).delta)
+      .join("");
+    assert.match(output, /grandchild-ready/);
+    assert.ok(elapsedMs < 4_000, `indeterminate termination settled after ${elapsedMs}ms`);
+    assert.equal(processExists(descendantPid), true);
+  } finally {
+    if (descendantPid !== undefined && processExists(descendantPid)) {
+      process.kill(descendantPid, "SIGKILL");
+      await assertProcessExited(descendantPid);
+    }
     await fixture.cleanup();
   }
 });

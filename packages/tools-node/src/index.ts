@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import {
   mkdir,
   lstat,
@@ -476,6 +477,117 @@ async function readBounded(path: string, limit: number): Promise<{ content: stri
   }
 }
 
+const BASH_TERMINATION_GRACE_MS = 250;
+const BASH_IO_DRAIN_TIMEOUT_MS = 2_000;
+const WINDOWS_TREE_KILL_TIMEOUT_MS = 2_000;
+
+function isMissingProcess(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "ESRCH"
+  );
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (isMissingProcess(error)) return false;
+    throw error;
+  }
+}
+
+function signalPosixProcessGroup(pid: number, signal: NodeJS.Signals): boolean {
+  try {
+    process.kill(-pid, signal);
+    return true;
+  } catch (error) {
+    if (isMissingProcess(error)) return false;
+    throw error;
+  }
+}
+
+function signalImmediateChild(child: ChildProcess, signal: NodeJS.Signals): boolean {
+  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) {
+    return false;
+  }
+  try {
+    return child.kill(signal);
+  } catch (error) {
+    if (isMissingProcess(error)) return false;
+    throw error;
+  }
+}
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
+}
+
+function killWindowsProcessTree(child: ChildProcess): Promise<void> {
+  if (child.pid === undefined) {
+    return Promise.reject(new Error("bash process did not expose a PID"));
+  }
+  const pid = child.pid;
+  return new Promise((resolvePromise, reject) => {
+    const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error === undefined) resolvePromise();
+      else reject(error);
+    };
+    const timer = setTimeout(() => {
+      killer.kill();
+      finish(new Error("Windows process-tree termination timed out"));
+    }, WINDOWS_TREE_KILL_TIMEOUT_MS);
+    killer.once("error", (error) => finish(error));
+    killer.once("close", (exitCode) => {
+      try {
+        if (exitCode === 0 || !processExists(pid)) {
+          finish();
+          return;
+        }
+        finish(new Error(`Windows process-tree termination exited ${exitCode ?? "without status"}`));
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  });
+}
+
+async function terminateProcessTree(
+  child: ChildProcess,
+  shouldContinue: () => boolean,
+): Promise<void> {
+  if (child.pid === undefined) throw new Error("bash process did not expose a PID");
+  if (process.platform === "win32") {
+    await killWindowsProcessTree(child);
+    return;
+  }
+
+  const pid = child.pid;
+  const groupSignalled = signalPosixProcessGroup(pid, "SIGTERM");
+  if (!groupSignalled && !signalImmediateChild(child, "SIGTERM") && processExists(pid)) {
+    throw new Error("bash process tree did not accept graceful termination");
+  }
+
+  await wait(BASH_TERMINATION_GRACE_MS);
+  if (!shouldContinue()) return;
+
+  const groupForced = signalPosixProcessGroup(pid, "SIGKILL");
+  if (!groupForced && !signalImmediateChild(child, "SIGKILL") && processExists(pid)) {
+    throw new Error("bash process tree did not accept forced termination");
+  }
+}
+
 function runShell(
   input: BashInput,
   options: {
@@ -502,6 +614,7 @@ function runShell(
   return new Promise((resolvePromise, reject) => {
     const child = spawn(input.command, {
       cwd: options.cwd,
+      detached: process.platform !== "win32",
       shell: options.shell,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -514,6 +627,10 @@ function runShell(
     let timedOut = false;
     let cancelled = false;
     let settled = false;
+    let terminating = false;
+    let terminationComplete = false;
+    let closeOutcome: { readonly exitCode: number | null; readonly signal: NodeJS.Signals | null } | null = null;
+    let drainTimer: ReturnType<typeof setTimeout> | undefined;
 
     const capture = (
       target: Buffer[],
@@ -521,6 +638,7 @@ function runShell(
       stream: "stderr" | "stdout",
       decoder: StringDecoder,
     ) => {
+      if (settled) return;
       total += chunk.length;
       const remaining = options.maxOutputBytes - captured;
       if (remaining > 0) {
@@ -536,28 +654,13 @@ function runShell(
     child.stderr.on("data", (chunk: Buffer) =>
       capture(stderr, chunk, "stderr", stderrDecoder));
 
-    const stop = () => child.kill("SIGTERM");
-    const abort = () => {
-      cancelled = true;
-      stop();
-    };
-    options.cancellation.addEventListener("abort", abort, { once: true });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      stop();
-    }, options.timeoutMs);
-
     const cleanup = () => {
-      clearTimeout(timer);
+      clearTimeout(commandTimer);
+      if (drainTimer !== undefined) clearTimeout(drainTimer);
       options.cancellation.removeEventListener("abort", abort);
     };
-    child.once("error", (error) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(error);
-    });
-    child.once("close", (exitCode, signal) => {
+
+    const finishOutput = (exitCode: number | null, signal: NodeJS.Signals | null) => {
       if (settled) return;
       settled = true;
       cleanup();
@@ -574,6 +677,69 @@ function runShell(
         timedOut,
         truncated: total > captured,
       });
+    };
+
+    const finishError = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      child.unref();
+      reject(error);
+    };
+
+    const finishAfterTermination = () => {
+      if (!terminationComplete || settled) return;
+      if (closeOutcome !== null) {
+        finishOutput(closeOutcome.exitCode, closeOutcome.signal);
+        return;
+      }
+      drainTimer = setTimeout(() => {
+        child.stdout.destroy();
+        child.stderr.destroy();
+        child.unref();
+        finishError(
+          new Error(
+            "bash process-tree termination could not be confirmed before the output drain deadline",
+          ),
+        );
+      }, BASH_IO_DRAIN_TIMEOUT_MS);
+    };
+
+    const beginTermination = (reason: "cancelled" | "timedOut") => {
+      if (terminating || settled) return;
+      terminating = true;
+      cancelled = reason === "cancelled";
+      timedOut = reason === "timedOut";
+      void terminateProcessTree(child, () => !settled)
+        .then(() => {
+          if (settled) return;
+          terminationComplete = true;
+          finishAfterTermination();
+        })
+        .catch((error: unknown) => {
+          try {
+            signalImmediateChild(child, "SIGKILL");
+          } catch {
+            // The original tree-termination failure remains the authoritative error.
+          }
+          finishError(error instanceof Error ? error : new Error(String(error)));
+        });
+    };
+
+    const abort = () => beginTermination("cancelled");
+    options.cancellation.addEventListener("abort", abort, { once: true });
+    const commandTimer = setTimeout(() => beginTermination("timedOut"), options.timeoutMs);
+
+    child.once("error", (error) => finishError(error));
+    child.once("close", (exitCode, signal) => {
+      closeOutcome = { exitCode, signal };
+      if (!terminating) {
+        finishOutput(exitCode, signal);
+        return;
+      }
+      finishAfterTermination();
     });
   });
 }

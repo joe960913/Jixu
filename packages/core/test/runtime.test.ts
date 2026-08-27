@@ -726,7 +726,7 @@ test("JX-AC-001 JX-AC-010 JX-AC-049 a mixed Tool batch waits for every receipt a
   );
 });
 
-test("JX-AC-004 JX-AC-005 JX-AC-039 JX-AC-049 indeterminate Tool failure is explained once and waits without redispatch", async () => {
+test("JX-AC-004 JX-AC-005 JX-AC-039 JX-AC-049 JX-AC-064 indeterminate Tool failure is explained once and waits without redispatch", async () => {
   const unknown = defineTool({
     description: "Throw an unknown exception",
     execute: () => {
