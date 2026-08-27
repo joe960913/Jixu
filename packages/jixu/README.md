@@ -5,11 +5,6 @@ run `jixu`, and continue work in a durable Thread.
 
 > Jixu is pre-1.0. The public API may change before 1.0.
 
-> [!WARNING]
-> Jixu's Bash Tool is not OS-sandboxed and runs with the permissions of the Jixu
-> process. Permission controls approve Tool calls, not individual shell
-> operations. Keep Bash on `ASK` and use a backed-up or disposable workspace.
-
 ![Jixu terminal interface](https://raw.githubusercontent.com/joe960913/Jixu/main/assets/jixu-tui.webp)
 
 ## Install
@@ -47,6 +42,11 @@ external work follows one path:
 ```text
 Event -> Reducer -> Effect -> Driver -> Event
 ```
+
+> [!WARNING]
+> Jixu's Bash Tool is not OS-sandboxed and runs with the permissions of the Jixu
+> process. Permission controls approve Tool calls, not individual shell
+> operations. Keep Bash on `ASK` and use a backed-up or disposable workspace.
 
 ## Links
 

@@ -15,11 +15,6 @@ the same Thread can recover, Replay, or Fork without a second runtime.
 
 > Jixu is pre-1.0. The public API may change before 1.0.
 
-> [!WARNING]
-> Jixu's Bash Tool is not OS-sandboxed and runs with the permissions of the Jixu
-> process. Permission controls approve Tool calls, not individual shell
-> operations. Keep Bash on `ASK` and use a backed-up or disposable workspace.
-
 ![Jixu terminal interface](./assets/jixu-tui.webp)
 
 ## Why Jixu
@@ -207,6 +202,11 @@ Jixu keeps operational facts inside the same durable model:
 | [`jixu-tools-node`](https://www.npmjs.com/package/jixu-tools-node) | Opt-in Node file and unsandboxed local shell Tools. |
 | [`jixu-tools-jina`](https://www.npmjs.com/package/jixu-tools-jina) | Opt-in Jina-backed Web Search and URL Reader Tools. |
 | [`jixu-testkit`](https://www.npmjs.com/package/jixu-testkit) | Deterministic fixtures and shared Store contracts for adapter authors. |
+
+> [!WARNING]
+> Jixu's Bash Tool is not OS-sandboxed and runs with the permissions of the Jixu
+> process. Permission controls approve Tool calls, not individual shell
+> operations. Keep Bash on `ASK` and use a backed-up or disposable workspace.
 
 Model providers, Tools, Stores, and UIs use the runtime's public ports. Thread
 state still belongs to the core runtime.
