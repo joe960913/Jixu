@@ -18,6 +18,7 @@ import {
   createJinaWebReadTool,
   createJinaWebSearchTool,
 } from "../src/index.ts";
+import type { JinaWebSearchOutput } from "../src/index.ts";
 
 const TEST_MODEL_CAPABILITIES = {
   contextWindowTokens: 32_768,
@@ -94,7 +95,7 @@ test("JX-AC-060 Web Read missing Jina Key fails before network dispatch with the
   assert.equal(calls, 0);
 });
 
-test("JX-AC-048 Jina Web Search normalizes source-linked content and bounds durable output", async () => {
+test("JX-AC-048 Jina Web Search returns bounded metadata without page content", async () => {
   const requests: Array<{
     readonly input: RequestInfo | URL;
     readonly init?: RequestInit;
@@ -105,14 +106,14 @@ test("JX-AC-048 Jina Web Search normalizes source-linked content and bounds dura
       requests.push({ input, ...(init === undefined ? {} : { init }) });
       return jinaResponse([
         {
-          content: "abcdefghij",
-          description: "First description",
+          content: "page content must not enter the normalized output",
+          description: "abcdefghij",
           title: "First",
           url: "https://example.com/first",
         },
         {
-          content: "klmnopqrst",
-          description: "Second description",
+          content: "second page content must also be ignored",
+          description: "klmnopqrst",
           title: "Second",
           url: "https://example.org/second",
         },
@@ -124,8 +125,8 @@ test("JX-AC-048 Jina Web Search normalizes source-linked content and bounds dura
         },
       ]);
     },
-    maxContentCharactersPerResult: 6,
-    maxTotalContentCharacters: 8,
+    maxDescriptionCharactersPerResult: 6,
+    maxTotalDescriptionCharacters: 8,
   });
   const input = tool.parseInput({
     maxResults: 2,
@@ -145,12 +146,17 @@ test("JX-AC-048 Jina Web Search normalizes source-linked content and bounds dura
   const output = tool.parseOutput(await tool.execute(input, context()));
   assert.equal(output.query, "focused search");
   assert.equal(output.results.length, 2);
-  assert.deepEqual(output.results.map((result) => result.content), ["abcdef", "kl"]);
   assert.deepEqual(
-    output.results.map((result) => result.contentTruncated),
+    output.results.map((result) => result.description),
+    ["abcdef", "kl"],
+  );
+  assert.deepEqual(
+    output.results.map((result) => result.descriptionTruncated),
     [true, true],
   );
+  assert.equal("content" in output.results[0]!, false);
   assert.equal(output.truncated, true);
+  assert.equal(tool.descriptor.outputSchemaVersion, 2);
 
   const captured = requests[0];
   assert.notEqual(captured, undefined);
@@ -160,13 +166,14 @@ test("JX-AC-048 Jina Web Search normalizes source-linked content and bounds dura
   const headers = new Headers(captured.init?.headers);
   assert.equal(headers.get("accept"), "application/json");
   assert.equal(headers.get("authorization"), "Bearer fixture-secret");
+  assert.equal(headers.get("x-max-tokens"), null);
   assert.equal(headers.get("x-site"), null);
   assert.deepEqual(JSON.parse(String(captured.init?.body)), {
-    maxTokens: 8_000,
     num: 2,
     q: "focused search",
-    respondWith: "content",
+    respondWith: "no-content",
     retainImages: "none",
+    retainLinks: "text",
     site: ["example.com"],
   });
 });
@@ -195,6 +202,15 @@ test("JX-AC-048 Jina Web Search uses a hostname-only site field and treats 42206
       site: "https://example.com/path",
     }),
     /without credentials, path, query, or fragment/,
+  );
+  assert.equal(
+    noResults.parseInput({ maxResults: 10, query: "broad discovery" })
+      .maxResults,
+    10,
+  );
+  assert.throws(
+    () => noResults.parseInput({ maxResults: 11, query: "too broad" }),
+    /must not exceed 10/,
   );
 
   const otherAssertion = createJinaWebSearchTool({
@@ -226,7 +242,6 @@ test("JX-AC-048 ordinary Harness dispatch is durable and Replay performs no Jina
       fetchCalls += 1;
       return jinaResponse([
         {
-          content: "Source-backed page content.",
           description: "A source description",
           title: "Primary source",
           url: "https://example.com/source",
@@ -287,6 +302,145 @@ test("JX-AC-048 ordinary Harness dispatch is durable and Replay performs no Jina
 
   await thread.replay();
   assert.equal(fetchCalls, 1);
+});
+
+test("JX-AC-062 metadata discovery fans independent Reader calls into one durable parallel batch", { timeout: 2_000 }, async () => {
+  let searchCalls = 0;
+  let readCalls = 0;
+  let activeReads = 0;
+  let maximumActiveReads = 0;
+  let releaseReads!: () => void;
+  const allReadsStarted = new Promise<void>((resolve) => {
+    releaseReads = resolve;
+  });
+  const fetchImplementation: typeof fetch = async (input, init) => {
+    const endpoint = String(input);
+    if (endpoint === "https://s.jina.ai/search") {
+      searchCalls += 1;
+      return jinaResponse(
+        Array.from({ length: 10 }, (_, index) => ({
+          content: `unrequested page body ${index + 1}`,
+          description: `Candidate ${index + 1} description`,
+          title: `Candidate ${index + 1}`,
+          url: `https://source-${index + 1}.example/evidence`,
+        })),
+      );
+    }
+    assert.equal(endpoint, "https://r.jina.ai/");
+    const body = JSON.parse(String(init?.body)) as { readonly url: string };
+    readCalls += 1;
+    activeReads += 1;
+    maximumActiveReads = Math.max(maximumActiveReads, activeReads);
+    if (activeReads === 3) releaseReads();
+    await allReadsStarted;
+    activeReads -= 1;
+    return jinaReaderResponse({
+      content: `Primary evidence from ${body.url}`,
+      description: "Official source",
+      title: new URL(body.url).hostname,
+      url: body.url,
+    });
+  };
+  const webSearch = createJinaWebSearchTool({
+    apiKey: "fixture-secret",
+    fetch: fetchImplementation,
+  });
+  const webRead = createJinaWebReadTool({
+    apiKey: "fixture-secret",
+    fetch: fetchImplementation,
+  });
+  const modelEffects: ModelGenerateEffect[] = [];
+  const driver: ModelDriver = {
+    generate(effect): Promise<ModelOutcome> {
+      modelEffects.push(structuredClone(effect));
+      if (modelEffects.length === 1) {
+        return Promise.resolve({
+          status: "succeeded",
+          value: {
+            content: "",
+            toolCalls: [
+              {
+                arguments: { query: "three official instruction sources" },
+                id: "search-metadata",
+                name: "web_search",
+              },
+            ],
+          },
+        });
+      }
+      if (modelEffects.length === 2) {
+        const searchMessage = effect.input.messages.findLast(
+          (message) => message.role === "tool" && message.name === "web_search",
+        );
+        assert.notEqual(searchMessage, undefined);
+        assert.ok(searchMessage !== undefined && "output" in searchMessage);
+        if (searchMessage === undefined || !("output" in searchMessage)) {
+          throw new Error("Search metadata message is missing");
+        }
+        const output = searchMessage.output as JinaWebSearchOutput;
+        assert.equal(output.results.length, 10);
+        assert.ok(output.results.every((result) => !("content" in result)));
+        return Promise.resolve({
+          status: "succeeded",
+          value: {
+            content: "",
+            toolCalls: output.results.slice(0, 3).map((result, index) => ({
+              arguments: { url: result.url },
+              id: `read-source-${index + 1}`,
+              name: "web_read",
+            })),
+          },
+        });
+      }
+      const readMessages = effect.input.messages.filter(
+        (message) => message.role === "tool" && message.name === "web_read",
+      );
+      assert.equal(readMessages.length, 3);
+      return Promise.resolve({
+        status: "succeeded",
+        value: {
+          content:
+            "Compared [source 1](https://source-1.example/evidence), [source 2](https://source-2.example/evidence), and [source 3](https://source-3.example/evidence).",
+          toolCalls: [],
+        },
+      });
+    },
+  };
+  const store = new InMemoryEventStore();
+  const thread = await createHarness({
+    agent: defineAgent({
+      instructions: "Discover metadata, read independent sources together, then cite them.",
+      model: { model: "deterministic", provider: "mock" },
+      modelCapabilities: TEST_MODEL_CAPABILITIES,
+      tools: [webSearch, webRead],
+    }),
+    modelDrivers: { mock: driver },
+    store,
+  }).createThread();
+
+  const state = await thread.send("Compare three official instruction sources");
+  const events = await thread.events();
+  const readRequests = events.filter(
+    (event) =>
+      event.type === "tool.requested" &&
+      event.payload.effect.input.name === "web_read",
+  );
+  const firstReadCompletion = events.findIndex(
+    (event) => event.type === "tool.completed" && event.payload.name === "web_read",
+  );
+  assert.equal(searchCalls, 1);
+  assert.equal(readCalls, 3);
+  assert.equal(maximumActiveReads, 3);
+  assert.equal(modelEffects.length, 3);
+  assert.equal(readRequests.length, 3);
+  assert.ok(
+    readRequests.every((request) => request.sequence < firstReadCompletion + 1),
+  );
+  assert.match(state.result ?? "", /source-1\.example/);
+
+  await thread.replay();
+  assert.equal(searchCalls, 1);
+  assert.equal(readCalls, 3);
 });
 
 test("JX-AC-010 JX-AC-048 JX-AC-049 Jina HTTP 503 remains Agent-visible and does not terminate the turn", async () => {
@@ -396,6 +550,7 @@ test("JX-AC-060 Jina Web Read normalizes one known URL and bounds durable conten
     url: " https://api.example.com/data?period=week ",
   });
   assert.deepEqual(input, {
+    maxTokens: 4_000,
     url: "https://api.example.com/data?period=week",
   });
   assert.deepEqual(tool.authorize(input), {
@@ -422,12 +577,59 @@ test("JX-AC-060 Jina Web Read normalizes one known URL and bounds durable conten
   assert.equal(captured.init?.method, "POST");
   const headers = new Headers(captured.init?.headers);
   assert.equal(headers.get("authorization"), "Bearer fixture-secret");
+  assert.equal(headers.get("x-max-tokens"), "4000");
   assert.deepEqual(JSON.parse(String(captured.init?.body)), {
-    maxTokens: 8_000,
+    maxTokens: 4_000,
     respondWith: "content",
     retainImages: "none",
+    retainLinks: "text",
     url: "https://api.example.com/data?period=week",
+    withLinksSummary: true,
   });
+  assert.equal(tool.descriptor.outputSchemaVersion, 2);
+});
+
+test("JX-AC-060 Jina Web Read validates overrides and reports an upstream token cap", async () => {
+  let captured: RequestInit | undefined;
+  const tool = createJinaWebReadTool({
+    apiKey: "fixture-secret",
+    fetch: async (_input, init) => {
+      captured = init;
+      return jinaReaderResponse({
+        content: "bounded upstream content",
+        description: "",
+        title: "Long source",
+        url: "https://example.com/long",
+        usage: { tokens: 1_200 },
+      });
+    },
+  });
+
+  assert.throws(
+    () => tool.parseInput({ maxTokens: 499, url: "https://example.com" }),
+    /from 500 through 8000/,
+  );
+  assert.throws(
+    () => tool.parseInput({ maxTokens: 8_001, url: "https://example.com" }),
+    /from 500 through 8000/,
+  );
+  const input = tool.parseInput({
+    maxTokens: 1_200,
+    url: "https://example.com/long",
+  });
+  assert.deepEqual(input, {
+    maxTokens: 1_200,
+    url: "https://example.com/long",
+  });
+  assert.deepEqual(tool.parseOutput(await tool.execute(input, context())), {
+    content: "bounded upstream content",
+    contentTruncated: true,
+    description: "",
+    title: "Long source",
+    url: "https://example.com/long",
+  });
+  assert.equal(new Headers(captured?.headers).get("x-max-tokens"), "1200");
+  assert.equal(JSON.parse(String(captured?.body)).maxTokens, 1_200);
 });
 
 test("JX-AC-060 ordinary Harness dispatch records Web Read once and Replay performs no Reader request", async () => {

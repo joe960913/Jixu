@@ -90,6 +90,14 @@ function nowLine(
         tone: "warning",
       };
     }
+    if (snapshot.toolOutcomeResolution !== null) {
+      return {
+        detail: `${snapshot.toolOutcomeResolution.name} · ${snapshot.toolOutcomeResolution.toolCallId} · ${snapshot.toolOutcomeResolution.errorCode}`,
+        icon: "attention",
+        label: "Tool outcome requires resolution",
+        tone: "warning",
+      };
+    }
     const decision = latestActivity(
       snapshot,
       (entry) => entry.label === "Decision required",
@@ -243,6 +251,14 @@ function needsYouLine(
         detail: "Choose Allow once or Deny in the approval bar.",
         icon: "attention",
         label: `${snapshot.toolApproval.name} needs approval`,
+        tone: "warning",
+      };
+    }
+    if (snapshot.toolOutcomeResolution !== null) {
+      return {
+        detail: "Choose an outcome in the bar or use /resolve.",
+        icon: "attention",
+        label: `${snapshot.toolOutcomeResolution.name} · ${snapshot.toolOutcomeResolution.toolCallId} is unknown`,
         tone: "warning",
       };
     }

@@ -32,6 +32,7 @@ import {
 import { ComposerFrame } from "./tui-composer-frame.tsx";
 import { ExecutionDock } from "./tui-dock.tsx";
 import { ToolApprovalPrompt } from "./tui-tool-approval.tsx";
+import { ToolOutcomeResolutionPrompt } from "./tui-tool-resolution.tsx";
 import { Transcript } from "./tui-transcript.tsx";
 import {
   buildThreadInputFromComposer,
@@ -95,6 +96,7 @@ const inactiveSnapshot: ThreadControllerSnapshot = Object.freeze({
   threads: Object.freeze([]),
   threadStatus: "none",
   toolApproval: null,
+  toolOutcomeResolution: null,
   toolLiveOutput: Object.freeze({}),
   toolOperations: Object.freeze([]),
   transcript: Object.freeze([]),
@@ -855,6 +857,12 @@ export function AgentWorkspace({
                 width={chatWidth}
               />
 
+              <ToolOutcomeResolutionPrompt
+                controller={active?.controller ?? null}
+                snapshot={snapshot}
+                width={chatWidth}
+              />
+
               <ExecutionDock snapshot={snapshot} width={chatWidth} />
 
               {showAttentionRail ? null : (
@@ -912,6 +920,8 @@ export function AgentWorkspace({
                         ? "Use /config to connect a model…"
                         : snapshot.toolApproval !== null
                           ? "Use /approve, /deny, or the approval buttons…"
+                          : snapshot.toolOutcomeResolution !== null
+                            ? "Use /resolve or the outcome buttons…"
                           : snapshot.busy
                             ? "Queue a follow-up…"
                             : "Ask Jixu anything…"

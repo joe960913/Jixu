@@ -34,6 +34,7 @@ import type {
 import {
   SequenceIdGenerator,
   SequenceModelDriver,
+  fail,
   succeed,
 } from "../../testkit/src/index.ts";
 
@@ -304,6 +305,112 @@ test("JX-AC-004 JX-AC-005 recovery resumes only a durable indeterminate explanat
   assert.deepEqual(await recovered.replay(), state);
 });
 
+test("JX-AC-004 JX-AC-061 recovery resumes the resolution continuation without repeating the Tool", async () => {
+  const inner = new InMemoryEventStore();
+  const store = new CrashStore(
+    inner,
+    (event) =>
+      event.type === "model.completed" &&
+      event.payload.response.content === "First resolution continuation",
+  );
+  let executions = 0;
+  const tool = defineTool({
+    description: "External action with unknown observed outcome",
+    execute: () => {
+      executions += 1;
+      throw new Error("The external outcome is still unknown");
+    },
+    input: objectSchema,
+    name: "unknown_resolution_recovery",
+    output: stringSchema,
+  });
+  const agent = defineTestAgent([tool]);
+  const originalModel = new SequenceModelDriver([
+    succeed({
+      content: "",
+      toolCalls: [
+        {
+          arguments: {},
+          id: "unknown-resolution-recovery-1",
+          name: "unknown_resolution_recovery",
+        },
+      ],
+    }),
+    succeed({ content: "The external outcome needs a decision.", toolCalls: [] }),
+    succeed({ content: "First resolution continuation", toolCalls: [] }),
+  ]);
+  const thread = await createHarness({
+    agent,
+    ids: new SequenceIdGenerator(),
+    modelDrivers: { mock: originalModel },
+    store,
+  }).createThread();
+
+  const waiting = await thread.send("Run the external action");
+  const effectId = waiting.waitingReason?.effectId;
+  assert.ok(effectId !== undefined);
+  await assert.rejects(
+    thread.resolveToolOutcome({
+      effectId,
+      resolution: "not_occurred",
+    }),
+    /simulated process stop/,
+  );
+  assert.equal(executions, 1);
+  assert.equal(originalModel.effects.length, 3);
+
+  const recoveryModel = new SequenceModelDriver([
+    succeed({ content: "Recovered resolution continuation", toolCalls: [] }),
+  ]);
+  const recovered = await createHarness({
+    agent,
+    ids: new SequenceIdGenerator(100),
+    modelDrivers: { mock: recoveryModel },
+    store,
+  }).openThread(thread.id);
+  const state = await recovered.wait();
+  const events = await recovered.events();
+
+  assert.equal(executions, 1);
+  assert.equal(recoveryModel.effects.length, 1);
+  assert.equal(recoveryModel.effects[0]?.attempt, 2);
+  assert.equal(
+    recoveryModel.effects[0]?.input.runtimeContext?.continuation.reason,
+    "tool_outcome_resolved",
+  );
+  assert.equal(
+    recoveryModel.effects[0]?.input.runtimeContext?.continuation.receipt
+      .toolResolutions?.[0]?.resolution,
+    "not_occurred",
+  );
+  assert.equal(recoveryModel.effects[0]?.input.messages.at(-1)?.role, "tool");
+  assert.equal(
+    recoveryModel.effects[0]?.input.messages.some(
+      (message) =>
+        message.role === "assistant" &&
+        message.content === "The external outcome needs a decision.",
+    ),
+    false,
+  );
+  assert.equal(state.status, "idle");
+  assert.equal(state.result, "Recovered resolution continuation");
+  assert.equal(state.error, null);
+  assert.equal(Object.keys(state.pendingEffects).length, 0);
+  assert.equal(
+    events.filter((event) => event.type === "tool.requested").length,
+    1,
+  );
+  assert.equal(
+    events.filter((event) => event.type === "tool.outcome_resolved").length,
+    1,
+  );
+  assert.equal(
+    events.filter((event) => event.type === "model.requested").length,
+    4,
+  );
+  assert.deepEqual(await recovered.replay(), state);
+});
+
 test("JX-AC-004 JX-AC-047 pending Tool approval survives restart", async () => {
   const store = new InMemoryEventStore();
   let executions = 0;
@@ -567,6 +674,55 @@ test("JX-AC-004 JX-AC-031 rejected Plan-only control survives restart and retrie
   assert.deepEqual(
     events.slice(-4).map((event) => event.type),
     ["plan.rejected", "model.requested", "model.completed", "plan.updated"],
+  );
+});
+
+test("JX-AC-004 JX-AC-034 JX-AC-063 recovery resumes only the durable execution repair", async () => {
+  const inner = new InMemoryEventStore();
+  const store = new CrashStore(
+    inner,
+    (event) =>
+      event.type === "model.requested" &&
+      event.payload.effect.input.runtimeContext?.continuation.reason ===
+        "control_only_repair",
+  );
+  const agent = defineTestAgent();
+  const originalModel = new SequenceModelDriver([
+    fail("mock_progress_only", "Only progress control was returned"),
+  ]);
+  const original = await createHarness({
+    agent,
+    modelDrivers: { mock: originalModel },
+    store,
+  }).createThread();
+
+  await assert.rejects(
+    original.send("Complete the durable work"),
+    /simulated process stop/,
+  );
+  assert.equal(originalModel.effects.length, 1);
+  assert.equal((await inner.read(original.id)).at(-1)?.type, "model.failed");
+
+  const recoveryModel = new SequenceModelDriver([
+    succeed({ content: "Recovered and completed.", toolCalls: [] }),
+  ]);
+  const recovered = await createHarness({
+    agent,
+    modelDrivers: { mock: recoveryModel },
+    store: inner,
+  }).openThread(original.id);
+  const state = await recovered.wait();
+
+  assert.equal(state.status, "idle");
+  assert.equal(state.result, "Recovered and completed.");
+  assert.equal(recoveryModel.effects.length, 1);
+  assert.equal(
+    recoveryModel.effects[0]?.input.runtimeContext?.continuation.reason,
+    "control_only_repair",
+  );
+  assert.deepEqual(
+    (await recovered.events()).slice(-2).map((event) => event.type),
+    ["model.requested", "model.completed"],
   );
 });
 

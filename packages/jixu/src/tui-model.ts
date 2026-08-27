@@ -65,6 +65,7 @@ export type ToolOperationStatus =
   | "cancelled"
   | "failed"
   | "indeterminate"
+  | "resolved"
   | "running"
   | "succeeded";
 
@@ -101,6 +102,15 @@ export interface ToolOperation {
 export interface ToolLiveOutput {
   readonly text: string;
   readonly truncated: boolean;
+}
+
+export interface PendingToolOutcomeResolution {
+  readonly effectId: string;
+  readonly errorCode: string;
+  readonly name: string;
+  readonly position: number;
+  readonly toolCallId: string;
+  readonly total: number;
 }
 
 export interface TranscriptToolReceiptEntry {
@@ -144,6 +154,7 @@ export interface ThreadControllerSnapshot {
   readonly toolApproval: ToolApproval | null;
   readonly toolLiveOutput: Readonly<Record<string, ToolLiveOutput>>;
   readonly toolOperations: readonly ToolOperation[];
+  readonly toolOutcomeResolution: PendingToolOutcomeResolution | null;
   readonly transcript: readonly TranscriptEntry[];
   readonly workStatus: WorkStatus | null;
 }

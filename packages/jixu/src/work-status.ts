@@ -207,10 +207,30 @@ export function toolOperationForRequest(
 export function toolOperationForOutcome(
   event: Extract<
     AnyThreadEvent,
-    { readonly type: "tool.cancelled" | "tool.completed" | "tool.failed" }
+    {
+      readonly type:
+        | "tool.cancelled"
+        | "tool.completed"
+        | "tool.failed"
+        | "tool.outcome_resolved";
+    }
   >,
   operation: ToolOperation,
 ): ToolOperation {
+  if (event.type === "tool.outcome_resolved") {
+    const outcomes = {
+      abandoned_unknown: "Unknown outcome abandoned",
+      not_occurred: "Confirmed not occurred",
+      occurred: "Confirmed occurred",
+    } as const;
+    return {
+      ...operation,
+      outcome: outcomes[event.payload.resolution],
+      outcomeTone:
+        event.payload.resolution === "occurred" ? "success" : "warning",
+      status: "resolved",
+    };
+  }
   if (event.type === "tool.cancelled") {
     return {
       ...operation,
@@ -416,6 +436,13 @@ export function workStatusForEvent(
       return {
         detail: event.payload.name,
         label: "Reconsidering",
+        phase: "thinking",
+        tone: "warning",
+      };
+    case "tool.outcome_resolved":
+      return {
+        detail: event.payload.resolution,
+        label: "Applying outcome decision",
         phase: "thinking",
         tone: "warning",
       };

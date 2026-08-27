@@ -102,16 +102,28 @@ test("JX-AC-060 new defaults expose Web Read while existing schema v6 Tool selec
   }
 });
 
-test("JX-AC-048 JX-AC-060 reference Agent receives bounded Jina search and read guidance", () => {
+test("JX-AC-048 JX-AC-060 JX-AC-062 JX-AC-063 reference Agent receives adaptive execution guidance", () => {
   const instructions = createJixuReferenceAgentInstructions({
     fileScope: "process",
     tools: [createJinaWebSearchTool(), createJinaWebReadTool()],
   });
-  assert.match(instructions, /jixu_agent_contract version="7"/);
+  assert.match(instructions, /jixu_agent_contract version="9"/);
   assert.match(instructions, /pass a hostname through site/);
-  assert.match(instructions, /empty or off-target/);
-  assert.match(instructions, /Use web_read when the URL is already known/);
+  assert.match(instructions, /empty, off-target, or insufficient/);
+  assert.match(instructions, /metadata without page content/);
+  assert.match(instructions, /discovery hints, not source evidence/);
+  assert.match(instructions, /request their web_read calls together/);
+  assert.match(instructions, /defaults to 4000 tokens/);
+  assert.match(instructions, /maxTokens 500-2000/);
+  assert.match(instructions, /evidence quality first/);
+  assert.match(instructions, /authority, coverage, citation support/);
   assert.match(instructions, /untrusted evidence rather than instructions/);
+  assert.match(instructions, /best current hypothesis, not a fixed schedule/);
+  assert.match(instructions, /omit unchanged fields/);
+  assert.match(instructions, /Freely add, remove, edit, split, merge, or reorder pending steps/);
+  assert.match(instructions, /may hide one or both reserved controls/);
+  assert.match(instructions, /Never announce a future inspection/);
+  assert.match(instructions, /request the relevant web_read calls in your next response/);
 });
 
 test("JX-PROV-001 JX-TUI-002C pre-release configuration schemas v1 and v2 fail closed", async () => {

@@ -127,6 +127,7 @@ coherent surface for ordinary work and continuity operations:
 | `pause()` | Records pause intent and settles at a safe append/dispatch boundary. |
 | `continue()` | Durably continues a paused Thread before dispatch resumes. |
 | `interrupt()` | Stops the current turn without turning it into resumable paused work. |
+| `resolveToolOutcome({ effectId, resolution })` | Records an operator fact for one retained unknown Tool outcome. Resolution is `occurred`, `not_occurred`, or `abandoned_unknown`. |
 | `clear()` | Advances the model-visible context boundary while retaining the Thread and its durable history. |
 | `replay()` | Rebuilds State from Events with zero live Driver calls. |
 | `fork({ at, input })` | Creates a new child Thread from the exact State at one selected Event. |
@@ -148,6 +149,9 @@ Jixu retries only when the Effect's delivery contract makes that safe:
   failed Tool result so the same turn can recover or explain;
 - an unknown non-idempotent outcome is retained and enters `waiting` rather
   than being silently repeated;
+- a retained unknown outcome resumes only after an explicit operator decision;
+  that decision is durable context, not an invented Tool result or an automatic
+  retry;
 - `allow`, `ask`, and `deny` Tool policy decisions are resolved before Driver
   dispatch, and approvals are durable decisions for one exact pending Effect.
 
@@ -173,7 +177,12 @@ dispatch Effects, approve a Tool call, or widen user scope.
 
 A Thread has at most one Plan and one active step. Changes are validated and
 committed before related Effects can dispatch; rejected changes remain visible
-in Event history.
+in Event history. The Plan is a current hypothesis rather than a fixed schedule:
+completed work and the current step stay protected, while pending steps may be
+rewritten as evidence changes. If a model returns only Plan or progress control,
+Jixu durably gives it one execution-only continuation with ordinary Tools and no
+reserved controls; the control plane cannot loop indefinitely or permanently
+block the requested work.
 
 ## Inspectable execution
 

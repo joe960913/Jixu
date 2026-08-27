@@ -2,6 +2,7 @@ import type {
   ThreadMode,
   ThreadState,
   ToolApprovalDecision,
+  ToolOutcomeResolutionDecision,
 } from "./domain.ts";
 import type { AnyThreadEvent } from "./events.ts";
 import type { ThreadStreamItem } from "./ports.ts";
@@ -17,6 +18,11 @@ export interface ThreadStreamOptions {
   readonly signal?: AbortSignal;
 }
 
+export interface ResolveToolOutcomeOptions {
+  readonly effectId: string;
+  readonly resolution: ToolOutcomeResolutionDecision;
+}
+
 export interface Thread {
   readonly id: string;
   clear(): Promise<ThreadState>;
@@ -30,6 +36,7 @@ export interface Thread {
   interrupt(): Promise<ThreadState>;
   pause(): Promise<ThreadState>;
   replay(): Promise<ThreadState>;
+  resolveToolOutcome(options: ResolveToolOutcomeOptions): Promise<ThreadState>;
   setMode(mode: ThreadMode): Promise<ThreadState>;
   send(input: ThreadInput): Promise<ThreadState>;
   state(): Promise<ThreadState>;

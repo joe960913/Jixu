@@ -31,9 +31,13 @@ export {
   CONTINUITY_HANDOFF_SCHEMA_VERSION,
   createContinuityHandoff,
   estimateContextTokens,
+  MAX_CONTROL_REPAIR_ATTEMPTS,
   MAX_PLAN_REPAIR_ATTEMPTS,
+  MODEL_CONTROL_CONTEXT_SCHEMA_VERSION,
   MODEL_CONTEXT_SCHEMA_VERSION,
+  MODEL_OUTCOME_RESOLUTION_CONTEXT_SCHEMA_VERSION,
   MODEL_RUNTIME_CONTEXT_SCHEMA_VERSION,
+  modelControlProjection,
   parseContinuityHandoffBody,
 } from "./context.ts";
 export type {
@@ -100,6 +104,8 @@ export type {
   ToolFailureMessage,
   ToolIdempotency,
   ToolMessage,
+  ToolOutcomeResolution,
+  ToolOutcomeResolutionDecision,
   ToolSuccessMessage,
   UserMessage,
   WaitingReason,
@@ -264,5 +270,10 @@ export { REDUCER_VERSION, reduce, replayEvents } from "./reducer.ts";
 export type { TransitionResult } from "./reducer.ts";
 export { createHarness, Harness } from "./harness.ts";
 export type { HarnessConfig } from "./harness.ts";
-export type { ForkOptions, Thread, ThreadStreamOptions } from "./thread.ts";
+export type {
+  ForkOptions,
+  ResolveToolOutcomeOptions,
+  Thread,
+  ThreadStreamOptions,
+} from "./thread.ts";
 export { InMemoryEventStore } from "./store.ts";

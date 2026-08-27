@@ -40,6 +40,7 @@ import type {
 import { REDUCER_VERSION, reduce, replayEvents } from "./reducer.ts";
 import { materializePlanUpdates } from "./plan.ts";
 import type { ForkOptions, Thread, ThreadStreamOptions } from "./thread.ts";
+import type { ResolveToolOutcomeOptions } from "./thread.ts";
 
 interface PreparedEffect {
   readonly effect: EffectRequest;
@@ -208,6 +209,38 @@ export class ThreadExecution implements Thread {
 
   replay(): Promise<ThreadState> {
     return this.#store.read(this.id).then((events) => replayEvents(this.id, events));
+  }
+
+  async resolveToolOutcome(
+    options: ResolveToolOutcomeOptions,
+  ): Promise<ThreadState> {
+    if (
+      options.resolution !== "occurred" &&
+      options.resolution !== "not_occurred" &&
+      options.resolution !== "abandoned_unknown"
+    ) {
+      throw new InvalidTransitionError(
+        `Unknown Tool outcome resolution ${String(options.resolution)}`,
+      );
+    }
+    const effect = this.#state.pendingEffects[options.effectId];
+    if (
+      this.#state.status !== "waiting" ||
+      this.#state.waitingReason?.reasonCode !== "effect_outcome_unknown" ||
+      effect === undefined ||
+      !isRetainedIndeterminateToolEffect(
+        effect,
+        this.#state.messages,
+        this.#state.messageSources,
+      )
+    ) {
+      throw new InvalidTransitionError(
+        `Tool Effect ${options.effectId} is not awaiting outcome resolution`,
+      );
+    }
+    await this.#commit("tool.outcome_resolved", options);
+    this.#schedule();
+    return this.wait();
   }
 
   async setMode(mode: ThreadMode): Promise<ThreadState> {

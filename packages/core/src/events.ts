@@ -5,6 +5,7 @@ import type {
   PendingPlanRejection,
   ThreadMode,
   ToolApprovalDecision,
+  ToolOutcomeResolutionDecision,
 } from "./domain.ts";
 import type {
   ContextCompactEffect,
@@ -18,7 +19,7 @@ import type { ModelAccounting } from "./metrics.ts";
 import type { PlanSnapshot, PlanUpdateProposal } from "./plan.ts";
 import type { AcceptedInput } from "./input.ts";
 
-export const CURRENT_EVENT_SCHEMA_VERSION = 11;
+export const CURRENT_EVENT_SCHEMA_VERSION = 13;
 
 export function isSupportedEventSchemaVersion(value: number): boolean {
   return (
@@ -28,6 +29,8 @@ export function isSupportedEventSchemaVersion(value: number): boolean {
     value === 8 ||
     value === 9 ||
     value === 10 ||
+    value === 11 ||
+    value === 12 ||
     value === CURRENT_EVENT_SCHEMA_VERSION
   );
 }
@@ -131,6 +134,10 @@ export interface ThreadEventPayloads {
     readonly error: DriverError;
     readonly name: string;
     readonly toolCallId: string;
+  };
+  readonly "tool.outcome_resolved": {
+    readonly effectId: string;
+    readonly resolution: ToolOutcomeResolutionDecision;
   };
   readonly "tool.requested": { readonly effect: ToolExecuteEffect };
 }

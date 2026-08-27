@@ -353,6 +353,7 @@ export class Harness {
                 digest === null || digest === undefined
                   ? undefined
                   : handoffs.get(digest),
+                (effectId) => effectIds.get(effectId) ?? effectId,
               );
             }
             if (effect.type === "context.compact") {
@@ -369,6 +370,7 @@ export class Harness {
                 mapEventId,
                 childThreadId,
                 previous ?? null,
+                (effectId) => effectIds.get(effectId) ?? effectId,
               );
             }
             return effect.input;
@@ -427,6 +429,7 @@ export class Harness {
       event.type === "tool.cancelled" ||
       event.type === "tool.completed" ||
       event.type === "tool.failed" ||
+      event.type === "tool.outcome_resolved" ||
       event.type === "thread.waiting"
     ) {
       const effectId = effectIds.get(event.payload.effectId);

@@ -73,6 +73,7 @@ import {
   jixuMarkdownSyntaxStyle,
 } from "../src/tui-syntax-theme.ts";
 import { ToolApprovalPrompt } from "../src/tui-tool-approval.tsx";
+import { ToolOutcomeResolutionPrompt } from "../src/tui-tool-resolution.tsx";
 import { JixuApp } from "../src/tui.tsx";
 
 let resolveThinkingStarted!: () => void;
@@ -158,6 +159,19 @@ const successfulDriver: ModelDriver = {
     const failureBatchExecution = latestUser?.content === "Failure batch";
     const priced =
       latestUser?.content !== "Compact activity" && !afterInterruptExecution;
+    if (
+      effect.input.runtimeContext?.continuation.reason ===
+      "tool_outcome_resolved"
+    ) {
+      return {
+        accounting: smokeAccounting(true),
+        status: "succeeded",
+        value: {
+          content: "The operator resolution was applied without repeating the Tool.",
+          toolCalls: [],
+        },
+      };
+    }
     if (latestUser?.content === "Thinking task") {
       resolveThinkingStarted();
       await thinkingTextGate;
@@ -2271,6 +2285,53 @@ try {
   assert.doesNotMatch(failedBatchFrame, /Ctrl\+O/);
   assert.match(failedBatchFrame, /fail-indeterminate/);
   assert.match(failedBatchFrame, /Outcome unknown/);
+  assert.match(failedBatchFrame, /OUTCOME/);
+  assert.match(failedBatchFrame, /OCCURRED/);
+  assert.match(failedBatchFrame, /NOT OCCURRED/);
+  assert.match(failedBatchFrame, /ABANDON UNKNOWN/);
+  assert.notEqual(
+    setup.renderer.root.findDescendantById("tool-outcome-resolution"),
+    undefined,
+  );
+
+  await act(async () => {
+    await activeController.current?.submit("/resolve abandon");
+    await setup.flush();
+  });
+  await act(async () => {
+    await setup.renderOnce();
+    await setup.flush();
+  });
+  const resolvedBatchFrame = setup.captureCharFrame();
+  const resolvedOperation = activeController.current
+    ?.getSnapshot()
+    .transcript.flatMap((entry) =>
+      entry.kind === "tool-receipts" ? entry.operations : []
+    )
+    .find(
+      (operation) => operation.status === "resolved",
+    );
+  assert.equal(activeController.current?.getSnapshot().threadStatus, "idle");
+  assert.equal(activeController.current?.getSnapshot().toolOutcomeResolution, null);
+  assert.equal(resolvedOperation?.outcome, "Unknown outcome abandoned");
+  assert.deepEqual(
+    activeController.current
+      ?.getSnapshot()
+      .transcript.filter(
+        (entry) => entry.kind === "message" && entry.role === "assistant",
+      )
+      .slice(-2)
+      .map((entry) => entry.kind === "message" ? entry.content : ""),
+    [
+      "The **durable** run completed.",
+      "The operator resolution was applied without repeating the Tool.",
+    ],
+  );
+  assert.match(resolvedBatchFrame, /4 done · 1 resolved/);
+  assert.match(
+    resolvedBatchFrame,
+    /operator resolution was applied without repeating the Tool/,
+  );
 
   const controllerBeforeConfiguration = activeController.current;
   let reconfiguredFrame = "";
@@ -2443,6 +2504,7 @@ const approvalSnapshot = {
     resources: ["process"],
     toolCallId: "approval-call",
   },
+  toolOutcomeResolution: null,
   toolLiveOutput: {},
   toolOperations: [],
   transcript: [],
@@ -2478,6 +2540,58 @@ try {
 } finally {
   act(() => {
     approvalSetup.renderer.destroy();
+  });
+}
+
+const outcomeResolutionSnapshot = {
+  ...approvalSnapshot,
+  currentThreadId: "outcome-resolution-thread",
+  toolApproval: null,
+  toolOutcomeResolution: {
+    effectId: "unknown-effect",
+    errorCode: "tool_driver_exception",
+    name: "external_write",
+    position: 1,
+    toolCallId: "unknown-call",
+    total: 2,
+  },
+} satisfies ThreadControllerSnapshot;
+const outcomeResolutionSetup = await testRender(
+  <ToolOutcomeResolutionPrompt
+    controller={null}
+    snapshot={outcomeResolutionSnapshot}
+    width={120}
+  />,
+  { height: 5, width: 120 },
+);
+
+try {
+  await act(async () => {
+    await outcomeResolutionSetup.renderOnce();
+    await outcomeResolutionSetup.flush();
+  });
+  const resolutionFrame = outcomeResolutionSetup.captureCharFrame();
+  assert.match(resolutionFrame, /OUTCOME/);
+  assert.match(
+    resolutionFrame,
+    /external_write · unknown-call · unknown · 1\/2/,
+  );
+  assert.match(resolutionFrame, /OCCURRED/);
+  assert.match(resolutionFrame, /NOT OCCURRED/);
+  assert.match(resolutionFrame, /ABANDON UNKNOWN/);
+  for (const id of [
+    "tool-outcome-occurred",
+    "tool-outcome-not-occurred",
+    "tool-outcome-abandon",
+  ]) {
+    assert.notEqual(
+      outcomeResolutionSetup.renderer.root.findDescendantById(id),
+      undefined,
+    );
+  }
+} finally {
+  act(() => {
+    outcomeResolutionSetup.renderer.destroy();
   });
 }
 

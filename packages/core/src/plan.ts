@@ -82,6 +82,15 @@ function planControlSchema(
   operations: readonly PlanUpdateOperation[],
   requirePlanBody: boolean,
 ): JsonObject {
+  const planBodyRequired = [
+    "operation",
+    "objective",
+    "acceptanceCriteria",
+    "steps",
+    "assumptions",
+    "blockers",
+    "nextAction",
+  ] as const;
   return {
     additionalProperties: false,
     properties: {
@@ -120,17 +129,7 @@ function planControlSchema(
         type: "array",
       },
     },
-    required: requirePlanBody
-      ? [
-          "operation",
-          "objective",
-          "acceptanceCriteria",
-          "steps",
-          "assumptions",
-          "blockers",
-          "nextAction",
-        ]
-      : ["operation"],
+    required: requirePlanBody ? planBodyRequired : ["operation"],
     type: "object",
   };
 }
@@ -142,7 +141,7 @@ export function createPlanControl(
   return cloneFrozenJson({
     description: creating
       ? "Create an optional execution Plan only when work has dependent stages, material uncertainty, a long recovery horizon, or explicit verification boundaries. Do not create a ceremonial Plan for a short answer or one known action. A Plan coordinates work but never authorizes or performs it. This control is not a user-facing response; also provide concise public text or continue through ordinary Tools."
-      : "Update the accepted active Plan. Use revise to reflect progress or new evidence; when every step is completed or skipped, revise it with those terminal statuses and Jixu will complete it automatically. Use one supersede call only for a materially different objective: its body describes the replacement Plan, and Jixu preserves the old Plan as superseded before creating the replacement. To stop the objective, send only {\"operation\":\"abandon\"}; Jixu derives the terminal revision from the active Plan. Never create a second Plan while one is active. A Plan coordinates work but never authorizes or performs it. This control is not a user-facing response; also provide concise public text or continue through ordinary Tools.",
+      : "Update the accepted active Plan as the best current execution hypothesis. Use revise to reflect progress or new evidence; omitted revise fields preserve their accepted values. Preserve completed steps and the current in-progress step as observed work; completed evidence may only be appended, while pending steps may be added, removed, edited, split, merged, or reordered. When every step is completed or skipped, Jixu completes the Plan automatically. Use one supersede call only for a materially different objective and provide its complete replacement Plan body; Jixu preserves the old Plan as superseded before creating the replacement. To stop the objective, send only {\"operation\":\"abandon\"}; Jixu derives the terminal revision from the active Plan. Never create a second Plan while one is active. A Plan coordinates work but never authorizes or performs it. This control is not a user-facing response; also provide concise public text or continue through ordinary Tools.",
     inputSchema: planControlSchema(
       creating ? ["create"] : ["revise", "supersede", "abandon"],
       creating,
@@ -326,6 +325,36 @@ export function parsePlanControlUpdate(
     proposal.operation,
     `${label}.operation`,
   );
+  if (proposalOperation === "revise") {
+    if (activePlan === null) fail(label, "cannot revise without an active Plan");
+    return parsePlanUpdateProposal(
+      {
+        acceptanceCriteria:
+          proposal.acceptanceCriteria === undefined
+            ? activePlan.acceptanceCriteria
+            : proposal.acceptanceCriteria,
+        assumptions:
+          proposal.assumptions === undefined
+            ? activePlan.assumptions
+            : proposal.assumptions,
+        blockers:
+          proposal.blockers === undefined
+            ? activePlan.blockers
+            : proposal.blockers,
+        nextAction:
+          proposal.nextAction === undefined
+            ? activePlan.nextAction
+            : proposal.nextAction,
+        objective:
+          proposal.objective === undefined
+            ? activePlan.objective
+            : proposal.objective,
+        operation: proposalOperation,
+        steps: proposal.steps === undefined ? activePlan.steps : proposal.steps,
+      },
+      label,
+    );
+  }
   if (proposalOperation !== "abandon") {
     return parsePlanUpdateProposal(proposal, label);
   }
@@ -386,6 +415,94 @@ function resultStatus(
   }
 }
 
+function assertEvidenceAppendOnly(
+  current: PlanStep,
+  next: PlanStep,
+  label: string,
+): void {
+  if (
+    current.evidence.some(
+      (evidence, index) => next.evidence[index] !== evidence,
+    )
+  ) {
+    fail(label, "must preserve existing evidence in order");
+  }
+}
+
+function assertFlexibleStepRevision(
+  current: PlanSnapshot,
+  next: PlanUpdateProposal,
+): void {
+  const protectedCompleted = current.steps.filter(
+    (step) => step.status === "completed",
+  );
+  let previousCompletedIndex = -1;
+  for (const completed of protectedCompleted) {
+    const nextIndex = next.steps.findIndex((step) => step.id === completed.id);
+    if (nextIndex < 0) {
+      fail(
+        `Plan update step ${completed.id}`,
+        "cannot remove a completed step",
+      );
+    }
+    const revised = next.steps[nextIndex];
+    if (revised === undefined) continue;
+    if (revised.description !== completed.description) {
+      fail(
+        `Plan update step ${completed.id}.description`,
+        "cannot change a completed step",
+      );
+    }
+    if (revised.status !== "completed") {
+      fail(
+        `Plan update step ${completed.id}.status`,
+        "must remain completed",
+      );
+    }
+    if (nextIndex <= previousCompletedIndex) {
+      fail(
+        `Plan update step ${completed.id}`,
+        "must preserve completed step order",
+      );
+    }
+    assertEvidenceAppendOnly(
+      completed,
+      revised,
+      `Plan update step ${completed.id}.evidence`,
+    );
+    previousCompletedIndex = nextIndex;
+  }
+
+  const inProgress = current.steps.find(
+    (step) => step.status === "in_progress",
+  );
+  if (inProgress === undefined) return;
+  const revised = next.steps.find((step) => step.id === inProgress.id);
+  if (revised === undefined) {
+    fail(
+      `Plan update step ${inProgress.id}`,
+      "cannot remove the in-progress step",
+    );
+  }
+  if (revised.description !== inProgress.description) {
+    fail(
+      `Plan update step ${inProgress.id}.description`,
+      "cannot rename the in-progress step",
+    );
+  }
+  if (revised.status === "pending") {
+    fail(
+      `Plan update step ${inProgress.id}.status`,
+      "cannot return an in-progress step to pending",
+    );
+  }
+  assertEvidenceAppendOnly(
+    inProgress,
+    revised,
+    `Plan update step ${inProgress.id}.evidence`,
+  );
+}
+
 export function materializePlanUpdates(
   current: PlanSnapshot | null,
   values: readonly PlanUpdateProposal[],
@@ -425,6 +542,9 @@ export function materializePlanUpdates(
           "Plan update objective",
           "cannot change without superseding the active Plan",
         );
+      }
+      if (proposal.operation === "revise") {
+        assertFlexibleStepRevision(active, proposal);
       }
     }
 

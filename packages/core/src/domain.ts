@@ -164,6 +164,21 @@ export type WaitingReason =
 
 export type ToolApprovalDecision = "allow_once" | "deny";
 
+export type ToolOutcomeResolutionDecision =
+  | "occurred"
+  | "not_occurred"
+  | "abandoned_unknown";
+
+export interface ToolOutcomeResolution {
+  readonly effectId: string;
+  readonly error: DriverError;
+  readonly eventId: string;
+  readonly resolution: ToolOutcomeResolutionDecision;
+  readonly sequence: number;
+  readonly toolCallId: string;
+  readonly toolName: string;
+}
+
 export interface ToolApproval {
   readonly action: string;
   readonly decision: ToolApprovalDecision | null;
@@ -213,6 +228,7 @@ export interface ThreadState {
   readonly threadId: string;
   readonly status: ThreadStatus;
   readonly toolApprovals: Readonly<Record<string, ToolApproval>>;
+  readonly toolOutcomeResolutions: readonly ToolOutcomeResolution[];
   readonly waitingReason: WaitingReason | null;
 }
 
@@ -252,6 +268,7 @@ export function createInitialThreadState(threadId: string): ThreadState {
     threadId,
     status: "idle",
     toolApprovals: {},
+    toolOutcomeResolutions: [],
     waitingReason: null,
   };
 }

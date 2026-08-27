@@ -4,8 +4,11 @@ import {
   CONTEXT_COMPILER_VERSION,
   CONTEXT_ESTIMATOR_VERSION,
   CONTEXT_MANIFEST_SCHEMA_VERSION,
+  MAX_CONTROL_REPAIR_ATTEMPTS,
   MAX_PLAN_REPAIR_ATTEMPTS,
+  MODEL_CONTROL_CONTEXT_SCHEMA_VERSION,
   MODEL_CONTEXT_SCHEMA_VERSION,
+  MODEL_OUTCOME_RESOLUTION_CONTEXT_SCHEMA_VERSION,
   MODEL_RUNTIME_CONTEXT_SCHEMA_VERSION,
   estimateContextTokens,
   parseContinuityHandoffBody,
@@ -365,6 +368,63 @@ function assertPlanRejection(
   }
 }
 
+function assertToolOutcomeResolution(
+  value: JsonValue | undefined,
+  label: string,
+): void {
+  const resolution = object(value, label);
+  string(resolution.effectId, `${label}.effectId`);
+  assertDriverError(resolution.error, `${label}.error`);
+  string(resolution.eventId, `${label}.eventId`);
+  if (
+    resolution.resolution !== "occurred" &&
+    resolution.resolution !== "not_occurred" &&
+    resolution.resolution !== "abandoned_unknown"
+  ) {
+    throw new SchemaValidationError(`${label}.resolution is unsupported`);
+  }
+  if (integer(resolution.sequence, `${label}.sequence`) < 1) {
+    throw new SchemaValidationError(`${label}.sequence must be positive`);
+  }
+  string(resolution.toolCallId, `${label}.toolCallId`);
+  string(resolution.toolName, `${label}.toolName`);
+}
+
+function projectedModelControls(
+  input: JsonObject,
+  label: string,
+): {
+  readonly planControl: JsonValue;
+  readonly progressControl: JsonValue;
+} {
+  const runtime = object(input.runtimeContext, `${label}.runtimeContext`);
+  const continuation = object(
+    runtime.continuation,
+    `${label}.runtimeContext.continuation`,
+  );
+  if (runtime.schemaVersion !== MODEL_CONTROL_CONTEXT_SCHEMA_VERSION) {
+    return {
+      planControl: input.planControl ?? null,
+      progressControl: input.progressControl ?? null,
+    };
+  }
+  switch (continuation.reason) {
+    case "plan_rejected":
+      return {
+        planControl: input.planControl ?? null,
+        progressControl: null,
+      };
+    case "control_only_repair":
+    case "plan_updated":
+      return { planControl: null, progressControl: null };
+    default:
+      return {
+        planControl: input.planControl ?? null,
+        progressControl: input.progressControl ?? null,
+      };
+  }
+}
+
 function assertModelRuntimeContext(
   value: JsonValue | undefined,
   label: string,
@@ -377,7 +437,9 @@ function assertModelRuntimeContext(
   );
   if (
     runtimeSchemaVersion !== MODEL_CONTEXT_SCHEMA_VERSION &&
-    runtimeSchemaVersion !== MODEL_RUNTIME_CONTEXT_SCHEMA_VERSION
+    runtimeSchemaVersion !== MODEL_RUNTIME_CONTEXT_SCHEMA_VERSION &&
+    runtimeSchemaVersion !== MODEL_OUTCOME_RESOLUTION_CONTEXT_SCHEMA_VERSION &&
+    runtimeSchemaVersion !== MODEL_CONTROL_CONTEXT_SCHEMA_VERSION
   ) {
     throw new SchemaValidationError(`${label}.schemaVersion is unsupported`);
   }
@@ -389,16 +451,34 @@ function assertModelRuntimeContext(
       `${label}.schemaVersion requires Event schema 11`,
     );
   }
+  if (
+    runtimeSchemaVersion === MODEL_OUTCOME_RESOLUTION_CONTEXT_SCHEMA_VERSION &&
+    eventSchemaVersion < 12
+  ) {
+    throw new SchemaValidationError(
+      `${label}.schemaVersion requires Event schema 12`,
+    );
+  }
+  if (
+    runtimeSchemaVersion === MODEL_CONTROL_CONTEXT_SCHEMA_VERSION &&
+    eventSchemaVersion < 13
+  ) {
+    throw new SchemaValidationError(
+      `${label}.schemaVersion requires Event schema 13`,
+    );
+  }
   const continuation = object(runtime.continuation, `${label}.continuation`);
   string(continuation.causedByEventId, `${label}.continuation.causedByEventId`);
   const reason = string(continuation.reason, `${label}.continuation.reason`);
   if (
+    reason !== "control_only_repair" &&
     reason !== "input_received" &&
     reason !== "plan_rejected" &&
     reason !== "plan_updated" &&
     reason !== "tool_completed" &&
     reason !== "tool_failed" &&
-    reason !== "tool_indeterminate"
+    reason !== "tool_indeterminate" &&
+    reason !== "tool_outcome_resolved"
   ) {
     throw new SchemaValidationError(`${label}.continuation.reason is unsupported`);
   }
@@ -408,6 +488,28 @@ function assertModelRuntimeContext(
   ) {
     throw new SchemaValidationError(
       `${label}.schemaVersion does not match continuation reason`,
+    );
+  }
+  const controlContextReason =
+    reason === "control_only_repair" ||
+    reason === "plan_rejected" ||
+    reason === "plan_updated";
+  if (
+    (runtimeSchemaVersion === MODEL_CONTROL_CONTEXT_SCHEMA_VERSION) !==
+      controlContextReason &&
+    !(runtimeSchemaVersion === MODEL_CONTEXT_SCHEMA_VERSION &&
+      (reason === "plan_rejected" || reason === "plan_updated"))
+  ) {
+    throw new SchemaValidationError(
+      `${label}.schemaVersion does not match control continuation reason`,
+    );
+  }
+  if (
+    (reason === "tool_outcome_resolved") !==
+    (runtimeSchemaVersion === MODEL_OUTCOME_RESOLUTION_CONTEXT_SCHEMA_VERSION)
+  ) {
+    throw new SchemaValidationError(
+      `${label}.schemaVersion does not match outcome resolution reason`,
     );
   }
   const receipt = object(
@@ -421,10 +523,12 @@ function assertModelRuntimeContext(
   );
   if (
     receiptType !== "input.received" &&
+    receiptType !== "model.failed" &&
     receiptType !== "plan.rejected" &&
     receiptType !== "plan.updated" &&
     receiptType !== "tool.completed" &&
-    receiptType !== "tool.failed"
+    receiptType !== "tool.failed" &&
+    receiptType !== "tool.outcome_resolved"
   ) {
     throw new SchemaValidationError(
       `${label}.continuation.receipt.type is unsupported`,
@@ -437,8 +541,13 @@ function assertModelRuntimeContext(
     tool_completed: "tool.completed",
     tool_failed: "tool.failed",
     tool_indeterminate: "tool.failed",
-  }[reason];
-  if (receiptType !== expectedReceiptType) {
+    tool_outcome_resolved: "tool.outcome_resolved",
+  }[reason as Exclude<typeof reason, "control_only_repair">];
+  if (
+    reason === "control_only_repair"
+      ? receiptType !== "model.failed" && receiptType !== "plan.rejected"
+      : receiptType !== expectedReceiptType
+  ) {
     throw new SchemaValidationError(
       `${label}.continuation.receipt.type does not match continuation reason`,
     );
@@ -494,9 +603,31 @@ function assertModelRuntimeContext(
     );
   }
   optionalString(receipt.toolName, `${label}.continuation.receipt.toolName`);
+  const toolResolutions =
+    receipt.toolResolutions === undefined
+      ? []
+      : array(
+          receipt.toolResolutions,
+          `${label}.continuation.receipt.toolResolutions`,
+        );
+  toolResolutions.forEach((resolution, index) =>
+    assertToolOutcomeResolution(
+      resolution,
+      `${label}.continuation.receipt.toolResolutions[${index}]`,
+    ),
+  );
+  if (
+    (reason === "tool_outcome_resolved") !== (toolResolutions.length > 0)
+  ) {
+    throw new SchemaValidationError(
+      `${label}.continuation.receipt.toolResolutions does not match continuation reason`,
+    );
+  }
   array(runtime.obligations, `${label}.obligations`).forEach((value, index) => {
     if (
+      value !== "execute_or_respond" &&
       value !== "handle_tool_failure" &&
+      value !== "handle_resolved_tool_outcomes" &&
       value !== "explain_unknown_tool_outcome" &&
       value !== "repair_plan_control" &&
       value !== "respond_or_act"
@@ -509,7 +640,10 @@ function assertModelRuntimeContext(
       value !== "repeat_accepted_plan_change" &&
       value !== "repeat_rejected_plan_change" &&
       value !== "assume_failed_tool_succeeded" &&
-      value !== "perform_tool_or_plan_actions"
+      value !== "perform_plan_or_progress_controls" &&
+      value !== "perform_progress_control" &&
+      value !== "perform_tool_or_plan_actions" &&
+      value !== "repeat_resolved_tool_action"
     ) {
       throw new SchemaValidationError(
         `${label}.prohibitions[${index}] is unsupported`,
@@ -524,33 +658,101 @@ function assertModelRuntimeContext(
       throw new SchemaValidationError(`${label}.planRepair is invalid`);
     }
   }
+  if (runtime.controlRepair !== undefined && runtime.controlRepair !== null) {
+    const repair = object(runtime.controlRepair, `${label}.controlRepair`);
+    const attempt = integer(repair.attempt, `${label}.controlRepair.attempt`);
+    const limit = integer(repair.limit, `${label}.controlRepair.limit`);
+    if (
+      attempt !== MAX_CONTROL_REPAIR_ATTEMPTS ||
+      limit !== MAX_CONTROL_REPAIR_ATTEMPTS
+    ) {
+      throw new SchemaValidationError(`${label}.controlRepair is invalid`);
+    }
+  }
+  if (
+    runtimeSchemaVersion === MODEL_CONTROL_CONTEXT_SCHEMA_VERSION &&
+    runtime.controlRepair === undefined
+  ) {
+    throw new SchemaValidationError(`${label}.controlRepair is required`);
+  }
+  if (
+    runtimeSchemaVersion === MODEL_CONTROL_CONTEXT_SCHEMA_VERSION &&
+    ((reason === "control_only_repair" && runtime.controlRepair === null) ||
+      (reason !== "control_only_repair" && runtime.controlRepair !== null))
+  ) {
+    throw new SchemaValidationError(
+      `${label}.controlRepair does not match continuation reason`,
+    );
+  }
   const expectedObligations =
-    reason === "plan_rejected"
+    reason === "control_only_repair" ||
+      (reason === "plan_updated" &&
+        runtimeSchemaVersion === MODEL_CONTROL_CONTEXT_SCHEMA_VERSION)
+      ? ["execute_or_respond"]
+      : reason === "plan_rejected"
       ? ["repair_plan_control", "respond_or_act"]
       : reason === "tool_indeterminate"
         ? ["explain_unknown_tool_outcome"]
-        : reason === "tool_failed"
-          ? ["handle_tool_failure", "respond_or_act"]
-          : ["respond_or_act"];
+        : reason === "tool_outcome_resolved"
+          ? ["handle_resolved_tool_outcomes", "respond_or_act"]
+          : reason === "tool_failed"
+            ? ["handle_tool_failure", "respond_or_act"]
+            : ["respond_or_act"];
   const expectedProhibitions =
-    reason === "plan_rejected"
-      ? ["repeat_rejected_plan_change"]
+    reason === "control_only_repair"
+      ? ["perform_plan_or_progress_controls"]
+      : reason === "plan_rejected"
+        ? runtimeSchemaVersion === MODEL_CONTROL_CONTEXT_SCHEMA_VERSION
+          ? ["perform_progress_control", "repeat_rejected_plan_change"]
+          : ["repeat_rejected_plan_change"]
       : reason === "plan_updated"
-        ? ["repeat_accepted_plan_change"]
+        ? runtimeSchemaVersion === MODEL_CONTROL_CONTEXT_SCHEMA_VERSION
+          ? [
+              "perform_plan_or_progress_controls",
+              "repeat_accepted_plan_change",
+            ]
+          : ["repeat_accepted_plan_change"]
         : reason === "tool_indeterminate"
           ? [
               "assume_failed_tool_succeeded",
               "perform_tool_or_plan_actions",
             ]
-          : reason === "tool_failed"
-            ? ["assume_failed_tool_succeeded"]
-            : [];
+          : reason === "tool_outcome_resolved"
+            ? [
+                ...(toolResolutions.some(
+                  (value) => object(value, "Tool resolution").resolution !== "occurred",
+                )
+                  ? ["assume_failed_tool_succeeded"]
+                  : []),
+                ...(toolResolutions.some(
+                  (value) =>
+                    object(value, "Tool resolution").resolution !==
+                    "not_occurred",
+                )
+                  ? ["repeat_resolved_tool_action"]
+                  : []),
+              ]
+            : reason === "tool_failed"
+              ? ["assume_failed_tool_succeeded"]
+              : [];
   if (
     !jsonEquals(runtime.obligations, expectedObligations) ||
     !jsonEquals(runtime.prohibitions, expectedProhibitions)
   ) {
     throw new SchemaValidationError(
       `${label} obligations or prohibitions do not match continuation reason`,
+    );
+  }
+  if (
+    reason === "control_only_repair" &&
+    (receipt.errorCode === undefined ||
+      receipt.errorMessage === undefined ||
+      receipt.errorRetryable === undefined ||
+      runtime.controlRepair === null ||
+      runtime.controlRepair === undefined)
+  ) {
+    throw new SchemaValidationError(
+      `${label} control-only repair continuation is incomplete`,
     );
   }
   if (
@@ -593,6 +795,18 @@ function assertModelRuntimeContext(
   ) {
     throw new SchemaValidationError(
       `${label} failed Tool continuation is incomplete`,
+    );
+  }
+  if (
+    reason === "tool_outcome_resolved" &&
+    (toolResolutions.length === 0 ||
+      object(
+        toolResolutions.at(-1),
+        `${label}.continuation.receipt.toolResolutions[last]`,
+      ).eventId !== continuation.causedByEventId)
+  ) {
+    throw new SchemaValidationError(
+      `${label} resolved Tool continuation is incomplete`,
     );
   }
 }
@@ -987,14 +1201,15 @@ function assertContextManifestMatchesInput(
             : 0);
       }, total);
     }, 0);
+    const controls = projectedModelControls(input, label);
     const estimatedInputTokens =
       estimateContextTokens({
         activePlan: input.activePlan,
         handoff,
         instructions: input.instructions,
         messages: input.messages,
-        planControl: input.planControl,
-        progressControl: input.progressControl,
+        planControl: controls.planControl,
+        progressControl: controls.progressControl,
         runtime: input.runtimeContext,
         tools: input.tools,
       }) + imageBytes;
@@ -1181,6 +1396,25 @@ function assertModelContinuation(
   string(continuation.eventId, `${label}.eventId`);
   const reason = string(continuation.reason, `${label}.reason`);
   if (reason === "input_received") return;
+  if (reason === "control_only_repair") {
+    if (eventSchemaVersion < 13) {
+      throw new SchemaValidationError(
+        `${label}.reason requires Event schema 13`,
+      );
+    }
+    assertDriverError(continuation.error, `${label}.error`);
+    if (
+      continuation.receiptType !== "model.failed" &&
+      continuation.receiptType !== "plan.rejected"
+    ) {
+      throw new SchemaValidationError(`${label}.receiptType is unsupported`);
+    }
+    const attempt = integer(continuation.attempt, `${label}.attempt`);
+    if (attempt < 1 || attempt > MAX_CONTROL_REPAIR_ATTEMPTS) {
+      throw new SchemaValidationError(`${label}.attempt is invalid`);
+    }
+    return;
+  }
   if (reason === "plan_updated") {
     parsePlanSnapshot(continuation.plan, `${label}.plan`);
     return;
@@ -1203,6 +1437,50 @@ function assertModelContinuation(
     assertDriverError(continuation.error, `${label}.error`);
     string(continuation.toolCallId, `${label}.toolCallId`);
     string(continuation.toolName, `${label}.toolName`);
+    return;
+  }
+  if (reason === "tool_outcome_resolved") {
+    if (eventSchemaVersion < 12) {
+      throw new SchemaValidationError(
+        `${label}.reason requires Event schema 12`,
+      );
+    }
+    const resolutions = array(
+      continuation.resolutions,
+      `${label}.resolutions`,
+    );
+    if (resolutions.length === 0) {
+      throw new SchemaValidationError(
+        `${label}.resolutions must not be empty`,
+      );
+    }
+    resolutions.forEach((resolution, index) =>
+      assertToolOutcomeResolution(
+        resolution,
+        `${label}.resolutions[${index}]`,
+      ),
+    );
+    const effectIds = resolutions.map((resolution) =>
+      string(
+        object(resolution, `${label}.resolution`).effectId,
+        `${label}.resolution.effectId`,
+      ),
+    );
+    const eventIds = resolutions.map((resolution) =>
+      string(
+        object(resolution, `${label}.resolution`).eventId,
+        `${label}.resolution.eventId`,
+      ),
+    );
+    if (
+      new Set(effectIds).size !== effectIds.length ||
+      new Set(eventIds).size !== eventIds.length ||
+      eventIds.at(-1) !== continuation.eventId
+    ) {
+      throw new SchemaValidationError(
+        `${label}.resolutions must be unique and end at the causing Event`,
+      );
+    }
     return;
   }
   throw new SchemaValidationError(`${label}.reason is unsupported`);
@@ -1455,6 +1733,46 @@ function assertThreadState(
   messageSources.forEach((source, index) =>
     assertContextBoundary(source, `${label}.messageSources[${index}]`),
   );
+  if (
+    eventSchemaVersion >= 12 &&
+    state.toolOutcomeResolutions === undefined
+  ) {
+    throw new SchemaValidationError(
+      `${label}.toolOutcomeResolutions is required by Event schema 12`,
+    );
+  }
+  const outcomeResolutions =
+    state.toolOutcomeResolutions === undefined
+      ? []
+      : array(
+          state.toolOutcomeResolutions,
+          `${label}.toolOutcomeResolutions`,
+        );
+  outcomeResolutions.forEach((resolution, index) =>
+    assertToolOutcomeResolution(
+      resolution,
+      `${label}.toolOutcomeResolutions[${index}]`,
+    ),
+  );
+  if (eventSchemaVersion < 12 && outcomeResolutions.length > 0) {
+    throw new SchemaValidationError(
+      `${label}.toolOutcomeResolutions requires Event schema 12`,
+    );
+  }
+  const outcomeResolutionEffectIds = outcomeResolutions.map((resolution) =>
+    string(
+      object(resolution, `${label}.toolOutcomeResolution`).effectId,
+      `${label}.toolOutcomeResolution.effectId`,
+    ),
+  );
+  if (
+    new Set(outcomeResolutionEffectIds).size !==
+    outcomeResolutionEffectIds.length
+  ) {
+    throw new SchemaValidationError(
+      `${label}.toolOutcomeResolutions contains duplicate Effect IDs`,
+    );
+  }
   parseThreadMetrics(state.metrics, `${label}.metrics`);
   assertThreadMode(state.mode, `${label}.mode`);
   if (state.planRepairAttempts !== undefined) {
@@ -1489,6 +1807,11 @@ function assertThreadState(
     if (effect.id !== key) {
       throw new SchemaValidationError(
         `${label}.pendingEffects.${key} has a mismatched Effect ID`,
+      );
+    }
+    if (outcomeResolutionEffectIds.includes(effect.id)) {
+      throw new SchemaValidationError(
+        `${label}.pendingEffects.${key} is already outcome-resolved`,
       );
     }
     effectIds.add(effect.id);
@@ -1589,6 +1912,15 @@ function assertThreadState(
     status !== "waiting"
   ) {
     throw new SchemaValidationError(`${label}.status is unsupported`);
+  }
+  if (
+    outcomeResolutions.length > 0 &&
+    status !== "waiting" &&
+    status !== "running"
+  ) {
+    throw new SchemaValidationError(
+      `${label}.toolOutcomeResolutions requires waiting or running status`,
+    );
   }
   if (pauseRequested && status !== "running") {
     throw new SchemaValidationError(
@@ -1791,6 +2123,7 @@ function parseEffect(
         input.contextManifest,
         `${label}.input.contextManifest`,
       );
+      const controls = projectedModelControls(input, `${label}.input`);
       const expectedDigest = jsonDigest({
         activePlan: input.activePlan,
         ...(manifest.schemaVersion === CONTEXT_MANIFEST_SCHEMA_VERSION
@@ -1816,9 +2149,9 @@ function parseEffect(
               ),
             }
           : {}),
-        planControl: input.planControl,
+        planControl: controls.planControl,
         planRejectionFeedback: input.planRejectionFeedback ?? null,
-        progressControl: input.progressControl,
+        progressControl: controls.progressControl,
         runtime: input.runtimeContext,
         tools: input.tools,
       });
@@ -1891,6 +2224,7 @@ const eventTypes = new Set<ThreadEventType>([
   "tool.cancelled",
   "tool.completed",
   "tool.failed",
+  "tool.outcome_resolved",
   "tool.requested",
 ]);
 
@@ -2179,6 +2513,21 @@ function assertEventPayload(
       assertDriverError(payload.error, "payload.error");
       if (payload.disposition !== "failed" && payload.disposition !== "indeterminate") {
         throw new SchemaValidationError("payload.disposition is unsupported");
+      }
+      return;
+    case "tool.outcome_resolved":
+      if (schemaVersion < 12) {
+        throw new SchemaValidationError(
+          "Event schema versions 5 through 11 cannot contain tool.outcome_resolved",
+        );
+      }
+      string(payload.effectId, "payload.effectId");
+      if (
+        payload.resolution !== "occurred" &&
+        payload.resolution !== "not_occurred" &&
+        payload.resolution !== "abandoned_unknown"
+      ) {
+        throw new SchemaValidationError("payload.resolution is unsupported");
       }
       return;
   }

@@ -8,6 +8,7 @@ import type {
   ModelRef,
   ThreadState,
   ToolDescriptor,
+  ToolOutcomeResolution,
 } from "./domain.ts";
 import type { ModelGenerateInput } from "./effects.ts";
 import { InvalidTransitionError } from "./errors.ts";
@@ -30,7 +31,10 @@ export const CONTEXT_MANIFEST_SCHEMA_VERSION = 2;
 export const CONTINUITY_HANDOFF_SCHEMA_VERSION = 1;
 export const MODEL_CONTEXT_SCHEMA_VERSION = 1;
 export const MODEL_RUNTIME_CONTEXT_SCHEMA_VERSION = 2;
+export const MODEL_OUTCOME_RESOLUTION_CONTEXT_SCHEMA_VERSION = 3;
+export const MODEL_CONTROL_CONTEXT_SCHEMA_VERSION = 4;
 export const MAX_PLAN_REPAIR_ATTEMPTS = 1;
+export const MAX_CONTROL_REPAIR_ATTEMPTS = 1;
 
 const MAX_HANDOFF_FACTS = 64;
 const MAX_HANDOFF_FACT_TEXT = 1_000;
@@ -45,24 +49,31 @@ export interface ContextBoundary {
 export interface ModelMessageSource extends ContextBoundary {}
 
 export type ModelContinuationReason =
+  | "control_only_repair"
   | "input_received"
   | "plan_rejected"
   | "plan_updated"
   | "tool_completed"
   | "tool_failed"
-  | "tool_indeterminate";
+  | "tool_indeterminate"
+  | "tool_outcome_resolved";
 
 export type ModelContextObligation =
+  | "execute_or_respond"
   | "explain_unknown_tool_outcome"
   | "handle_tool_failure"
+  | "handle_resolved_tool_outcomes"
   | "repair_plan_control"
   | "respond_or_act";
 
 export type ModelContextProhibition =
   | "assume_failed_tool_succeeded"
+  | "perform_plan_or_progress_controls"
+  | "perform_progress_control"
   | "perform_tool_or_plan_actions"
   | "repeat_accepted_plan_change"
-  | "repeat_rejected_plan_change";
+  | "repeat_rejected_plan_change"
+  | "repeat_resolved_tool_action";
 
 export interface ModelContextReceipt {
   readonly errorCode?: string;
@@ -75,12 +86,15 @@ export interface ModelContextReceipt {
   readonly toolCallId?: string;
   readonly toolDisposition?: "failed" | "indeterminate";
   readonly toolName?: string;
+  readonly toolResolutions?: readonly ToolOutcomeResolution[];
   readonly type:
     | "input.received"
+    | "model.failed"
     | "plan.rejected"
     | "plan.updated"
     | "tool.completed"
-    | "tool.failed";
+    | "tool.failed"
+    | "tool.outcome_resolved";
 }
 
 export interface ModelRuntimeContext {
@@ -94,8 +108,12 @@ export interface ModelRuntimeContext {
     readonly attempt: number;
     readonly limit: number;
   } | null;
+  readonly controlRepair?: {
+    readonly attempt: number;
+    readonly limit: number;
+  } | null;
   readonly prohibitions: readonly ModelContextProhibition[];
-  readonly schemaVersion: 1 | 2;
+  readonly schemaVersion: 1 | 2 | 3 | 4;
 }
 
 export type ModelContextSourceKind =
@@ -195,6 +213,13 @@ export interface AcceptedContinuityHandoff {
 export type ModelContinuation =
   | { readonly eventId: string; readonly reason: "input_received" }
   | {
+      readonly attempt: number;
+      readonly error: DriverError;
+      readonly eventId: string;
+      readonly reason: "control_only_repair";
+      readonly receiptType: "model.failed" | "plan.rejected";
+    }
+  | {
       readonly eventId: string;
       readonly plan: PlanSnapshot;
       readonly reason: "plan_updated";
@@ -216,6 +241,11 @@ export type ModelContinuation =
       readonly reason: "tool_failed" | "tool_indeterminate";
       readonly toolCallId: string;
       readonly toolName: string;
+    }
+  | {
+      readonly eventId: string;
+      readonly reason: "tool_outcome_resolved";
+      readonly resolutions: readonly ToolOutcomeResolution[];
     };
 
 export interface ContextCompactionInput {
@@ -251,6 +281,14 @@ interface MessageCandidate {
 
 function receiptFor(continuation: ModelContinuation): ModelContextReceipt {
   switch (continuation.reason) {
+    case "control_only_repair":
+      return {
+        errorCode: continuation.error.code,
+        errorMessage: normalizeRuntimeError(continuation.error.message),
+        errorRetryable: continuation.error.retryable,
+        eventId: continuation.eventId,
+        type: continuation.receiptType,
+      };
     case "input_received":
       return { eventId: continuation.eventId, type: "input.received" };
     case "plan_updated":
@@ -288,6 +326,12 @@ function receiptFor(continuation: ModelContinuation): ModelContextReceipt {
         toolName: continuation.toolName,
         type: "tool.failed",
       };
+    case "tool_outcome_resolved":
+      return {
+        eventId: continuation.eventId,
+        toolResolutions: continuation.resolutions,
+        type: "tool.outcome_resolved",
+      };
   }
 }
 
@@ -304,21 +348,44 @@ function runtimeContext(
   continuation: ModelContinuation,
 ): ModelRuntimeContext {
   const repairing = continuation.reason === "plan_rejected";
+  const repairingControl = continuation.reason === "control_only_repair";
+  const executionOnly =
+    repairingControl || continuation.reason === "plan_updated";
   const handlingToolFailure = continuation.reason === "tool_failed";
   const explainingIndeterminate = continuation.reason === "tool_indeterminate";
+  const resolvingToolOutcomes = continuation.reason === "tool_outcome_resolved";
+  const resolutionProhibitions: readonly ModelContextProhibition[] =
+    resolvingToolOutcomes
+      ? [
+          ...(continuation.resolutions.some(
+            (resolution) => resolution.resolution !== "occurred",
+          )
+            ? (["assume_failed_tool_succeeded"] as const)
+            : []),
+          ...(continuation.resolutions.some(
+            (resolution) => resolution.resolution !== "not_occurred",
+          )
+            ? (["repeat_resolved_tool_action"] as const)
+            : []),
+        ]
+      : [];
   return {
     continuation: {
       causedByEventId: continuation.eventId,
       reason: continuation.reason,
       receipt: receiptFor(continuation),
     },
-    obligations: repairing
-      ? ["repair_plan_control", "respond_or_act"]
-      : explainingIndeterminate
-        ? ["explain_unknown_tool_outcome"]
-        : handlingToolFailure
-          ? ["handle_tool_failure", "respond_or_act"]
-          : ["respond_or_act"],
+    obligations: executionOnly
+      ? ["execute_or_respond"]
+      : repairing
+        ? ["repair_plan_control", "respond_or_act"]
+        : explainingIndeterminate
+          ? ["explain_unknown_tool_outcome"]
+          : resolvingToolOutcomes
+            ? ["handle_resolved_tool_outcomes", "respond_or_act"]
+            : handlingToolFailure
+              ? ["handle_tool_failure", "respond_or_act"]
+              : ["respond_or_act"],
     planRepair:
       state.planRepairAttempts === 0 && !repairing
         ? null
@@ -326,23 +393,67 @@ function runtimeContext(
             attempt: state.planRepairAttempts,
             limit: MAX_PLAN_REPAIR_ATTEMPTS,
           },
+    ...(repairingControl
+      ? {
+          controlRepair: {
+            attempt: continuation.attempt,
+            limit: MAX_CONTROL_REPAIR_ATTEMPTS,
+          },
+        }
+      : executionOnly || repairing
+        ? { controlRepair: null }
+        : {}),
     prohibitions:
-      continuation.reason === "plan_updated"
-        ? ["repeat_accepted_plan_change"]
-        : continuation.reason === "plan_rejected"
-          ? ["repeat_rejected_plan_change"]
-          : explainingIndeterminate
-            ? [
-                "assume_failed_tool_succeeded",
-                "perform_tool_or_plan_actions",
-              ]
-            : handlingToolFailure
-              ? ["assume_failed_tool_succeeded"]
-              : [],
-    schemaVersion: handlingToolFailure || explainingIndeterminate
-      ? MODEL_RUNTIME_CONTEXT_SCHEMA_VERSION
-      : MODEL_CONTEXT_SCHEMA_VERSION,
+      continuation.reason === "control_only_repair"
+        ? ["perform_plan_or_progress_controls"]
+        : continuation.reason === "plan_updated"
+          ? [
+              "perform_plan_or_progress_controls",
+              "repeat_accepted_plan_change",
+            ]
+          : continuation.reason === "plan_rejected"
+            ? ["perform_progress_control", "repeat_rejected_plan_change"]
+            : explainingIndeterminate
+              ? [
+                  "assume_failed_tool_succeeded",
+                  "perform_tool_or_plan_actions",
+                ]
+              : resolvingToolOutcomes
+                ? resolutionProhibitions
+                : handlingToolFailure
+                  ? ["assume_failed_tool_succeeded"]
+                  : [],
+    schemaVersion:
+      repairingControl || repairing || continuation.reason === "plan_updated"
+        ? MODEL_CONTROL_CONTEXT_SCHEMA_VERSION
+        : resolvingToolOutcomes
+          ? MODEL_OUTCOME_RESOLUTION_CONTEXT_SCHEMA_VERSION
+          : handlingToolFailure || explainingIndeterminate
+            ? MODEL_RUNTIME_CONTEXT_SCHEMA_VERSION
+            : MODEL_CONTEXT_SCHEMA_VERSION,
   };
+}
+
+export function modelControlProjection(
+  runtime: ModelRuntimeContext,
+  planControl: PlanControlDescriptor,
+  progressControl: ProgressControlDescriptor,
+): {
+  readonly planControl: PlanControlDescriptor | null;
+  readonly progressControl: ProgressControlDescriptor | null;
+} {
+  if (runtime.schemaVersion !== MODEL_CONTROL_CONTEXT_SCHEMA_VERSION) {
+    return { planControl, progressControl };
+  }
+  switch (runtime.continuation.reason) {
+    case "plan_rejected":
+      return { planControl, progressControl: null };
+    case "control_only_repair":
+    case "plan_updated":
+      return { planControl: null, progressControl: null };
+    default:
+      return { planControl, progressControl };
+  }
 }
 
 function utf8Length(value: JsonValue): number {
@@ -493,8 +604,8 @@ function modelInputEstimate(input: {
   readonly handoff: ContinuityHandoff | null;
   readonly instructions: string;
   readonly messages: readonly ModelMessage[];
-  readonly planControl: PlanControlDescriptor;
-  readonly progressControl: ProgressControlDescriptor;
+  readonly planControl: PlanControlDescriptor | null;
+  readonly progressControl: ProgressControlDescriptor | null;
   readonly runtime: ModelRuntimeContext;
   readonly tools: readonly ToolDescriptor[];
 }): number {
@@ -513,9 +624,9 @@ function logicalRequestDigest(input: {
   readonly mode: ThreadState["mode"];
   readonly model: ModelRef;
   readonly modelCapabilities: ModelCapabilityProfile;
-  readonly planControl: PlanControlDescriptor;
+  readonly planControl: PlanControlDescriptor | null;
   readonly planRejectionFeedback: string | null;
-  readonly progressControl: ProgressControlDescriptor;
+  readonly progressControl: ProgressControlDescriptor | null;
   readonly runtime: ModelRuntimeContext;
   readonly tools: readonly ToolDescriptor[];
 }): string {
@@ -535,6 +646,7 @@ function modelCompilation(
     throw new InvalidTransitionError(`Thread ${state.threadId} has no Agent definition`);
   }
   const planControl = createPlanControl(state.activePlan);
+  const controls = modelControlProjection(runtime, planControl, PROGRESS_CONTROL);
   const modelCapabilities = modelCapabilityProfileFor(agent.modelCapabilities);
   const handoff = state.acceptedHandoff?.handoff ?? null;
   const boundary = handoff?.source.messageThroughSequence ?? 0;
@@ -548,8 +660,8 @@ function modelCompilation(
     handoff,
     instructions: agent.instructions,
     messages,
-    planControl,
-    progressControl: PROGRESS_CONTROL,
+    planControl: controls.planControl,
+    progressControl: controls.progressControl,
     runtime,
     tools: agent.tools,
   });
@@ -687,9 +799,9 @@ function modelCompilation(
     mode: state.mode,
     model: agent.model,
     modelCapabilities,
-    planControl,
+    planControl: controls.planControl,
     planRejectionFeedback: planRejectionFeedback ?? null,
-    progressControl: PROGRESS_CONTROL,
+    progressControl: controls.progressControl,
     runtime,
     tools: agent.tools,
   });
@@ -796,11 +908,16 @@ export function compileContext(
     selected = new Set<number>();
     compacted = active;
   }
+  const resolutionSources =
+    continuation.reason === "tool_outcome_resolved"
+      ? continuation.resolutions
+      : [];
   const sourceEventIds = [
     ...(state.acceptedHandoff?.handoff.source.eventIds ?? []),
     ...(state.activePlanSource === null
       ? []
       : [state.activePlanSource.eventId]),
+    ...resolutionSources.map((resolution) => resolution.eventId),
     ...compacted.map((candidate) => candidate.source.eventId),
   ].filter((eventId, index, values) => values.indexOf(eventId) === index);
   const sourceSequences = [
@@ -813,6 +930,7 @@ export function compileContext(
     ...(state.activePlanSource === null
       ? []
       : [state.activePlanSource.sequence]),
+    ...resolutionSources.map((resolution) => resolution.sequence),
     ...compacted.map((candidate) => candidate.source.sequence),
   ];
   const sourceFromSequence =
@@ -856,6 +974,20 @@ export function compileContext(
             version: `event:${state.activePlanSource.sequence}:revision:${state.activePlan.revision}`,
           }),
         ]),
+    ...resolutionSources.map((resolution) =>
+      source({
+        causedByEventId: resolution.eventId,
+        digest: jsonDigest(resolution),
+        disposition: "transformed",
+        estimatedTokens: estimateContextTokens(resolution),
+        id: `runtime-resolution:${resolution.eventId}`,
+        kind: "runtime",
+        priority: 100,
+        reason: "preserved in the outcome-resolution Runtime Context",
+        sensitivity: "private",
+        version: `event:${resolution.sequence}:runtime:3`,
+      }),
+    ),
     ...compacted.flatMap((candidate) => [
       messageSource(candidate, "transformed", "selected for semantic compaction"),
       ...artifactSources(
@@ -1153,8 +1285,20 @@ export function copyContinuityHandoffForFork(
 function copyContinuationForFork(
   continuation: ModelContinuation,
   mapEventId: (eventId: string) => string,
+  mapEffectId: (effectId: string) => string,
 ): ModelContinuation {
-  return { ...continuation, eventId: mapEventId(continuation.eventId) };
+  if (continuation.reason !== "tool_outcome_resolved") {
+    return { ...continuation, eventId: mapEventId(continuation.eventId) };
+  }
+  return {
+    ...continuation,
+    eventId: mapEventId(continuation.eventId),
+    resolutions: continuation.resolutions.map((resolution) => ({
+      ...resolution,
+      effectId: mapEffectId(resolution.effectId),
+      eventId: mapEventId(resolution.eventId),
+    })),
+  };
 }
 
 function copySourcesForFork(
@@ -1186,6 +1330,7 @@ export function copyContextCompactionForFork(
   mapEventId: (eventId: string) => string,
   threadId: string,
   previousHandoff: AcceptedContinuityHandoff | null,
+  mapEffectId: (effectId: string) => string = (effectId) => effectId,
 ): ContextCompactionInput {
   const sourceManifest = copySourcesForFork(input.sourceManifest, mapEventId).map(
     (entry) =>
@@ -1206,7 +1351,11 @@ export function copyContextCompactionForFork(
             ...input.clearBoundary,
             eventId: mapEventId(input.clearBoundary.eventId),
           },
-    continuation: copyContinuationForFork(input.continuation, mapEventId),
+    continuation: copyContinuationForFork(
+      input.continuation,
+      mapEventId,
+      mapEffectId,
+    ),
     previousHandoff,
     sourceEventIds: input.sourceEventIds.map(mapEventId),
     sourceManifest,
@@ -1218,6 +1367,7 @@ export function copyModelContextForFork(
   input: ModelGenerateInput,
   mapEventId: (eventId: string) => string,
   acceptedHandoff?: AcceptedContinuityHandoff,
+  mapEffectId: (effectId: string) => string = (effectId) => effectId,
 ): ModelGenerateInput {
   if (input.runtimeContext === undefined || input.contextManifest === undefined) {
     return input;
@@ -1230,6 +1380,18 @@ export function copyModelContextForFork(
       receipt: {
         ...input.runtimeContext.continuation.receipt,
         eventId: mapEventId(input.runtimeContext.continuation.receipt.eventId),
+        ...(input.runtimeContext.continuation.receipt.toolResolutions === undefined
+          ? {}
+          : {
+              toolResolutions:
+                input.runtimeContext.continuation.receipt.toolResolutions.map(
+                  (resolution) => ({
+                    ...resolution,
+                    effectId: mapEffectId(resolution.effectId),
+                    eventId: mapEventId(resolution.eventId),
+                  }),
+                ),
+            }),
       },
     },
   };
@@ -1260,6 +1422,11 @@ export function copyModelContextForFork(
   }));
   const continuityHandoff =
     acceptedHandoff?.handoff ?? input.continuityHandoff ?? null;
+  const controls = modelControlProjection(
+    runtime,
+    input.planControl,
+    input.progressControl,
+  );
   return {
     ...input,
     continuityHandoff,
@@ -1293,9 +1460,9 @@ export function copyModelContextForFork(
         mode: input.mode,
         model: input.model,
         modelCapabilities: input.contextManifest.modelCapabilities,
-        planControl: input.planControl,
+        planControl: controls.planControl,
         planRejectionFeedback: input.planRejectionFeedback ?? null,
-        progressControl: input.progressControl,
+        progressControl: controls.progressControl,
         runtime,
         tools: input.tools,
       }),

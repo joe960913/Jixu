@@ -162,6 +162,87 @@ function effect(
   };
 }
 
+function schema4ControlEffect(
+  provider: string,
+  reason: "control_only_repair" | "plan_rejected" | "plan_updated",
+): ModelGenerateEffect {
+  const base = effect(provider, "fixture-model", activePlan);
+  const runtimeContext: NonNullable<
+    ModelGenerateEffect["input"]["runtimeContext"]
+  > =
+    reason === "plan_rejected"
+      ? {
+          continuation: {
+            causedByEventId: "event-plan-rejected",
+            reason,
+            receipt: {
+              errorCode: "plan_update_invalid",
+              errorMessage: planRejectionFeedback,
+              eventId: "event-plan-rejected",
+              type: "plan.rejected",
+            },
+          },
+          obligations: ["repair_plan_control", "respond_or_act"],
+          planRepair: { attempt: 1, limit: 1 },
+          controlRepair: null,
+          prohibitions: [
+            "perform_progress_control",
+            "repeat_rejected_plan_change",
+          ],
+          schemaVersion: 4,
+        }
+      : reason === "plan_updated"
+        ? {
+            continuation: {
+              causedByEventId: "event-plan-updated",
+              reason,
+              receipt: {
+                eventId: "event-plan-updated",
+                planId: activePlan.id,
+                planRevision: activePlan.revision,
+                planStatus: activePlan.status,
+                type: "plan.updated",
+              },
+            },
+            obligations: ["execute_or_respond"],
+            planRepair: null,
+            controlRepair: null,
+            prohibitions: [
+              "perform_plan_or_progress_controls",
+              "repeat_accepted_plan_change",
+            ],
+            schemaVersion: 4,
+          }
+        : {
+            continuation: {
+              causedByEventId: "event-model-failed",
+              reason,
+              receipt: {
+                errorCode: "fixture_progress_only",
+                errorMessage: "Only progress control was returned",
+                errorRetryable: false,
+                eventId: "event-model-failed",
+                type: "model.failed",
+              },
+            },
+            obligations: ["execute_or_respond"],
+            planRepair: null,
+            controlRepair: { attempt: 1, limit: 1 },
+            prohibitions: ["perform_plan_or_progress_controls"],
+            schemaVersion: 4,
+          };
+  return {
+    ...base,
+    input: {
+      ...base.input,
+      ...(reason === "plan_rejected"
+        ? { planRejectionFeedback }
+        : {}),
+      runtimeContext,
+    },
+  };
+}
+
 function failedToolEffect(provider: string): ModelGenerateEffect {
   const base = effect(provider, "fixture-model", null);
   return {
@@ -189,6 +270,51 @@ function failedToolEffect(provider: string): ModelGenerateEffect {
           toolCallId: "call-search",
         },
       ],
+    },
+  };
+}
+
+function resolvedToolOutcomeEffect(provider: string): ModelGenerateEffect {
+  const base = failedToolEffect(provider);
+  const error = {
+    code: "jina_upstream_unavailable",
+    message: "Jina Search returned HTTP 503",
+    retryable: true,
+  } as const;
+  return {
+    ...base,
+    input: {
+      ...base.input,
+      messages: base.input.messages.map((message) =>
+        message.role === "tool" && "error" in message
+          ? { ...message, disposition: "indeterminate" as const }
+          : message
+      ),
+      runtimeContext: {
+        continuation: {
+          causedByEventId: "event-resolution",
+          reason: "tool_outcome_resolved",
+          receipt: {
+            eventId: "event-resolution",
+            toolResolutions: [
+              {
+                effectId: "effect-search",
+                error,
+                eventId: "event-resolution",
+                resolution: "occurred",
+                sequence: 9,
+                toolCallId: "call-search",
+                toolName: "search",
+              },
+            ],
+            type: "tool.outcome_resolved",
+          },
+        },
+        obligations: ["handle_resolved_tool_outcomes", "respond_or_act"],
+        planRepair: null,
+        prohibitions: ["repeat_resolved_tool_action"],
+        schemaVersion: 3,
+      },
     },
   };
 }
@@ -860,6 +986,67 @@ test("JX-PROV-002 JX-PROV-004 JX-AC-010 JX-AC-049 both protocols preserve native
   ]);
 });
 
+test("JX-PROV-002 JX-PROV-004 JX-AC-061 both protocols carry outcome resolution as system context without inventing a Tool result", async () => {
+  const chatClient = new FakeOpenAIChatClient(chatChunks());
+  const anthropicClient = new FakeAnthropicClient(anthropicEvents());
+
+  assert.equal(
+    (await createLLMModelDriver({
+      api: "openai-chat-completions",
+      baseURL: "https://chat.example/v1",
+      openAIChatCompletionsClient: chatClient,
+      provider: "chat-provider",
+    }).generate(resolvedToolOutcomeEffect("chat-provider"), context())).status,
+    "succeeded",
+  );
+  assert.equal(
+    (await createLLMModelDriver({
+      anthropicMessagesClient: anthropicClient,
+      api: "anthropic-messages",
+      baseURL: "https://api.anthropic.test",
+      provider: "anthropic",
+    }).generate(resolvedToolOutcomeEffect("anthropic"), context())).status,
+    "succeeded",
+  );
+
+  const chatToolMessages =
+    chatClient.body?.messages.filter((message) => message.role === "tool") ?? [];
+  const chatResolutionContext = chatClient.body?.messages.findLast(
+    (message) =>
+      message.role === "system" &&
+      typeof message.content === "string" &&
+      message.content.includes("tool_outcome_resolved"),
+  );
+  assert.equal(chatToolMessages.length, 1);
+  assert.match(String(chatResolutionContext?.content), /"resolution":"occurred"/u);
+  assert.match(
+    String(chatResolutionContext?.content),
+    /Do not repeat: repeat_resolved_tool_action/u,
+  );
+
+  const anthropicToolResults =
+    anthropicClient.body?.messages.flatMap((message) =>
+      Array.isArray(message.content)
+        ? message.content.filter((block) => block.type === "tool_result")
+        : []
+    ) ?? [];
+  assert.equal(anthropicToolResults.length, 1);
+  const anthropicSystem = anthropicClient.body?.system;
+  assert.ok(Array.isArray(anthropicSystem));
+  assert.match(
+    anthropicSystem.map((block) => block.text).join("\n"),
+    /"resolution":"occurred"/u,
+  );
+  assert.equal(
+    anthropicClient.body?.messages.some(
+      (message) =>
+        typeof message.content === "string" &&
+        message.content.includes("tool_outcome_resolved"),
+    ),
+    false,
+  );
+});
+
 test("JX-PROV-008 JX-AC-053 Ultra maps to the strongest compatible native effort without prompt changes", async () => {
   const base = effect("fixture-provider", "fixture-model", null);
   const ultra: ModelGenerateEffect = {
@@ -1122,6 +1309,68 @@ test("JX-PLAN-008 JX-AC-031 active Plan exposes minimal abandon and derives its 
   }]);
 });
 
+test("JX-PLAN-011 JX-AC-063 sparse Plan revision preserves omitted accepted fields", async () => {
+  const revisedSteps = [
+    {
+      ...activePlan.steps[0]!,
+      evidence: ["SPEC.md read"],
+      status: "completed" as const,
+    },
+    {
+      description: "Implement the change",
+      evidence: [],
+      id: "implement",
+      status: "in_progress" as const,
+    },
+  ];
+  const client = new FakeOpenAIChatClient([
+    {
+      choices: [{
+        delta: {
+          tool_calls: [{
+            function: {
+              arguments: JSON.stringify({
+                nextAction: "Implement the change",
+                operation: "revise",
+                steps: revisedSteps,
+              }),
+              name: PLAN_CONTROL.name,
+            },
+            id: "call-sparse-revise",
+            index: 0,
+            type: "function",
+          }],
+        },
+        finish_reason: "tool_calls",
+        index: 0,
+      }],
+    },
+    {
+      choices: [],
+      usage: { completion_tokens: 8, prompt_tokens: 24, total_tokens: 32 },
+    },
+  ]);
+  const outcome = await createLLMModelDriver({
+    api: "openai-chat-completions",
+    baseURL: "https://chat.example/v1",
+    openAIChatCompletionsClient: client,
+    provider: "chat-provider",
+  }).generate(effect("chat-provider"), context());
+
+  assert.equal(outcome.status, "succeeded");
+  if (outcome.status !== "succeeded") return;
+  assert.deepEqual(outcome.planRejections, []);
+  assert.deepEqual(outcome.value.planUpdates, [{
+    acceptanceCriteria: activePlan.acceptanceCriteria,
+    assumptions: activePlan.assumptions,
+    blockers: activePlan.blockers,
+    nextAction: "Implement the change",
+    objective: activePlan.objective,
+    operation: "revise",
+    steps: revisedSteps,
+  }]);
+});
+
 test("JX-PLAN-009 JX-AC-031 malformed Plan control preserves public text and Tools", async () => {
   const client = new FakeOpenAIChatClient([
     {
@@ -1266,7 +1515,7 @@ test("JX-PROV-002 JX-PROV-004 JX-PROV-005 JX-PROV-011 JX-AC-016 JX-AC-055 Anthro
     client.body.system[1]?.text ?? "",
     /call-invalid\.steps\[0\] must be a JSON object/,
   );
-  assert.deepEqual(client.body.tools.map((tool) => tool.name), [
+  assert.deepEqual(client.body.tools?.map((tool) => tool.name), [
     "read",
     PLAN_CONTROL.name,
     PROGRESS_CONTROL.name,
@@ -1363,7 +1612,41 @@ function progressOnlyAnthropicClient(): FakeAnthropicClient {
   ]);
 }
 
-test("JX-SIG-005 JX-PROV-011 JX-AC-034 JX-AC-055 both protocols use native defaults and fail closed on progress-only output", async () => {
+test("JX-PLAN-010 JX-SIG-005 JX-AC-063 both protocols derive reserved-control exposure from Runtime Context", async () => {
+  for (const [reason, expectedNames] of [
+    ["plan_rejected", ["read", PLAN_CONTROL.name]],
+    ["plan_updated", ["read"]],
+    ["control_only_repair", ["read"]],
+  ] as const) {
+    const chatClient = new FakeOpenAIChatClient(chatChunks());
+    await createLLMModelDriver({
+      api: "openai-chat-completions",
+      baseURL: "https://chat.example/v1",
+      openAIChatCompletionsClient: chatClient,
+      provider: "chat",
+    }).generate(schema4ControlEffect("chat", reason), context());
+    assert.deepEqual(
+      chatClient.body?.tools?.map((tool) =>
+        tool.type === "function" ? tool.function.name : tool.custom.name,
+      ),
+      expectedNames,
+    );
+
+    const anthropicClient = new FakeAnthropicClient(anthropicEvents());
+    await createLLMModelDriver({
+      anthropicMessagesClient: anthropicClient,
+      api: "anthropic-messages",
+      baseURL: "https://anthropic.example",
+      provider: "anthropic",
+    }).generate(schema4ControlEffect("anthropic", reason), context());
+    assert.deepEqual(
+      anthropicClient.body?.tools?.map((tool) => tool.name),
+      expectedNames,
+    );
+  }
+});
+
+test("JX-SIG-005 JX-PROV-011 JX-AC-034 JX-AC-055 both protocols use native defaults and bound progress-only recovery", async () => {
   for (const [api, driver] of [
     [
       "openai-chat-completions",
@@ -1421,7 +1704,9 @@ test("JX-SIG-005 JX-PROV-011 JX-AC-034 JX-AC-055 both protocols use native defau
   assert.equal(state.status, "idle");
   assert.equal(state.error?.code, "chat_progress_only");
   assert.equal(events.filter((event) => event.type === "model.completed").length, 0);
-  assert.equal(events.filter((event) => event.type === "model.failed").length, 1);
+  assert.equal(events.filter((event) => event.type === "model.failed").length, 2);
+  assert.equal(events.filter((event) => event.type === "model.requested").length, 2);
+  assert.equal(harnessClient.body?.tools, undefined);
 
   const anthropicHarnessClient = progressOnlyAnthropicClient();
   const anthropicThread = await createHarness({
@@ -1441,6 +1726,7 @@ test("JX-SIG-005 JX-PROV-011 JX-AC-034 JX-AC-055 both protocols use native defau
   }).createThread();
   await anthropicThread.send("Answer the question");
   assert.equal(anthropicHarnessClient.body?.max_tokens, 16_384);
+  assert.equal(anthropicHarnessClient.body?.tools, undefined);
   assertRequestFieldsOmitted(anthropicHarnessClient.body, [
     "temperature",
     "top_p",

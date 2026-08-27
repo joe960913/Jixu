@@ -1,8 +1,8 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.50
+**Version:** 0.4.53
 **Status:** normative, pre-1.0
-**Last updated:** 2026-08-24
+**Last updated:** 2026-08-28
 
 ## 1. Product definition
 
@@ -200,7 +200,9 @@ the same bounded failure evidence and permits one explanation-only model
 continuation before entering `waiting`, because Jixu cannot safely claim whether
 the external action occurred. That continuation is observational: Tool calls and
 Plan actions in its response are durably auditable but MUST NOT be materialized
-or dispatched.
+or dispatched. Leaving that unknown-outcome wait requires an explicit durable
+decision for every retained Tool Effect; Jixu never infers resolution from a
+later prompt or retries the original Effect automatically.
 
 - **JX-THREAD-001.** Creating a Thread MUST durably record its Agent snapshot
   before the Thread becomes visible.
@@ -285,6 +287,26 @@ type ThreadMode = "standard" | "ultra";
   are durable, the Thread MUST start any already accepted queued input in Event
   order or return to `idle` with no error. Recovery after the interrupt intent
   MUST NOT redispatch the interrupted model or compaction Effect.
+- **JX-THREAD-020.** `resolveToolOutcome({ effectId, resolution })` MUST accept
+  only a retained indeterminate Tool Effect while the Thread is `waiting` on
+  `effect_outcome_unknown`. `resolution` is exactly `occurred`,
+  `not_occurred`, or `abandoned_unknown`: `occurred` confirms only that the
+  external action took place and does not invent a Tool output;
+  `not_occurred` confirms that it did not take place and permits the Agent to
+  choose a new ordinary Tool call; `abandoned_unknown` accepts the unresolved
+  uncertainty so the Thread can continue without claiming success or failure.
+  Each accepted decision MUST append one `tool.outcome_resolved` Event for the
+  exact pending Effect, remove only that Effect from the retained unknown set,
+  and reject a duplicate, mismatched, non-Tool, or already-resolved identity.
+  Resolving fewer than all retained unknown Effects MUST keep the Thread
+  `waiting`. The final resolution MUST produce exactly one ordinary model
+  continuation containing every accepted resolution and the original bounded
+  failure evidence, without redispatching any resolved Tool Effect. Before that
+  continuation is compiled, the preceding explanation-only assistant message
+  MUST be removed from the current model-message projection so the original
+  failed Tool receipt remains the final conversational turn. Its
+  `model.completed` or `model.cancelled` Event and public transcript entry remain
+  immutable and auditable.
 
 ## 7. Event, State, and observation
 
@@ -312,9 +334,9 @@ interface ThreadEvent<TType extends string, TPayload> {
 - **JX-EVT-004.** Events MUST be immutable after append.
 - **JX-EVT-005.** Correlation metadata MAY group work but MUST NOT replace
   Thread or Event identity.
-- **JX-EVT-006.** Event schema version 11 is the current Thread schema. Versions
-  5 through 10 remain readable for their historical Event shapes so existing
-  Threads can continue by appending version 11 Events. Version 5 MUST reject
+- **JX-EVT-006.** Event schema version 13 is the current Thread schema. Versions
+  5 through 12 remain readable for their historical Event shapes so existing
+  Threads can continue by appending version 13 Events. Version 5 MUST reject
   structured input fields introduced by version 6; versions 5 and 6 MUST reject
   mode fields and `thread.mode_changed` introduced by version 7; and versions 5
   through 7 MUST reject bounded Context fields and compaction Events introduced
@@ -324,15 +346,20 @@ interface ThreadEvent<TType extends string, TPayload> {
   earliest pre-release Agent snapshots and model requests MAY omit bounded
   Context fields. Those known omissions are interpreted with the frozen
   32,768/4,096 portable profile and derived default Context Policy without
-  rewriting stored Events. Schemas 9 through 11 require both immutable Agent
+  rewriting stored Events. Schemas 9 through 13 require both immutable Agent
   fields and a capability-bearing bounded Context Manifest. Schema 10 adds durable
   turn interruption plus the `model.cancelled` and pre-dispatch
   `tool.cancelled` outcomes; those Event types MUST be rejected under every
   earlier schema. Schema 11 adds failed Tool messages and the `tool_failed`
   Model Runtime Context continuation. Those shapes MUST be rejected under every
   earlier schema, whose already-recorded deterministic Tool failures retain
-  their historical terminal projection during Replay. Every other Event schema
-  version MUST fail closed.
+  their historical terminal projection during Replay. Schema 12 adds
+  `tool.outcome_resolved` and the `tool_outcome_resolved` Model Runtime Context
+  continuation; both MUST be rejected under every earlier schema. Schema 13
+  adds Model Runtime Context schema 4 and the `control_only_repair`
+  continuation, including State-derived reserved-control exposure; those shapes
+  MUST be rejected under every earlier schema. Every other Event schema version
+  MUST fail closed.
 
 The v0.4 families are:
 
@@ -362,6 +389,7 @@ The v0.4 families are:
 - `approval.decided`
 - `tool.completed`
 - `tool.failed`
+- `tool.outcome_resolved`
 
 ### 7.2 Signals
 
@@ -378,8 +406,16 @@ The v0.4 families are:
   without changing an otherwise usable model outcome or suppressing ordinary
   Tool calls. A provider response that contains a progress-control call but no
   non-whitespace public content, valid Plan change, or ordinary Tool call MUST
-  fail closed as a typed, non-retryable model failure. It MUST NOT be recorded as
-  an empty successful reply or trigger a hidden follow-up model request.
+  fail closed as a typed, non-retryable `model.failed` outcome and MUST NOT be
+  recorded as an empty successful reply. The Kernel MAY use that durable failure
+  to request exactly one execution-only continuation that exposes ordinary
+  Tools but neither Plan nor progress control. The repair request MUST carry an
+  Event-derived receipt, an execute-or-respond obligation, and a one-attempt
+  limit. Another control-only or empty outcome from an execution-only request
+  MUST settle with a typed terminal error and MUST NOT loop. A rejected Plan
+  repair that exhausts its own one-attempt budget MUST use this same bounded
+  execution-only path rather than allowing Plan bookkeeping to terminate an
+  otherwise actionable turn.
 - **JX-SIG-006.** A Tool MAY emit bounded `tool.output.delta` Signals for
   user-visible live output. Each Signal MUST identify the Effect, Tool, output
   stream, and delta; it MUST NOT change execution correctness or become a
@@ -424,6 +460,12 @@ Every Effect carries `id`, `threadId`, `type`, `input`, and idempotency metadata
   leaves the Thread `waiting`. Only a matching durable `approval.decided`
   decision may resume or reject that exact pending Tool Effect. An approval
   decision MUST NOT mutate the configured policy or approve another Effect.
+- **JX-EFF-009.** Resolving an indeterminate Tool outcome is an operator fact,
+  not a Driver outcome, Tool retry, synthetic success, or permission grant. The
+  original `tool.requested` and indeterminate `tool.failed` Events MUST remain
+  immutable and auditable. An accepted resolution MUST causally identify that
+  exact retained Effect, and only the ordinary Effect path created after the
+  final unresolved Effect is removed may perform new external work.
 
 Jixu provides at-least-once dispatch for Effects declared idempotent. For
 non-idempotent Effects whose durable outcome is unknown, recovery MUST enter
@@ -648,7 +690,11 @@ Mode, which is a surface policy outside the core specification.
   and history instead of rewriting them. `abandon` MUST require only its
   operation discriminator; the terminal revision MUST be derived from the
   accepted active Plan rather than requiring the model to reproduce that
-  Plan's fields and steps. Historical `supersede`-then-`create` proposal pairs
+  Plan's fields and steps. To remain portable across providers that reject
+  top-level JSON Schema combinators, an active-Plan descriptor requires only
+  `operation`: omitted fields on `revise` MUST preserve their accepted current
+  values, `supersede` MUST still provide the complete replacement body, and
+  `abandon` remains operation-only. Historical `supersede`-then-`create` proposal pairs
   remain replayable, but new model-facing descriptors use the atomic form.
 - **JX-PLAN-009.** An invalid model-proposed Plan change MUST be durably recorded
   as `plan.rejected` before any ordinary Effects from the same model output are
@@ -656,26 +702,49 @@ Mode, which is a surface policy outside the core specification.
   arguments as well as semantically invalid proposals. Rejection MUST preserve
   the last valid Plan and MUST NOT convert an otherwise successful model
   outcome into `model.failed`, suppress its user-visible response, or discard
-  its valid Tool calls. If the rejected Plan control was the model outcome's
-  only usable content, the empty assistant result MUST NOT settle the turn:
+  its valid Tool calls. A model outcome with a rejected Plan and no ordinary
+  Tool call MUST NOT settle the turn before that rejection is processed, even
+  when it also contains public text. The public text remains in the transcript;
   after `plan.rejected`, the ordinary Agent loop MUST request the model again
-  with bounded rejection feedback in request-varying runtime context. The
+  with bounded rejection feedback in request-varying runtime context. This
+  prevents a promise of future action from terminating execution merely because
+  it was emitted beside invalid control metadata. The
   feedback MUST NOT mutate the stable Plan-control descriptor. At most one
   automatic Plan-repair request may follow the same accepted input. A second
-  control-only rejection MUST preserve the last valid Plan, settle the Thread
-  to `idle` with typed `plan_repair_exhausted` State, and MUST NOT dispatch
-  another model request.
+  control-only rejection MUST preserve the last valid Plan and MUST NOT request
+  another Plan repair. Instead it MUST request the same one bounded
+  execution-only continuation defined by `JX-SIG-005`, so failed Plan
+  bookkeeping cannot terminate work that can still use ordinary Tools or
+  produce a substantive response. Failure of that execution-only request MUST
+  settle the Thread with a typed terminal error and no further continuation.
 - **JX-PLAN-010.** A successful model outcome containing one or more valid Plan
   changes but neither public text nor ordinary Tool calls MUST NOT settle the
   turn. The Plan changes MUST first commit as `plan.updated`; the ordinary Agent
   loop MUST then request the model again with the accepted Plan in context so
-  the model can produce public text or act through an ordinary Tool. The
+  the model can produce public text or act through an ordinary Tool. That
+  continuation MUST be execution-only: it MUST NOT expose Plan or progress
+  controls, because accepting control-plane bookkeeping cannot substitute for
+  ordinary work. The
   control-only outcome MUST NOT append an empty assistant message to model
   context, and a surface MUST NOT synthesize assistant prose in its place. The
   follow-up request MUST carry an Event-derived accepted-Plan receipt and the
   remaining obligation to respond or act, so the model can distinguish the
   committed Plan change from an unhandled user request and does not repeat the
   same Plan control without new evidence.
+- **JX-PLAN-011.** A Plan is the Agent's best current execution hypothesis, not
+  an immutable schedule. A `revise` proposal MAY add, remove, edit, split,
+  merge, or reorder steps that are still `pending`; any omitted top-level body
+  field, including `steps`, preserves its value from the accepted revision. It
+  MUST preserve every
+  already `completed` step by identity, description, completed status, relative
+  order, and existing evidence; later evidence MAY only append to that step.
+  The one `in_progress` step MUST NOT disappear, be renamed, or return to
+  `pending`; the revision MAY keep it in progress or transition it to
+  `completed`, `blocked`, or `skipped`, while preserving existing evidence.
+  These constraints protect observed work without freezing the unexecuted
+  route. A valid revision and ordinary Tool calls from the same model outcome
+  MUST commit the Plan first and then continue through those ordinary Effects
+  without a Plan-only continuation.
 
 ### 10.2 Context compilation and manifest
 
@@ -799,6 +868,25 @@ metadata. It is not the default for a new current-schema Agent.
   or cancellation MUST also settle at the same waiting boundary without losing
   the original Tool error evidence or redispatching any unknown Effect. Resolving
   fewer than all retained indeterminate Effects MUST NOT resume ordinary work.
+- **JX-CTX-020.** The final `tool.outcome_resolved` Event for one unknown Tool
+  set MUST create a `tool_outcome_resolved` continuation with Model Runtime
+  Context schema version 3. Its accepted receipt MUST list every resolution in
+  that set with resolution Event identity, original Effect, Tool and Tool-call
+  identity, decision, and bounded original error evidence. Provider adapters
+  MUST render that same provider-neutral receipt without converting it into a
+  native Tool result or user message. The Reducer MUST omit the prior
+  explanation-only assistant turn from the current and future model-message
+  projection after final resolution, and the compiled Context MUST preserve
+  that omission; otherwise providers that reject assistant
+  prefill or require a user/Tool-result terminal turn cannot continue. The
+  durable explanation Event and public transcript MUST NOT be deleted or
+  rewritten. The continuation MUST require the Agent to handle the accepted
+  resolutions and respond or act. It MUST prohibit
+  assuming success for `not_occurred` or `abandoned_unknown`, and prohibit
+  treating `occurred` or `abandoned_unknown` as permission to repeat the old
+  action. Those prohibitions constrain the continuation but do not create a
+  hidden retry or second policy engine; any later Tool call is a new Effect and
+  follows ordinary permission and durability rules.
 
 ### 10.3 Adaptive compaction and Continuity Handoff
 
@@ -898,16 +986,20 @@ continue safely without treating the compacted text as Thread authority.
   Driver I/O.
 - **JX-TOOL-010.** The first-party `web_search` Tool MUST use the Jina Search
   API through one typed, idempotent Tool definition. It MUST accept one bounded
-  query plus optional result-count and hostname constraint, pass that hostname
+  query plus an optional result count from one through ten and hostname
+  constraint, pass that hostname
   through Jina's documented `site` request field rather than interpolating a
   path-bearing search operator or using an undocumented header, request JSON
-  from the official Jina Search endpoint, and normalize each result to a title,
-  URL, description, bounded page content, and truncation fact. Jina's documented
-  no-results assertion MUST normalize to a successful empty result set rather
-  than a failed Tool outcome; every other malformed or rejected request remains
-  a typed failure. The Tool MUST bound upstream response bytes, per-result
-  content, total durable output, result count, and execution time before its
-  output enters an Event or model request. A missing Jina Key MUST fail
+  with `respondWith: "no-content"` from the official Jina Search endpoint, and
+  normalize each result to a bounded title, URL, description, description
+  truncation fact, and output-level truncation fact. Search is a discovery
+  boundary: fetched page content MUST NOT enter its Tool output, Event, or model
+  request, and a caller that needs source evidence uses `web_read`. Jina's
+  documented no-results assertion MUST normalize to a successful empty result
+  set rather than a failed Tool outcome; every other malformed or rejected
+  request remains a typed failure. The Tool MUST bound upstream response bytes,
+  per-result metadata, total durable metadata, result count, and execution time
+  before its output enters an Event or model request. A missing Jina Key MUST fail
   deterministically before network dispatch and identify
   `~/.jixu/settings.json` as the configuration surface. Credentials,
   Authorization headers, and unbounded upstream bodies MUST NOT enter Tool
@@ -916,7 +1008,16 @@ continue safely without treating the compacted text as Thread authority.
   through one typed, idempotent Tool definition for a caller-selected public
   HTTP(S) URL. It MUST reject embedded URL credentials, request bounded JSON
   from the official Reader endpoint, and normalize the resolved source URL,
-  title, description, bounded content, and truncation fact. It MUST use the
+  title, description, bounded content, and truncation fact. Its input MAY select
+  an integer `maxTokens` from 500 through 8,000; omission MUST use 4,000. The
+  selected limit MUST be sent through Jina's documented `x-max-tokens` request
+  boundary so oversized pages are trimmed rather than rejected, while the local
+  durable character bound remains an independent fail-closed guard. Reader
+  output MUST keep link anchor text inline, move deduplicated URLs to one link
+  summary, and drop images so repeated navigation and media markup do not consume
+  model context without evidence value. `contentTruncated` MUST be true when the
+  local character guard cuts content or Jina reports token usage at the selected
+  maximum. It MUST use the
   same immutable Jina credential closure and network-risk boundary as
   `web_search`, but remain a distinct Tool action so policy can allow, ask, or
   deny search and URL reading independently. Response bytes, durable content,
@@ -953,7 +1054,20 @@ continue safely without treating the compacted text as Thread authority.
   and validation expectations, destructive-action constraints, secret handling,
   scope discipline, efficiency expectations, and final-response contract. They
   MUST distinguish observable progress from hidden reasoning and MUST NOT ask
-  the model to manage provider caching itself.
+  the model to manage provider caching itself. A statement that merely promises
+  a future observable action MUST NOT be presented as satisfying the obligation
+  to act or provide the substantive response; when that action is still needed,
+  its ordinary Tool call belongs in the same model response.
+- **JX-AGENT-003.** The reference instructions MUST treat `web_search` metadata
+  as discovery rather than page evidence. When several independent relevant
+  URLs are already known, the Agent SHOULD request their `web_read` calls in its
+  next model response, rather than promising to read them or repeating discovery,
+  so the ordinary Harness dispatches one parallel Tool batch instead of paying
+  for a serial model continuation between independent reads.
+  After that batch the Agent MUST assess source authority, question coverage,
+  citation support, and material contradictions, and MAY read more when the
+  evidence is insufficient. Usage reduction MUST NOT override correctness or
+  evidence quality, and dependent reads MUST NOT be falsely parallelized.
 
 ## 12. Storage and recovery
 
@@ -1057,6 +1171,7 @@ A Thread exposes:
 - `interrupt()`
 - `pause()`
 - `continue()`
+- `resolveToolOutcome({ effectId, resolution })`
 - `setMode(mode)`
 - `fork({ at, input })`
 - `replay()`
@@ -1069,6 +1184,10 @@ A Thread exposes:
 - **JX-API-004.** Observation APIs MUST be usable without a UI framework.
 - **JX-API-005.** No compatibility alias for Runtime, Run, Session, or
   Conversation may be introduced during the pre-release rename.
+- **JX-API-006.** Outcome resolution MUST be exposed only through the selected
+  Thread. Callers provide the exact retained Effect ID and one typed decision;
+  they MUST NOT construct the resolution Event, remove pending Effects, or
+  dispatch a replacement Tool directly.
 
 ## 14. Reference TUI
 
@@ -1402,6 +1521,14 @@ not own execution truth.
   MUST NOT append duplicate interrupt intent. The interrupted partial response
   remains in transcript order, the Composer returns to ordinary input, and the
   TUI MUST NOT advertise `/continue` for that turn.
+- **JX-TUI-039.** When a Thread waits on an indeterminate Tool outcome, the
+  workspace MUST identify the next exact Tool Effect and expose `Occurred`,
+  `Not occurred`, and `Abandon unknown` actions through both primary-button
+  input and canonical `/resolve <occurred|not-occurred|abandon>` command
+  metadata. Each action MUST call `Thread.resolveToolOutcome`; the TUI MUST NOT
+  mutate State or dispatch a Tool itself. After a partial resolution the same
+  surface MUST advance to the next retained unknown Effect, and after the final
+  resolution it MUST disappear while the ordinary Agent continuation runs.
 
 Configuration uses one local BYOK settings file with restrictive POSIX
 permissions and never records secrets in Thread data.
@@ -1621,7 +1748,10 @@ implement another TUI, Harness, or Thread lifecycle.
   provider nevertheless proposes an invalid Plan change alongside response
   content or valid Tool calls, Replay observes `model.completed` followed by
   `plan.rejected`, the previous Plan remains active, and the Tool path proceeds
-  normally. The reference TUI keeps the active Plan outside transcript
+  normally. When that output has public text but no ordinary Tool, the text is
+  preserved but does not settle before rejection recovery; one bounded repair
+  request must still act or produce the substantive result. The reference TUI
+  keeps the active Plan outside transcript
   scrolling and reports only observable high-level work phases. If the model
   instead returns only a valid Plan change, Replay observes `model.completed`,
   then `plan.updated`, then a new `model.requested` whose input contains the
@@ -1665,8 +1795,13 @@ implement another TUI, Harness, or Thread lifecycle.
   Event-derived status without failing otherwise valid content, Plan changes, or
   Tool calls and without dispatching another model request. A response containing
   only progress control output records a typed, non-retryable `model.failed`
-  outcome instead of an empty `model.completed`, and dispatches no continuation
-  request.
+  outcome instead of an empty `model.completed`. The first such failure requests
+  one execution-only continuation whose provider request contains ordinary Tools
+  but neither reserved control. If that request produces ordinary Tool calls or
+  substantive public content, the Thread continues normally; if it again returns
+  only a reserved control or an empty response, the Thread settles with a typed
+  terminal error and no third attempt. Historical Effects keep their recorded
+  control exposure, and Replay dispatches no model Driver.
 - **JX-AC-035 — Accurate Agent contract and cache-stable context.** The
   reference Agent receives one versioned, immutable instruction prefix that
   accurately describes its current Harness, Tools, Plan, progress, safety,
@@ -1810,9 +1945,10 @@ implement another TUI, Harness, or Thread lifecycle.
   `settings.json`. A missing Jina Key invokes no fetch and returns the typed
   setup path and explains that Jixu must be restarted before the next Thread.
   A deterministic Jina fixture verifies Bearer authentication at the request
-  boundary without exposing the Key, normalized
-  search results with source URLs and page content, the documented hostname-only
-  `site` request field, result-count input, response and content truncation,
+  boundary without exposing the Key, normalized metadata-only
+  search results with source URLs and bounded descriptions, the documented
+  `respondWith: "no-content"` and hostname-only `site` request fields,
+  one-through-ten result-count input, response and metadata truncation,
   timeout, cancellation, malformed JSON, authentication, rate-limit, and
   upstream failure mapping. A recorded Jina `42206` no-results assertion
   produces `results: []` and one successful Tool outcome, while another HTTP
@@ -1962,10 +2098,14 @@ implement another TUI, Harness, or Thread lifecycle.
   Tool request cancelled before dispatch commits `tool.cancelled` and renders a
   cancelled receipt; that Event MUST NOT be used for a Tool whose Driver began.
 - **JX-AC-060 — Bounded Jina URL reading.** `web_read` accepts one public
-  HTTP(S) URL, rejects embedded credentials before dispatch, sends Bearer
-  authentication and the URL through the documented Jina Reader JSON request,
-  and returns the resolved source URL, title, description, bounded content, and
-  an exact truncation fact. Deterministic fixtures cover content and response
+  HTTP(S) URL plus an optional 500-through-8,000 token limit, rejects embedded
+  credentials before dispatch, sends Bearer authentication, the URL, the
+  selected 4,000-token default or override, and token-efficient link/media
+  shaping through the documented Jina Reader request, and returns the resolved
+  source URL, title, description, bounded content, and a truncation fact derived
+  from both the local character guard and Jina's reported token usage.
+  Deterministic fixtures cover default and overridden token limits, upstream
+  and local content truncation, response
   bounds, timeout, cancellation, malformed JSON, malformed or non-HTTP result
   URLs, authentication, rate limit, and upstream failure without exposing the
   Key or upstream body. The reference Tool catalogue presents `web_read` with
@@ -1974,6 +2114,49 @@ implement another TUI, Harness, or Thread lifecycle.
   accepted configuration may enable it normally. One ordinary Harness call
   records one durable `web_read` receipt whose bounded source preview survives
   reopen; Replay dispatches zero Reader requests.
+- **JX-AC-061 — Durable indeterminate outcome resolution.** A deterministic
+  parallel Tool batch with two indeterminate outcomes first produces one
+  explanation-only model continuation and enters `waiting` with both exact Tool
+  Effects retained. Resolving the first as `occurred` appends one
+  `tool.outcome_resolved`, removes only that Effect, performs zero Driver calls,
+  and remains `waiting` on the second. Resolving the second as
+  `abandoned_unknown` appends its own Event and creates exactly one model
+  request whose schema-v3 Runtime Context contains both accepted resolutions
+  and their original bounded failures. OpenAI Chat Completions and Anthropic
+  Messages render equivalent system receipt semantics; neither emits a second
+  native Tool result or synthetic user message. Its provider message history
+  ends with the original failed Tool receipt, not the earlier explanation-only
+  assistant turn, while that explanation remains visible in the durable public
+  transcript. The old Tool Effects are never redispatched, while a new
+  Tool call from the resolution continuation follows the ordinary durable Tool
+  and permission path. Replay invokes zero Drivers, recovery may resume only an
+  already-requested resolution continuation, and duplicate, wrong-Effect,
+  non-waiting, and invalid decisions fail closed. The reference TUI exposes the
+  same three decisions by command and primary-button input and advances across
+  multiple unknown Effects without losing their durable receipts.
+- **JX-AC-062 — Adaptive evidence retrieval.** A deterministic ordinary Harness
+  scenario first receives ten bounded `web_search` metadata candidates with no
+  fetched page content. Its next model response selects multiple independent
+  relevant URLs and emits their `web_read` calls together. Every Tool request is
+  durable before dispatch, the reads execute as one parallel batch, and exactly
+  one subsequent model request receives all successful bounded source bodies for
+  synthesis. The final answer can cite those resolved URLs, Replay performs zero
+  Jina requests, and a missing, weak, or contradictory source may trigger a later
+  ordinary read without creating a research lifecycle, hidden model call, or
+  second execution path.
+- **JX-AC-063 — Flexible Plan and bounded execution recovery.** A deterministic
+  four-step Plan completes its first step, reaches its second, then revises the
+  unexecuted route after new evidence: completed and in-progress facts remain
+  protected while pending steps are removed, edited, reordered, and added. The
+  accepted revision commits before an ordinary Tool proposed by the same model
+  outcome. Separate deterministic scenarios prove that an accepted Plan-only
+  outcome, a first progress-only `model.failed`, and an exhausted Plan repair
+  each converge on an execution-only model request whose OpenAI and Anthropic
+  provider Tool lists omit both reserved controls while retaining ordinary
+  Tools. At most one execution repair is requested; another control-only or
+  empty result settles with a typed error. Recovery resumes only an already
+  durable repair Effect, Replay dispatches zero Drivers, and schema 5-12
+  histories retain their recorded pre-repair control behavior.
 
 The minimum validation for a code change is targeted tests, typecheck, lint, and
 `git diff --check`. Release work also runs the complete acceptance suite and
@@ -2548,6 +2731,71 @@ boundary while retaining its pending Effect and Event error; it does not gain a
 schema-11 failed Tool message or dispatch work. This change adds no automatic
 retry policy, second state machine, provider-specific core semantics, settings
 migration, or dependency.
+
+Version 0.4.51 adds explicit durable resolution for retained indeterminate Tool
+outcomes. `Thread.resolveToolOutcome` accepts only one exact pending unknown
+Tool Effect and records `occurred`, `not_occurred`, or `abandoned_unknown` as a
+new `tool.outcome_resolved` operator fact. Partial resolution remains waiting;
+the final resolution creates one ordinary model continuation whose
+provider-neutral Runtime Context includes every accepted resolution and the
+original bounded failures. It never rewrites or redispatches the old Tool
+Effects and never fabricates native Tool output. The final resolution removes
+the earlier explanation-only assistant turn from the model-message projection
+to preserve provider turn validity, without removing its durable Event or TUI
+transcript entry. Event schema version 12 adds
+the resolution Event and Model Runtime Context schema version 3; schemas 5
+through 11 remain readable without rewriting and may append version 12 Events.
+Reducer version 18 invalidates disposable Checkpoints. The reference TUI adds
+one keyboard- and pointer-operable outcome-resolution surface. This change adds
+no automatic retry, exactly-once claim, new Tool permission, MCP adapter,
+sandbox, dependency, or configuration migration.
+
+Version 0.4.52 corrects the Jina research boundary after a live four-search
+workload carried 179,057 characters of fetched page content through five model
+requests and consumed 137,618 reported input tokens. Jina's documented and
+live-verified `respondWith: "no-content"` mode now makes `web_search` a broad
+metadata-only discovery Tool with up to ten candidates. The reference Agent
+selects relevant URLs and requests independent `web_read` calls together so the
+ordinary existing parallel Tool path supplies sufficient source bodies to one
+synthesis request; it may expand retrieval when evidence remains weak or
+contradictory. `web_search` output schema version 2 removes `content` and
+`contentTruncated` from each result and adds `descriptionTruncated`; package
+consumers use `web_read` for page evidence. The old search-content configuration
+bounds are replaced by description bounds. Event schema 12, Reducer version 18,
+settings schema 6, stored Events, and existing Tool permissions require no
+migration. Because the immutable Tool descriptor and reference instructions
+change, applications create a new Agent and Thread after upgrading. This adds no
+dependency, vector index, hidden model, research lifecycle, provider router, or
+second execution path.
+
+Version 0.4.53 makes an execution Plan explicitly provisional without allowing
+it to rewrite observed work. A revision may freely reshape pending steps, while
+completed steps and the current in-progress step retain stable identities,
+descriptions, status constraints, order, and append-only evidence. It also
+prevents reserved Plan or progress controls from permanently blocking ordinary
+work. New schema-13 model Effects use Runtime Context schema 4 to make control
+availability State-derived: Plan-repair requests expose only Plan control,
+while accepted-Plan and bounded control-only repairs expose neither reserved
+control and retain every ordinary Tool. A first progress-only `model.failed` or
+an exhausted Plan repair creates exactly one durable execution-only model
+request; failure or an empty outcome at that boundary terminates without
+another continuation. Historical schema 5-12 Effects retain their recorded
+pre-repair provider request behavior, and their Replay semantics do not gain a
+new model dispatch. A rejected Plan with public promise text and no ordinary
+Tool now remains running until the durable rejection recovery is processed,
+instead of allowing text to settle ahead of its control-plane cause. Jina
+`web_read` now defaults to the documented 4,000-token trimming boundary, permits
+a 500-through-8,000 per-call override, reports limit-reaching as truncation, and
+uses anchor text plus one deduplicated link summary while dropping images.
+The active-Plan control now treats `revise` as a sparse update whose omitted
+fields preserve the accepted revision, while `supersede` still requires a full
+replacement and `abandon` remains minimal. This removes a live-verified
+schema/validator contradiction that made Claude omit `assumptions` and burn
+repair continuations before editing, without using top-level JSON Schema
+combinators that Anthropic Messages and its routed providers reject.
+Reducer version 19 invalidates disposable Checkpoints. This change adds no
+provider-specific routing, hidden retry inside a Driver, settings migration,
+dependency, second Plan authority, or second execution path.
 
 ## 19. Implementation order
 

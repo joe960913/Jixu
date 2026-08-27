@@ -184,11 +184,15 @@ function toolSummary(operations: readonly ToolOperation[]): string {
   const indeterminate = operations.filter(
     (operation) => operation.status === "indeterminate",
   ).length;
+  const resolved = operations.filter(
+    (operation) => operation.status === "resolved",
+  ).length;
   return [
     succeeded > 0 ? `${succeeded} done` : null,
     cancelled > 0 ? `${cancelled} cancelled` : null,
     failed > 0 ? `${failed} failed` : null,
     indeterminate > 0 ? `${indeterminate} unknown` : null,
+    resolved > 0 ? `${resolved} resolved` : null,
   ].filter((part): part is string => part !== null).join(" · ");
 }
 
@@ -311,9 +315,11 @@ function ToolDetail({
           <text fg={jixuTheme.secondary}>
             <strong>
               {transient === undefined
-                ? operation.status === "failed" || operation.status === "indeterminate"
-                  ? "ERROR"
-                  : "OUTPUT"
+                ? operation.status === "resolved"
+                  ? "ORIGINAL ERROR"
+                  : operation.status === "failed" || operation.status === "indeterminate"
+                    ? "ERROR"
+                    : "OUTPUT"
                 : "LIVE OUTPUT"}
             </strong>
           </text>
@@ -404,7 +410,8 @@ function ToolLedger({
         (operation) =>
           operation.status === "cancelled" ||
           operation.status === "failed" ||
-          operation.status === "indeterminate",
+          operation.status === "indeterminate" ||
+          operation.status === "resolved",
       )
     : operations;
   const affordance = collapsed

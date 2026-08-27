@@ -56,6 +56,12 @@ export const JIXU_SLASH_COMMANDS: readonly JixuSlashCommand[] = Object.freeze([
     usage: "/deny",
   },
   {
+    description: "Resolve an unknown Tool outcome",
+    name: "/resolve",
+    requiresArguments: true,
+    usage: "/resolve <occurred|not-occurred|abandon>",
+  },
+  {
     description: "Inspect durable Events for the current Thread",
     name: "/events",
     requiresArguments: false,

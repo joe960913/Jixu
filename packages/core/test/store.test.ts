@@ -225,8 +225,8 @@ test("JX-AC-053 schema 7 requires mode while schema 6 remains readable as Standa
   );
 });
 
-test("JX-AC-056 JX-AC-059 schema 8 Context drafts remain readable while schemas 9 and 10 fail closed", () => {
-  assert.equal(CURRENT_EVENT_SCHEMA_VERSION, 11);
+test("JX-AC-056 JX-AC-059 JX-AC-061 JX-AC-063 schema 8 Context drafts remain readable while newer Events stay version-gated", () => {
+  assert.equal(CURRENT_EVENT_SCHEMA_VERSION, 13);
   const threadId = "thread-schema-8-context";
   const created = createThreadEvent({
     id: "event-created",
@@ -397,6 +397,36 @@ test("JX-AC-056 JX-AC-059 schema 8 Context drafts remain readable while schemas 
   assert.equal(decodeThreadEvent(toolCancelled).type, "tool.cancelled");
   assert.throws(
     () => decodeThreadEvent({ ...toolCancelled, schemaVersion: 9 }),
+    SchemaValidationError,
+  );
+  const outcomeResolved = createThreadEvent({
+    id: "event-tool-outcome-resolved",
+    payload: {
+      effectId: "effect-tool",
+      resolution: "abandoned_unknown",
+    },
+    threadId,
+    sequence: 6,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type: "tool.outcome_resolved",
+  });
+  assert.equal(
+    decodeThreadEvent(outcomeResolved).type,
+    "tool.outcome_resolved",
+  );
+  assert.throws(
+    () => decodeThreadEvent({ ...outcomeResolved, schemaVersion: 11 }),
+    SchemaValidationError,
+  );
+  assert.throws(
+    () =>
+      decodeThreadEvent({
+        ...outcomeResolved,
+        payload: {
+          ...outcomeResolved.payload,
+          resolution: "retry_automatically",
+        },
+      }),
     SchemaValidationError,
   );
 });

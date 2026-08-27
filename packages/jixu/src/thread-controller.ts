@@ -13,6 +13,7 @@ import type {
   ThreadInput,
   ToolApproval,
   ToolApprovalDecision,
+  ToolOutcomeResolutionDecision,
   ToolOutputDelta,
 } from "jixu-core";
 
@@ -21,6 +22,7 @@ import { projectThread } from "./thread-projection.ts";
 import { workStatusForEvent } from "./work-status.ts";
 import type {
   JixuTone,
+  PendingToolOutcomeResolution,
   ThreadControllerSnapshot,
   ThreadSummary,
   ToolLiveOutput,
@@ -157,6 +159,7 @@ export class ThreadController {
     toolApproval: null,
     toolLiveOutput: Object.freeze({}),
     toolOperations: Object.freeze([]),
+    toolOutcomeResolution: null,
     transcript: Object.freeze([]),
     workStatus: null,
   });
@@ -255,6 +258,31 @@ export class ThreadController {
     }
   }
 
+  async resolveToolOutcome(
+    resolution: ToolOutcomeResolutionDecision,
+  ): Promise<void> {
+    const thread = this.#requireThread();
+    if (thread === null) return;
+    const pending = this.#snapshot.toolOutcomeResolution;
+    if (pending === null) {
+      this.#notice("No unknown Tool outcome is waiting.");
+      return;
+    }
+    try {
+      this.#beginWork();
+      const state = await thread.resolveToolOutcome({
+        effectId: pending.effectId,
+        resolution,
+      });
+      await this.#sync(thread, state);
+      this.#showStableOutcome(state);
+    } catch (error) {
+      this.#notice(errorMessage(error), "ERROR", "danger");
+    } finally {
+      this.#endWork();
+    }
+  }
+
   async #command(input: string): Promise<void> {
     const [command] = input.split(/\s+/, 1);
     switch (command) {
@@ -289,6 +317,21 @@ export class ThreadController {
       case "/deny":
         await this.decideToolApproval("deny");
         return;
+      case "/resolve": {
+        const resolution = input.trim().split(/\s+/u)[1];
+        if (resolution === "occurred") {
+          await this.resolveToolOutcome("occurred");
+        } else if (resolution === "not-occurred") {
+          await this.resolveToolOutcome("not_occurred");
+        } else if (resolution === "abandon") {
+          await this.resolveToolOutcome("abandoned_unknown");
+        } else {
+          this.#notice(
+            "Use /resolve <occurred|not-occurred|abandon>.",
+          );
+        }
+        return;
+      }
       case "/events":
         await this.#inspectEvents();
         return;
@@ -510,6 +553,7 @@ export class ThreadController {
       })),
       threadStatus: state.status,
       toolApproval: this.#currentApproval(state),
+      toolOutcomeResolution: this.#currentOutcomeResolution(state),
       toolLiveOutput: Object.freeze({}),
       toolOperations: state.status === "running" ? projection.toolOperations : [],
       workStatus: null,
@@ -552,7 +596,8 @@ export class ThreadController {
             if (
               item.event.type === "tool.cancelled" ||
               item.event.type === "tool.completed" ||
-              item.event.type === "tool.failed"
+              item.event.type === "tool.failed" ||
+              item.event.type === "tool.outcome_resolved"
             ) {
               this.#discardToolOutput(item.event.payload.effectId);
               updates.toolLiveOutput = removeToolLiveOutput(
@@ -631,6 +676,7 @@ export class ThreadController {
       streamingText: "",
       threadStatus: currentState.status,
       toolApproval: this.#currentApproval(currentState),
+      toolOutcomeResolution: this.#currentOutcomeResolution(currentState),
     });
   }
 
@@ -640,6 +686,54 @@ export class ThreadController {
         (approval) => approval.decision === null,
       ) ?? null
     );
+  }
+
+  #currentOutcomeResolution(
+    state: ThreadState,
+  ): PendingToolOutcomeResolution | null {
+    if (
+      state.status !== "waiting" ||
+      state.waitingReason?.reasonCode !== "effect_outcome_unknown"
+    ) {
+      return null;
+    }
+    const effect = state.pendingEffects[state.waitingReason.effectId];
+    if (effect?.type !== "tool.execute") return null;
+    const failure = state.messages.findLast(
+      (message) =>
+        message.role === "tool" &&
+        "error" in message &&
+        message.disposition === "indeterminate" &&
+        message.name === effect.input.name &&
+        message.toolCallId === effect.input.toolCallId,
+    );
+    if (
+      failure === undefined ||
+      failure.role !== "tool" ||
+      !("error" in failure)
+    ) {
+      return null;
+    }
+    const unresolved = Object.values(state.pendingEffects).filter(
+      (candidate) =>
+        candidate.type === "tool.execute" &&
+        state.messages.some(
+          (message) =>
+            message.role === "tool" &&
+            "error" in message &&
+            message.disposition === "indeterminate" &&
+            message.name === candidate.input.name &&
+            message.toolCallId === candidate.input.toolCallId,
+        ),
+    );
+    return Object.freeze({
+      effectId: effect.id,
+      errorCode: failure.error.code,
+      name: effect.input.name,
+      position: state.toolOutcomeResolutions.length + 1,
+      toolCallId: effect.input.toolCallId,
+      total: state.toolOutcomeResolutions.length + unresolved.length,
+    });
   }
 
   #showStableOutcome(state: ThreadState): void {

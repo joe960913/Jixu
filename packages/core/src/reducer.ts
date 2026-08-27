@@ -3,6 +3,7 @@ import type {
   DriverError,
   ThreadState,
   ToolCall,
+  ToolOutcomeResolution,
 } from "./domain.ts";
 import { createInitialThreadState } from "./domain.ts";
 import type {
@@ -17,7 +18,9 @@ import {
 } from "./effects.ts";
 import {
   compileContext,
+  MAX_CONTROL_REPAIR_ATTEMPTS,
   MAX_PLAN_REPAIR_ATTEMPTS,
+  MODEL_CONTROL_CONTEXT_SCHEMA_VERSION,
 } from "./context.ts";
 import type { ModelContinuation } from "./context.ts";
 import {
@@ -39,7 +42,7 @@ import {
   samePlan,
 } from "./plan.ts";
 
-export const REDUCER_VERSION = 17;
+export const REDUCER_VERSION = 19;
 
 export interface TransitionResult {
   readonly effects: readonly EffectRequest[];
@@ -178,6 +181,91 @@ function retainedIndeterminateToolEffects(
       ),
     )
     .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function resolutionForEffect(
+  state: ThreadState,
+  effect: ToolExecuteEffect,
+  event: Extract<AnyThreadEvent, { readonly type: "tool.outcome_resolved" }>,
+): ToolOutcomeResolution {
+  const requestIndex = state.messageSources.findIndex(
+    (source, index) =>
+      source.eventId === effect.requestedByEventId &&
+      state.messages[index]?.role === "assistant",
+  );
+  if (requestIndex < 0) {
+    throw new InvalidTransitionError(
+      `Tool Effect ${effect.id} has no durable request provenance`,
+    );
+  }
+  const index = state.messages.findIndex(
+    (message, messageIndex) =>
+      messageIndex > requestIndex &&
+      message.role === "tool" &&
+      "error" in message &&
+      message.disposition === "indeterminate" &&
+      message.name === effect.input.name &&
+      message.toolCallId === effect.input.toolCallId,
+  );
+  const message = state.messages[index];
+  if (
+    message === undefined ||
+    message.role !== "tool" ||
+    !("error" in message)
+  ) {
+    throw new InvalidTransitionError(
+      `Tool Effect ${effect.id} has no indeterminate failure evidence`,
+    );
+  }
+  return Object.freeze({
+    effectId: effect.id,
+    error: message.error,
+    eventId: event.id,
+    resolution: event.payload.resolution,
+    sequence: event.sequence,
+    toolCallId: effect.input.toolCallId,
+    toolName: effect.input.name,
+  });
+}
+
+function withoutLatestIndeterminateExplanation(
+  state: ThreadState,
+  resolutions: readonly ToolOutcomeResolution[],
+): Pick<ThreadState, "messages" | "messageSources"> {
+  const explanationIndex = state.messages.length - 1;
+  const explanation = state.messages[explanationIndex];
+  if (
+    explanation === undefined ||
+    explanation.role !== "assistant" ||
+    explanation.toolCalls.length > 0
+  ) {
+    return {
+      messages: state.messages,
+      messageSources: state.messageSources,
+    };
+  }
+  const hasResolvedFailure = state.messages.some(
+    (message, index) =>
+      index < explanationIndex &&
+      message.role === "tool" &&
+      "error" in message &&
+      message.disposition === "indeterminate" &&
+      resolutions.some(
+        (resolution) =>
+          resolution.toolCallId === message.toolCallId &&
+          resolution.toolName === message.name,
+      ),
+  );
+  if (!hasResolvedFailure) {
+    return {
+      messages: state.messages,
+      messageSources: state.messageSources,
+    };
+  }
+  return {
+    messages: state.messages.slice(0, explanationIndex),
+    messageSources: state.messageSources.slice(0, explanationIndex),
+  };
 }
 
 function hasUnresolvedPendingToolEffect(state: ThreadState): boolean {
@@ -368,6 +456,19 @@ function createContextEffect(
   };
 }
 
+function isExecutionOnlyControlEffect(effect: ModelGenerateEffect): boolean {
+  const runtime = effect.input.runtimeContext;
+  return (
+    runtime?.schemaVersion === MODEL_CONTROL_CONTEXT_SCHEMA_VERSION &&
+    (runtime.continuation.reason === "control_only_repair" ||
+      runtime.continuation.reason === "plan_updated")
+  );
+}
+
+function isProgressOnlyFailure(error: DriverError): boolean {
+  return !error.retryable && error.code.endsWith("_progress_only");
+}
+
 function createToolEffect(
   state: ThreadState,
   call: ToolCall,
@@ -547,6 +648,7 @@ function settleTurn(
         pauseRequested: false,
         readyEffects: [],
         status: "idle",
+        toolOutcomeResolutions: [],
       }),
     };
   }
@@ -570,6 +672,7 @@ function settleTurn(
     planRepairAttempts: 0,
     result: null,
     status: "running",
+    toolOutcomeResolutions: [],
     waitingReason: null,
   });
   const effects = [
@@ -634,6 +737,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           result: null,
           status: "idle",
           toolApprovals: {},
+          toolOutcomeResolutions: [],
           waitingReason: null,
         }),
       };
@@ -724,6 +828,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           pendingPlanRejections: [],
           pendingPlanUpdates: [],
           result: null,
+          toolOutcomeResolutions: [],
           toolApprovals: {},
           waitingReason: null,
         }),
@@ -1057,11 +1162,17 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
       requireStatus(state, event.type, "running");
       const retry = state.pendingEffects[event.payload.effect.id] !== undefined;
       const accepted = acceptRequest(state, event.payload.effect);
+      const acceptsOutcomeResolutions =
+        event.payload.effect.input.runtimeContext?.continuation.reason ===
+        "tool_outcome_resolved";
       return {
         effects: [],
         state: advance(state, event.sequence, {
           ...accepted,
           metrics: recordEffectRequest(state.metrics, "model", retry),
+          toolOutcomeResolutions: acceptsOutcomeResolutions
+            ? []
+            : state.toolOutcomeResolutions,
         }),
       };
     }
@@ -1112,6 +1223,30 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           result: hasContent ? response.content : null,
         });
         return waitForIndeterminateToolOutcomes(nextState, event.sequence);
+      }
+      if (
+        isExecutionOnlyControlEffect(completedEffect) &&
+        response.content.trim().length === 0 &&
+        response.toolCalls.length === 0
+      ) {
+        const nextState = advance(state, event.sequence, {
+          metrics: recordModelAccounting(
+            recordEffectOutcome(state.metrics, "model", "succeeded"),
+            event.payload.accounting,
+          ),
+          pendingEffects: remaining,
+          pendingPlanRejections: [],
+          pendingPlanUpdates: [],
+        });
+        return settleTurn(nextState, event.sequence, {
+          error: {
+            code: "model_control_repair_exhausted",
+            message:
+              "Execution-only model continuation returned only control output or an empty response",
+            retryable: false,
+          },
+          result: null,
+        });
       }
       const identitySeed = `sequence-${event.sequence}`;
       const repairAttempt =
@@ -1170,6 +1305,8 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         response.content.trim().length === 0 &&
         response.toolCalls.length === 0 &&
         (pendingPlanUpdates.length > 0 || pendingPlanRejections.length > 0);
+      const awaitsPlanRejection =
+        response.toolCalls.length === 0 && pendingPlanRejections.length > 0;
       const metrics = recordModelAccounting(
         recordEffectOutcome(state.metrics, "model", "succeeded"),
         event.payload.accounting,
@@ -1196,7 +1333,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         pendingPlanRejections,
         pendingPlanUpdates,
       });
-      if (planOnlyControl) {
+      if (planOnlyControl || awaitsPlanRejection) {
         return { effects: [], state: nextState };
       }
       if (response.toolCalls.length === 0) {
@@ -1375,15 +1512,26 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         event.payload.repairAttempt !== undefined &&
         repairAttempt > MAX_PLAN_REPAIR_ATTEMPTS
       ) {
-        return settleTurn(nextState, event.sequence, {
-          error: {
+        const error: DriverError = {
             code: "plan_repair_exhausted",
             message:
               "Plan control correction limit reached; the last accepted Plan was preserved",
             retryable: false,
-          },
-          result: null,
-        });
+        };
+        const effects = [
+          createContextEffect(
+            nextState,
+            {
+              attempt: MAX_CONTROL_REPAIR_ATTEMPTS,
+              error,
+              eventId: event.id,
+              reason: "control_only_repair",
+              receiptType: "plan.rejected",
+            },
+            0,
+          ),
+        ];
+        return withReadyEffects(nextState, event.sequence, effects);
       }
       const effects = [
         createContextEffect(
@@ -1436,6 +1584,26 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
           advance(nextState, event.sequence, { result: null }),
           event.sequence,
         );
+      }
+      if (
+        event.payload.disposition === "failed" &&
+        isProgressOnlyFailure(event.payload.error) &&
+        !isExecutionOnlyControlEffect(effect)
+      ) {
+        const effects = [
+          createContextEffect(
+            nextState,
+            {
+              attempt: MAX_CONTROL_REPAIR_ATTEMPTS,
+              error: event.payload.error,
+              eventId: event.id,
+              reason: "control_only_repair",
+              receiptType: "model.failed",
+            },
+            0,
+          ),
+        ];
+        return withReadyEffects(nextState, event.sequence, effects);
       }
       return settleTurn(
         nextState,
@@ -1649,6 +1817,78 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         toolCallId: event.payload.toolCallId,
         toolName: event.payload.name,
       });
+    }
+
+    case "tool.outcome_resolved": {
+      requireStatus(state, event.type, "waiting");
+      if (state.waitingReason?.reasonCode !== "effect_outcome_unknown") {
+        throw new InvalidTransitionError(
+          `Thread ${state.threadId} is not waiting on an unknown Tool outcome`,
+        );
+      }
+      const effect = state.pendingEffects[event.payload.effectId];
+      if (
+        effect === undefined ||
+        effect.type !== "tool.execute" ||
+        !isRetainedIndeterminateToolEffect(
+          effect,
+          state.messages,
+          state.messageSources,
+        )
+      ) {
+        throw new InvalidTransitionError(
+          `Tool Effect ${event.payload.effectId} is not retained as indeterminate`,
+        );
+      }
+      const resolution = resolutionForEffect(state, effect, event);
+      const pendingEffects = removePending(
+        state,
+        event.payload.effectId,
+        "tool.execute",
+      );
+      const resolutions = [...state.toolOutcomeResolutions, resolution];
+      const nextState = advance(state, event.sequence, {
+        pendingEffects,
+        readyEffects: [],
+        toolOutcomeResolutions: resolutions,
+      });
+      const unresolved = retainedIndeterminateToolEffects(nextState);
+      const first = unresolved[0];
+      if (first !== undefined) {
+        return {
+          effects: [],
+          state: advance(nextState, event.sequence, {
+            status: "waiting",
+            waitingReason: {
+              effectId: first.id,
+              reasonCode: "effect_outcome_unknown",
+            },
+          }),
+        };
+      }
+      if (Object.keys(pendingEffects).length > 0) {
+        throw new InvalidTransitionError(
+          `Thread ${state.threadId} has non-resolution pending Effects`,
+        );
+      }
+      const resumed = advance(nextState, event.sequence, {
+        error: null,
+        ...withoutLatestIndeterminateExplanation(nextState, resolutions),
+        status: "running",
+        waitingReason: null,
+      });
+      const effects = [
+        createContextEffect(
+          resumed,
+          {
+            eventId: event.id,
+            reason: "tool_outcome_resolved",
+            resolutions,
+          },
+          0,
+        ),
+      ];
+      return withReadyEffects(resumed, event.sequence, effects);
     }
 
     default: {

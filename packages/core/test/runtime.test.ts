@@ -9,6 +9,7 @@ import {
   defineSchema,
   defineTool,
   InMemoryEventStore,
+  materializePlanUpdates,
   replayEvents,
   ToolExecutionError,
 } from "../src/index.ts";
@@ -84,6 +85,252 @@ function planUpdate(
     })),
   };
 }
+
+test("JX-PLAN-011 JX-AC-063 Plan revision protects observed work and reshapes pending steps", () => {
+  const objective = "Ship the verified change";
+  const initial = materializePlanUpdates(
+    null,
+    [
+      {
+        acceptanceCriteria: ["The behavior is verified"],
+        assumptions: ["The first approach may change"],
+        blockers: [],
+        nextAction: "Inspect the failure",
+        objective,
+        operation: "create",
+        steps: [
+          {
+            description: "Read the specification",
+            evidence: ["SPEC.md"],
+            id: "spec",
+            status: "completed",
+          },
+          {
+            description: "Inspect the failing path",
+            evidence: ["failure-1"],
+            id: "inspect",
+            status: "in_progress",
+          },
+          {
+            description: "Apply the assumed patch",
+            evidence: [],
+            id: "patch",
+            status: "pending",
+          },
+          {
+            description: "Run the assumed checks",
+            evidence: [],
+            id: "checks",
+            status: "pending",
+          },
+        ],
+      },
+    ],
+    "initial",
+  )[0];
+  assert.ok(initial !== undefined);
+
+  const revisedProposal: PlanUpdateProposal = {
+    acceptanceCriteria: ["The behavior is verified"],
+    assumptions: [],
+    blockers: [],
+    nextAction: "Prove the corrected design",
+    objective,
+    operation: "revise",
+    steps: [
+      {
+        description: "Read the specification",
+        evidence: ["SPEC.md", "JX-PLAN-011"],
+        id: "spec",
+        status: "completed",
+      },
+      {
+        description: "Inspect the failing path",
+        evidence: ["failure-1", "root-cause"],
+        id: "inspect",
+        status: "completed",
+      },
+      {
+        description: "Implement the corrected design",
+        evidence: [],
+        id: "corrected-design",
+        status: "in_progress",
+      },
+      {
+        description: "Run focused recovery checks",
+        evidence: [],
+        id: "recovery-checks",
+        status: "pending",
+      },
+    ],
+  };
+  const revised = materializePlanUpdates(
+    initial,
+    [revisedProposal],
+    "revision",
+  )[0];
+  assert.deepEqual(
+    revised?.steps.map((step) => [step.id, step.status]),
+    [
+      ["spec", "completed"],
+      ["inspect", "completed"],
+      ["corrected-design", "in_progress"],
+      ["recovery-checks", "pending"],
+    ],
+  );
+  assert.throws(
+    () =>
+      materializePlanUpdates(
+        initial,
+        [{ ...revisedProposal, steps: revisedProposal.steps.slice(1) }],
+        "remove-completed",
+      ),
+    /cannot remove a completed step/,
+  );
+  assert.throws(
+    () =>
+      materializePlanUpdates(
+        initial,
+        [
+          {
+            ...revisedProposal,
+            steps: revisedProposal.steps.map((step) =>
+              step.id === "inspect"
+                ? { ...step, description: "Rename observed work" }
+                : step,
+            ),
+          },
+        ],
+        "rename-current",
+      ),
+    /cannot rename the in-progress step/,
+  );
+});
+
+test("JX-PLAN-011 JX-AC-063 revised route commits before its ordinary Tool", async () => {
+  let executions = 0;
+  const inspect = defineTool({
+    description: "Inspect the next execution boundary",
+    execute: () => {
+      executions += 1;
+      return `inspection-${executions}`;
+    },
+    idempotency: "idempotent",
+    input: objectSchema,
+    name: "inspect",
+    output: stringSchema,
+  });
+  const objective = "Implement and verify the adaptive route";
+  const common = {
+    acceptanceCriteria: ["The adaptive route is verified"],
+    assumptions: [],
+    blockers: [],
+    objective,
+  } as const;
+  const model = new SequenceModelDriver([
+    succeed({
+      content: "",
+      planUpdates: [
+        {
+          ...common,
+          nextAction: "Inspect the baseline",
+          operation: "create" as const,
+          steps: [
+            { description: "Inspect the baseline", evidence: [], id: "s1", status: "in_progress" as const },
+            { description: "Try the assumed implementation", evidence: [], id: "s2", status: "pending" as const },
+            { description: "Apply the assumed patch", evidence: [], id: "s3", status: "pending" as const },
+            { description: "Run the assumed checks", evidence: [], id: "s4", status: "pending" as const },
+          ],
+        },
+      ],
+      toolCalls: [{ arguments: {}, id: "inspect-1", name: "inspect" }],
+    }),
+    succeed({
+      content: "",
+      planUpdates: [
+        {
+          ...common,
+          nextAction: "Test the assumption",
+          operation: "revise" as const,
+          steps: [
+            { description: "Inspect the baseline", evidence: ["inspection-1"], id: "s1", status: "completed" as const },
+            { description: "Try the assumed implementation", evidence: [], id: "s2", status: "in_progress" as const },
+            { description: "Apply the assumed patch", evidence: [], id: "s3", status: "pending" as const },
+            { description: "Run the assumed checks", evidence: [], id: "s4", status: "pending" as const },
+          ],
+        },
+      ],
+      toolCalls: [{ arguments: {}, id: "inspect-2", name: "inspect" }],
+    }),
+    succeed({
+      content: "",
+      planUpdates: [
+        {
+          ...common,
+          blockers: ["The assumed implementation failed"],
+          nextAction: "Implement the corrected route",
+          operation: "revise" as const,
+          steps: [
+            { description: "Inspect the baseline", evidence: ["inspection-1"], id: "s1", status: "completed" as const },
+            { description: "Try the assumed implementation", evidence: ["inspection-2"], id: "s2", status: "blocked" as const },
+            { description: "Implement the corrected route", evidence: [], id: "corrected", status: "in_progress" as const },
+            { description: "Verify the corrected route", evidence: [], id: "verify", status: "pending" as const },
+          ],
+        },
+      ],
+      toolCalls: [{ arguments: {}, id: "inspect-3", name: "inspect" }],
+    }),
+    succeed({
+      content: "The corrected route is implemented and ready for final verification.",
+      planUpdates: [
+        {
+          ...common,
+          blockers: [],
+          nextAction: "Verify the corrected route",
+          operation: "revise" as const,
+          steps: [
+            { description: "Inspect the baseline", evidence: ["inspection-1"], id: "s1", status: "completed" as const },
+            { description: "Try the assumed implementation", evidence: ["inspection-2"], id: "s2", status: "blocked" as const },
+            { description: "Implement the corrected route", evidence: ["inspection-3"], id: "corrected", status: "completed" as const },
+            { description: "Verify the corrected route", evidence: [], id: "verify", status: "in_progress" as const },
+          ],
+        },
+      ],
+      toolCalls: [],
+    }),
+  ]);
+  const thread = await createHarness({
+    agent: agentWith([inspect]),
+    modelDrivers: { mock: model },
+  }).createThread();
+
+  const state = await thread.send("Adapt the implementation when evidence changes");
+  const events = await thread.events();
+  const routeRevisionIndex = events.findIndex(
+    (event) =>
+      event.type === "plan.updated" &&
+      event.payload.plan.steps.some((step) => step.id === "corrected"),
+  );
+  const correctedToolIndex = events.findIndex(
+    (event) =>
+      event.type === "tool.requested" &&
+      event.payload.effect.input.toolCallId === "inspect-3",
+  );
+
+  assert.equal(executions, 3);
+  assert.equal(state.activePlan?.steps.some((step) => step.id === "s3"), false);
+  assert.deepEqual(
+    state.activePlan?.steps.map((step) => [step.id, step.status]),
+    [
+      ["s1", "completed"],
+      ["s2", "blocked"],
+      ["corrected", "completed"],
+      ["verify", "in_progress"],
+    ],
+  );
+  assert.ok(routeRevisionIndex >= 0);
+  assert.ok(routeRevisionIndex < correctedToolIndex);
+});
 
 test("JX-AC-001 JX-AC-002 JX-AC-014 Tool use and later send continue one Thread", async () => {
   const store = new InMemoryEventStore();
@@ -595,7 +842,7 @@ test("JX-AC-004 JX-AC-005 JX-AC-039 JX-AC-049 indeterminate Tool failure is expl
   );
 });
 
-test("JX-AC-005 JX-AC-049 multiple indeterminate Tool outcomes share one constrained explanation", async () => {
+test("JX-AC-005 JX-AC-049 JX-AC-061 parallel indeterminate Tool outcomes resolve one at a time and continue once", async () => {
   let executions = 0;
   const unknownTool = (name: string) =>
     defineTool({
@@ -627,10 +874,16 @@ test("JX-AC-005 JX-AC-049 multiple indeterminate Tool outcomes share one constra
         { arguments: {}, id: "must-not-run", name: "unknown_first" },
       ],
     }),
+    succeed({
+      content: "The operator resolution facts are recorded.",
+      toolCalls: [],
+    }),
   ]);
+  const store = new InMemoryEventStore();
   const thread = await createHarness({
     agent: agentWith([first, second]),
     modelDrivers: { mock: model },
+    store,
   }).createThread();
 
   const state = await thread.send("Run both unknown Tools");
@@ -712,6 +965,150 @@ test("JX-AC-005 JX-AC-049 multiple indeterminate Tool outcomes share one constra
     assert.equal(explanation.payload.response.planUpdates?.length, 1);
   }
   assert.deepEqual(await thread.replay(), state);
+
+  const firstEffectId = state.waitingReason?.effectId;
+  assert.ok(firstEffectId !== undefined);
+  await assert.rejects(
+    thread.resolveToolOutcome({
+      effectId: firstEffectId,
+      resolution: "retry_automatically" as never,
+    }),
+    /Unknown Tool outcome resolution retry_automatically/,
+  );
+  const partial = await thread.resolveToolOutcome({
+    effectId: firstEffectId,
+    resolution: "occurred",
+  });
+  assert.equal(partial.status, "waiting");
+  assert.equal(partial.toolOutcomeResolutions.length, 1);
+  assert.equal(partial.toolOutcomeResolutions[0]?.resolution, "occurred");
+  assert.equal(Object.keys(partial.pendingEffects).length, 1);
+  assert.equal(model.effects.length, 2);
+  assert.equal(executions, 2);
+  const partialExplanation = partial.messages.at(-1);
+  assert.equal(
+    partialExplanation?.role === "assistant"
+      ? partialExplanation.content
+      : null,
+    "Both Tool outcomes are unknown; no further action was taken.",
+  );
+  assert.deepEqual(await thread.replay(), partial);
+  await assert.rejects(
+    thread.resolveToolOutcome({
+      effectId: firstEffectId,
+      resolution: "occurred",
+    }),
+    /is not awaiting outcome resolution/,
+  );
+
+  const secondEffectId = partial.waitingReason?.effectId;
+  assert.ok(secondEffectId !== undefined);
+  const resolved = await thread.resolveToolOutcome({
+    effectId: secondEffectId,
+    resolution: "abandoned_unknown",
+  });
+  const resolvedEvents = await thread.events();
+  const resolutionEvents = resolvedEvents.filter(
+    (event) => event.type === "tool.outcome_resolved",
+  );
+  const resolutionContext = model.effects[2]?.input.runtimeContext;
+
+  assert.equal(resolved.status, "idle");
+  assert.equal(resolved.result, "The operator resolution facts are recorded.");
+  assert.equal(resolved.error, null);
+  assert.equal(resolved.toolOutcomeResolutions.length, 0);
+  assert.equal(Object.keys(resolved.pendingEffects).length, 0);
+  assert.equal(model.effects.length, 3);
+  assert.equal(executions, 2);
+  assert.equal(resolutionEvents.length, 2);
+  assert.equal(
+    resolvedEvents.filter((event) => event.type === "tool.requested").length,
+    2,
+  );
+  assert.equal(
+    resolvedEvents.filter((event) => event.type === "model.requested").length,
+    3,
+  );
+  assert.equal(resolutionContext?.schemaVersion, 3);
+  assert.equal(
+    resolutionContext?.continuation.reason,
+    "tool_outcome_resolved",
+  );
+  assert.deepEqual(resolutionContext?.obligations, [
+    "handle_resolved_tool_outcomes",
+    "respond_or_act",
+  ]);
+  assert.deepEqual(resolutionContext?.prohibitions, [
+    "assume_failed_tool_succeeded",
+    "repeat_resolved_tool_action",
+  ]);
+  assert.deepEqual(
+    resolutionContext?.continuation.receipt.toolResolutions?.map(
+      (resolution) => ({
+        effectId: resolution.effectId,
+        errorCode: resolution.error.code,
+        resolution: resolution.resolution,
+        toolCallId: resolution.toolCallId,
+        toolName: resolution.toolName,
+      }),
+    ),
+    [
+      {
+        effectId: firstEffectId,
+        errorCode: "tool_driver_exception",
+        resolution: "occurred",
+        toolCallId: "unknown-1",
+        toolName: "unknown_first",
+      },
+      {
+        effectId: secondEffectId,
+        errorCode: "tool_driver_exception",
+        resolution: "abandoned_unknown",
+        toolCallId: "unknown-2",
+        toolName: "unknown_second",
+      },
+    ],
+  );
+  assert.equal(
+    model.effects[2]?.input.messages.filter(
+      (message) => message.role === "tool",
+    ).length,
+    2,
+  );
+  assert.ok(
+    model.effects[2]?.input.messages
+      .filter((message) => message.role === "tool")
+      .every((message) => "error" in message),
+  );
+  assert.equal(model.effects[2]?.input.messages.at(-1)?.role, "tool");
+  assert.equal(
+    model.effects[2]?.input.messages.some(
+      (message) =>
+        message.role === "assistant" &&
+        message.content ===
+          "Both Tool outcomes are unknown; no further action was taken.",
+    ),
+    false,
+  );
+  assert.equal(
+    resolved.messages.some(
+      (message) =>
+        message.role === "assistant" &&
+        message.content ===
+          "Both Tool outcomes are unknown; no further action was taken.",
+    ),
+    false,
+  );
+  assert.equal(
+    resolvedEvents.some(
+      (event) =>
+        event.type === "model.completed" &&
+        event.payload.response.content ===
+          "Both Tool outcomes are unknown; no further action was taken.",
+    ),
+    true,
+  );
+  assert.deepEqual(await thread.replay(), resolved);
 });
 
 test("JX-AC-005 indeterminate explanation failure preserves the unknown Tool wait", async () => {
@@ -1013,9 +1410,12 @@ test("JX-AC-031 Plan-only control commits before a model-generated public contin
     },
   );
   assert.deepEqual(model.effects[1]?.input.runtimeContext?.obligations, [
-    "respond_or_act",
+    "execute_or_respond",
   ]);
+  assert.equal(model.effects[1]?.input.runtimeContext?.schemaVersion, 4);
+  assert.equal(model.effects[1]?.input.runtimeContext?.controlRepair, null);
   assert.deepEqual(model.effects[1]?.input.runtimeContext?.prohibitions, [
+    "perform_plan_or_progress_controls",
     "repeat_accepted_plan_change",
   ]);
   assert.equal(
@@ -1040,6 +1440,38 @@ test("JX-AC-031 Plan-only control commits before a model-generated public contin
       "model.requested",
       "model.completed",
     ],
+  );
+});
+
+test("JX-AC-034 JX-AC-063 an empty execution-only continuation terminates without looping", async () => {
+  const model = new SequenceModelDriver([
+    succeed({
+      content: "",
+      planUpdates: [
+        planUpdate(
+          "create",
+          "Execute the verified change",
+          ["in_progress", "pending"],
+          "Inspect",
+        ),
+      ],
+      toolCalls: [],
+    }),
+    succeed({ content: "", toolCalls: [] }),
+  ]);
+  const thread = await createHarness({
+    agent: agentWith(),
+    modelDrivers: { mock: model },
+  }).createThread();
+
+  const state = await thread.send("Execute the change");
+  assert.equal(state.status, "idle");
+  assert.equal(state.error?.code, "model_control_repair_exhausted");
+  assert.equal(model.effects.length, 2);
+  assert.equal(
+    (await thread.events()).filter((event) => event.type === "model.requested")
+      .length,
+    2,
   );
 });
 
@@ -1098,8 +1530,11 @@ test("JX-AC-031 rejected Plan-only control feeds correction back to the model", 
     limit: 1,
   });
   assert.deepEqual(model.effects[1]?.input.runtimeContext?.prohibitions, [
+    "perform_progress_control",
     "repeat_rejected_plan_change",
   ]);
+  assert.equal(model.effects[1]?.input.runtimeContext?.schemaVersion, 4);
+  assert.equal(model.effects[1]?.input.runtimeContext?.controlRepair, null);
   assert.deepEqual(
     model.effects[1]?.input.planControl,
     model.effects[0]?.input.planControl,
@@ -1122,7 +1557,7 @@ test("JX-AC-031 rejected Plan-only control feeds correction back to the model", 
   );
 });
 
-test("JX-AC-049 repeated invalid Plan repair settles without an unbounded model loop", async () => {
+test("JX-AC-049 JX-AC-063 exhausted Plan repair gets one execution-only continuation", async () => {
   const rejection = {
     code: "plan_update_invalid",
     message: "Plan control call-invalid.steps[0] must be a JSON object",
@@ -1133,7 +1568,15 @@ test("JX-AC-049 repeated invalid Plan repair settles without an unbounded model 
     status: "succeeded" as const,
     value: { content: "", planUpdates: [], toolCalls: [] },
   };
-  const model = new SequenceModelDriver([invalid, invalid]);
+  const publicPromise = "I have enough evidence and will now deliver the report.";
+  const model = new SequenceModelDriver([
+    invalid,
+    {
+      ...invalid,
+      value: { ...invalid.value, content: publicPromise },
+    },
+    succeed({ content: "I handled the request without another Plan.", toolCalls: [] }),
+  ]);
   const thread = await createHarness({
     agent: agentWith(),
     modelDrivers: { mock: model },
@@ -1143,9 +1586,38 @@ test("JX-AC-049 repeated invalid Plan repair settles without an unbounded model 
   const events = await thread.events();
 
   assert.equal(state.status, "idle");
-  assert.equal(state.error?.code, "plan_repair_exhausted");
+  assert.equal(state.error, null);
+  assert.equal(state.result, "I handled the request without another Plan.");
   assert.equal(state.planRepairAttempts, 2);
-  assert.equal(model.effects.length, 2);
+  assert.equal(model.effects.length, 3);
+  assert.deepEqual(
+    state.messages.filter((message) => message.role === "assistant").map(
+      (message) => message.content,
+    ),
+    [publicPromise, "I handled the request without another Plan."],
+  );
+  assert.equal(
+    model.effects[2]?.input.runtimeContext?.continuation.reason,
+    "control_only_repair",
+  );
+  assert.deepEqual(
+    model.effects[2]?.input.runtimeContext?.continuation.receipt,
+    {
+      errorCode: "plan_repair_exhausted",
+      errorMessage:
+        "Plan control correction limit reached; the last accepted Plan was preserved",
+      errorRetryable: false,
+      eventId: events[7]?.id,
+      type: "plan.rejected",
+    },
+  );
+  assert.deepEqual(model.effects[2]?.input.runtimeContext?.controlRepair, {
+    attempt: 1,
+    limit: 1,
+  });
+  assert.deepEqual(model.effects[2]?.input.runtimeContext?.obligations, [
+    "execute_or_respond",
+  ]);
   assert.deepEqual(
     events.map((event) => event.type),
     [
@@ -1157,10 +1629,89 @@ test("JX-AC-049 repeated invalid Plan repair settles without an unbounded model 
       "model.requested",
       "model.completed",
       "plan.rejected",
+      "model.requested",
+      "model.completed",
     ],
   );
   assert.equal(
     events.filter((event) => event.type === "model.requested").length,
+    3,
+  );
+});
+
+test("JX-SIG-005 JX-AC-034 JX-AC-063 progress-only failure gets one durable execution repair", async () => {
+  const model = new SequenceModelDriver([
+    fail("mock_progress_only", "Only progress control was returned"),
+    succeed({ content: "The requested work is now complete.", toolCalls: [] }),
+  ]);
+  const thread = await createHarness({
+    agent: agentWith(),
+    modelDrivers: { mock: model },
+  }).createThread();
+
+  const state = await thread.send("Complete the work");
+  const events = await thread.events();
+  assert.equal(state.error, null);
+  assert.equal(state.result, "The requested work is now complete.");
+  assert.equal(model.effects.length, 2);
+  assert.deepEqual(
+    model.effects[1]?.input.runtimeContext?.continuation.receipt,
+    {
+      errorCode: "mock_progress_only",
+      errorMessage: "Only progress control was returned",
+      errorRetryable: false,
+      eventId: events[3]?.id,
+      type: "model.failed",
+    },
+  );
+  assert.equal(model.effects[1]?.input.runtimeContext?.schemaVersion, 4);
+  assert.deepEqual(model.effects[1]?.input.runtimeContext?.controlRepair, {
+    attempt: 1,
+    limit: 1,
+  });
+  assert.deepEqual(model.effects[1]?.input.runtimeContext?.prohibitions, [
+    "perform_plan_or_progress_controls",
+  ]);
+  assert.deepEqual(
+    events.map((event) => event.type),
+    [
+      "thread.created",
+      "input.received",
+      "model.requested",
+      "model.failed",
+      "model.requested",
+      "model.completed",
+    ],
+  );
+  const repairRequest = events.findLast(
+    (event) => event.type === "model.requested",
+  );
+  assert.ok(repairRequest !== undefined);
+  assert.throws(
+    () => decodeThreadEvent({ ...repairRequest, schemaVersion: 12 }),
+    /requires Event schema 13/,
+  );
+  await thread.replay();
+  assert.equal(model.effects.length, 2);
+});
+
+test("JX-SIG-005 JX-AC-034 JX-AC-063 execution repair failure settles without a third model call", async () => {
+  const model = new SequenceModelDriver([
+    fail("mock_progress_only", "Only progress control was returned"),
+    fail("mock_progress_only", "Only progress control was returned again"),
+  ]);
+  const thread = await createHarness({
+    agent: agentWith(),
+    modelDrivers: { mock: model },
+  }).createThread();
+
+  const state = await thread.send("Complete the work");
+  assert.equal(state.status, "idle");
+  assert.equal(state.error?.code, "mock_progress_only");
+  assert.equal(model.effects.length, 2);
+  assert.equal(
+    (await thread.events()).filter((event) => event.type === "model.requested")
+      .length,
     2,
   );
 });
@@ -1205,6 +1756,14 @@ test("JX-AC-031 malformed Plan metadata retries without model.failed and can aba
   assert.deepEqual(
     model.effects[1]?.input.planControl.inputSchema.required,
     ["operation"],
+  );
+  const activePlanSchema = JSON.stringify(
+    model.effects[1]?.input.planControl.inputSchema,
+  );
+  assert.doesNotMatch(activePlanSchema, /"oneOf"|"allOf"|"anyOf"/);
+  assert.match(
+    model.effects[1]?.input.planControl.description ?? "",
+    /omitted revise fields preserve their accepted values/,
   );
   assert.equal(cancelEvents.some((event) => event.type === "model.failed"), false);
   assert.deepEqual(

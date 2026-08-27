@@ -11,6 +11,7 @@ import {
   ArtifactError,
   EMPTY_MODEL_ACCOUNTING,
   isJsonObject,
+  modelControlProjection,
   MODEL_PROGRESS_SIGNAL_TYPE,
   parsePlanControlUpdate,
   parseProgressUpdate,
@@ -58,6 +59,29 @@ export type {
 const ANTHROPIC_VERSION = "2023-06-01";
 const DEFAULT_ANTHROPIC_MAX_TOKENS = 4096;
 type UltraReasoningEffort = "high" | "xhigh";
+
+function exposedModelTools(
+  effect: ModelGenerateEffect,
+): readonly (ToolDescriptor | PlanControlDescriptor | ProgressControlDescriptor)[] {
+  const runtime = effect.input.runtimeContext;
+  if (runtime === undefined) {
+    return [
+      ...effect.input.tools,
+      effect.input.planControl,
+      effect.input.progressControl,
+    ];
+  }
+  const controls = modelControlProjection(
+    runtime,
+    effect.input.planControl,
+    effect.input.progressControl,
+  );
+  return [
+    ...effect.input.tools,
+    ...(controls.planControl === null ? [] : [controls.planControl]),
+    ...(controls.progressControl === null ? [] : [controls.progressControl]),
+  ];
+}
 
 export type LLMApi = LLMCapabilityApi;
 
@@ -122,7 +146,7 @@ export interface AnthropicMessagesRequest {
   readonly stream: true;
   readonly system?: string | readonly AnthropicTextBlock[];
   readonly thinking?: { readonly type: "adaptive" };
-  readonly tools: readonly AnthropicTool[];
+  readonly tools?: readonly AnthropicTool[];
 }
 
 export interface AnthropicMessagesClient {
@@ -198,6 +222,14 @@ function modelRuntimeContext(
       `Accepted causal receipt: ${JSON.stringify(runtime.continuation.receipt)}`,
       `Remaining obligations: ${runtime.obligations.join(", ")}`,
     );
+    if (
+      runtime.obligations.includes("execute_or_respond") ||
+      runtime.obligations.includes("respond_or_act")
+    ) {
+      context.push(
+        "If more work or evidence is needed, call the required ordinary Tools in this response. Otherwise provide the substantive final answer now. Announcing a future action without its Tool call does not satisfy this obligation.",
+      );
+    }
     if (runtime.prohibitions.length > 0) {
       context.push(`Do not repeat: ${runtime.prohibitions.join(", ")}`);
     }
@@ -1059,11 +1091,7 @@ class OpenAIChatCompletionsModelDriver implements ModelDriver {
     effect: ModelGenerateEffect,
     context: ModelDriverContext,
   ): Promise<ModelOutcome> {
-    const tools = [
-      ...effect.input.tools,
-      effect.input.planControl,
-      effect.input.progressControl,
-    ].map(toChatTool);
+    const tools = exposedModelTools(effect).map(toChatTool);
     let messages: ChatCompletionMessageParam[];
     try {
       messages = await toChatMessages(
@@ -1094,7 +1122,7 @@ class OpenAIChatCompletionsModelDriver implements ModelDriver {
             : {}),
           stream: true,
           stream_options: { include_usage: true },
-          tools,
+          ...(tools.length === 0 ? {} : { tools }),
         },
         { signal: context.cancellation },
       );
@@ -1661,6 +1689,7 @@ class AnthropicMessagesModelDriver implements ModelDriver {
       effect.input.planRejectionFeedback,
       effect.input.continuityHandoff,
     );
+    const tools = exposedModelTools(effect).map(toAnthropicTool);
     let messages: AnthropicMessage[];
     try {
       messages = await toAnthropicMessages(
@@ -1696,11 +1725,7 @@ class AnthropicMessagesModelDriver implements ModelDriver {
             : {}),
           stream: true,
           ...(system === undefined ? {} : { system }),
-          tools: [
-            ...effect.input.tools,
-            effect.input.planControl,
-            effect.input.progressControl,
-          ].map(toAnthropicTool),
+          ...(tools.length === 0 ? {} : { tools }),
         },
         { signal: context.cancellation },
       );

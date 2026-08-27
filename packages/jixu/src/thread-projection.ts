@@ -180,6 +180,14 @@ export function eventActivity(
         label: "Tool failed",
         tone: "danger",
       };
+    case "tool.outcome_resolved":
+      return {
+        ...base,
+        detail: `${event.payload.effectId} · ${event.payload.resolution}`,
+        kind: "tool",
+        label: "Tool outcome resolved",
+        tone: event.payload.resolution === "occurred" ? "success" : "warning",
+      };
     case "thread.pause_requested":
       return { ...base, kind: "control", label: "Pause requested", tone: "warning" };
     case "thread.paused":
@@ -304,7 +312,8 @@ export function projectThread(
     if (
       event.type === "tool.cancelled" ||
       event.type === "tool.completed" ||
-      event.type === "tool.failed"
+      event.type === "tool.failed" ||
+      event.type === "tool.outcome_resolved"
     ) {
       const operationIndex = toolOperations.findIndex(
         (operation) => operation.effectId === event.payload.effectId,
