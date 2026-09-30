@@ -1,3 +1,5 @@
+import { createSkillContext } from "./skill.ts";
+import type { SkillContext, SkillDefinition } from "./skill.ts";
 import { contextPolicyFor } from "./context-policy.ts";
 import type { ContextPolicy } from "./context-policy.ts";
 import { modelCapabilityProfileFor } from "./model-capabilities.ts";
@@ -33,6 +35,7 @@ export const MODEL_CONTEXT_SCHEMA_VERSION = 1;
 export const MODEL_RUNTIME_CONTEXT_SCHEMA_VERSION = 2;
 export const MODEL_OUTCOME_RESOLUTION_CONTEXT_SCHEMA_VERSION = 3;
 export const MODEL_CONTROL_CONTEXT_SCHEMA_VERSION = 4;
+export const MODEL_SKILL_CONTEXT_SCHEMA_VERSION = 5;
 export const MAX_PLAN_REPAIR_ATTEMPTS = 1;
 export const MAX_CONTROL_REPAIR_ATTEMPTS = 1;
 
@@ -50,6 +53,7 @@ export interface ModelMessageSource extends ContextBoundary {}
 
 export type ModelContinuationReason =
   | "control_only_repair"
+  | "skill_activated"
   | "input_received"
   | "plan_rejected"
   | "plan_updated"
@@ -88,6 +92,7 @@ export interface ModelContextReceipt {
   readonly toolName?: string;
   readonly toolResolutions?: readonly ToolOutcomeResolution[];
   readonly type:
+    | "model.completed"
     | "input.received"
     | "model.failed"
     | "plan.rejected"
@@ -113,7 +118,7 @@ export interface ModelRuntimeContext {
     readonly limit: number;
   } | null;
   readonly prohibitions: readonly ModelContextProhibition[];
-  readonly schemaVersion: 1 | 2 | 3 | 4;
+  readonly schemaVersion: 1 | 2 | 3 | 4 | 5;
 }
 
 export type ModelContextSourceKind =
@@ -124,6 +129,8 @@ export type ModelContextSourceKind =
   | "message"
   | "messages"
   | "runtime"
+  | "skill_catalogue"
+  | "skill"
   | "tools";
 
 export interface ModelContextSourceManifest {
@@ -211,6 +218,7 @@ export interface AcceptedContinuityHandoff {
 }
 
 export type ModelContinuation =
+  | { readonly eventId: string; readonly reason: "skill_activated" }
   | { readonly eventId: string; readonly reason: "input_received" }
   | {
       readonly attempt: number;
@@ -249,6 +257,7 @@ export type ModelContinuation =
     };
 
 export interface ContextCompactionInput {
+  readonly activeSkills?: readonly SkillDefinition[];
   readonly activePlan: PlanSnapshot | null;
   readonly clearBoundary: ContextBoundary | null;
   readonly continuation: ModelContinuation;
@@ -289,6 +298,8 @@ function receiptFor(continuation: ModelContinuation): ModelContextReceipt {
         eventId: continuation.eventId,
         type: continuation.receiptType,
       };
+    case "skill_activated":
+      return { eventId: continuation.eventId, type: "model.completed" };
     case "input_received":
       return { eventId: continuation.eventId, type: "input.received" };
     case "plan_updated":
@@ -424,6 +435,7 @@ function runtimeContext(
                   ? ["assume_failed_tool_succeeded"]
                   : [],
     schemaVersion:
+      continuation.reason === "skill_activated" ? MODEL_SKILL_CONTEXT_SCHEMA_VERSION :
       repairingControl || repairing || continuation.reason === "plan_updated"
         ? MODEL_CONTROL_CONTEXT_SCHEMA_VERSION
         : resolvingToolOutcomes
@@ -600,6 +612,7 @@ function selectRawTail(
 }
 
 function modelInputEstimate(input: {
+  readonly skills?: SkillContext;
   readonly activePlan: PlanSnapshot | null;
   readonly handoff: ContinuityHandoff | null;
   readonly instructions: string;
@@ -616,6 +629,7 @@ function modelInputEstimate(input: {
 }
 
 function logicalRequestDigest(input: {
+  readonly skills?: SkillContext;
   readonly activePlan: PlanSnapshot | null;
   readonly continuityHandoff: ContinuityHandoff | null;
   readonly contextPolicy: ContextPolicy;
@@ -631,6 +645,21 @@ function logicalRequestDigest(input: {
   readonly tools: readonly ToolDescriptor[];
 }): string {
   return jsonDigest(input);
+}
+
+function activeSkillSources(state: ThreadState): readonly ModelContextSourceManifest[] {
+  return state.activatedSkills.map(({ skill, eventId }) => source({
+    causedByEventId: eventId,
+    digest: skill.descriptor.digest,
+    disposition: "included",
+    estimatedTokens: estimateContextTokens(skill),
+    id: `skill:${skill.descriptor.name}`,
+    kind: "skill",
+    priority: 95,
+    reason: "exact progressively activated instructional body",
+    sensitivity: "internal",
+    version: skill.descriptor.version,
+  }));
 }
 
 function modelCompilation(
@@ -655,7 +684,13 @@ function modelCompilation(
       candidate.source.sequence > boundary && selected.has(candidate.index),
   );
   const messages = selectedCandidates.map((candidate) => candidate.message);
+  const skills = agent.skills === undefined || agent.skills.length === 0 ? undefined : createSkillContext(
+    agent.skills, state.activatedSkills.map(entry => entry.skill),
+    !["tool_indeterminate", "plan_rejected", "plan_updated", "control_only_repair"].includes(runtime.continuation.reason),
+  );
+  const skillFields = skills === undefined ? {} : { skills };
   const estimatedInputTokens = modelInputEstimate({
+    ...skillFields,
     activePlan: state.activePlan,
     handoff,
     instructions: agent.instructions,
@@ -670,6 +705,18 @@ function modelCompilation(
     policy.reservedOutputTokens -
     policy.safetyMarginTokens;
   const sources: ModelContextSourceManifest[] = [
+    ...(skills === undefined ? [] : [source({
+      causedByEventId: null,
+      digest: jsonDigest(skills.catalogue),
+      disposition: "included",
+      estimatedTokens: estimateContextTokens({ catalogue: skills.catalogue, control: skills.control }),
+      id: "skill-catalogue",
+      kind: "skill_catalogue",
+      priority: 95,
+      reason: "immutable Skill catalogue and available activation control",
+      sensitivity: "internal",
+      version: "agent-snapshot",
+    }), ...activeSkillSources(state)]),
     source({
       causedByEventId: null,
       digest: jsonDigest({
@@ -791,6 +838,7 @@ function modelCompilation(
     }),
   );
   const digest = logicalRequestDigest({
+    ...skillFields,
     activePlan: state.activePlan,
     continuityHandoff: handoff,
     contextPolicy: policy,
@@ -825,6 +873,7 @@ function modelCompilation(
   };
   return {
     activePlan: state.activePlan,
+    ...skillFields,
     contextManifest: manifest,
     continuityHandoff: handoff,
     instructions: agent.instructions,
@@ -917,6 +966,7 @@ export function compileContext(
     ...(state.activePlanSource === null
       ? []
       : [state.activePlanSource.eventId]),
+    ...state.activatedSkills.map(entry => entry.eventId),
     ...resolutionSources.map((resolution) => resolution.eventId),
     ...compacted.map((candidate) => candidate.source.eventId),
   ].filter((eventId, index, values) => values.indexOf(eventId) === index);
@@ -930,6 +980,7 @@ export function compileContext(
     ...(state.activePlanSource === null
       ? []
       : [state.activePlanSource.sequence]),
+    ...state.activatedSkills.map(entry => entry.sequence),
     ...resolutionSources.map((resolution) => resolution.sequence),
     ...compacted.map((candidate) => candidate.source.sequence),
   ];
@@ -942,6 +993,7 @@ export function compileContext(
     state.acceptedHandoff?.handoff.source.messageThroughSequence ??
     0;
   const sourceManifest: ModelContextSourceManifest[] = [
+    ...activeSkillSources(state),
     ...(state.acceptedHandoff === null
       ? []
       : [
@@ -1004,6 +1056,7 @@ export function compileContext(
   return {
     input: {
       activePlan: state.activePlan,
+      ...(state.activatedSkills.length === 0 ? {} : { activeSkills: state.activatedSkills.map(entry => entry.skill) }),
       clearBoundary: state.contextClearBoundary,
       continuation,
       model: agent.model,
@@ -1443,6 +1496,7 @@ export function copyModelContextForFork(
               eventId: mapEventId(input.contextManifest.activeClearBoundary.eventId),
             },
       logicalRequestDigest: logicalRequestDigest({
+        ...(input.skills === undefined ? {} : { skills: input.skills }),
         activePlan: input.activePlan,
         continuityHandoff,
         contextPolicy: {

@@ -25,6 +25,49 @@ expect {
   eof { exit 1 }
   timeout { exit 124 }
 }
+# JX-AC-066: exercise the compiled, credential-free Configuration entry.
+send -- "/config\r"
+expect {
+  -re {Model connection} {}
+  eof { exit 1 }
+  timeout { exit 124 }
+}
+send -- "\033OQ"
+expect {
+  -re {Tool Center} {}
+  eof { exit 1 }
+  timeout { exit 124 }
+}
+send -- "\033OQ"
+expect {
+  -re {LOCAL SETTINGS} {}
+  eof { exit 1 }
+  timeout { exit 124 }
+}
+send -- "\016"
+expect {
+  -re {Edit Skill} {}
+  eof { exit 1 }
+  timeout { exit 124 }
+}
+send -- "\033"
+expect {
+  -re {LOCAL SETTINGS} {}
+  eof { exit 1 }
+  timeout { exit 124 }
+}
+send -- "\033OQ"
+expect {
+  -re {Model connection} {}
+  eof { exit 1 }
+  timeout { exit 124 }
+}
+send -- "\033"
+expect {
+  -re {Model not configured} {}
+  eof { exit 1 }
+  timeout { exit 124 }
+}
 send -- "/quit\r"
 expect eof
 set wait_status [wait]
@@ -126,6 +169,10 @@ export async function verifyCliExecutable(binaryPath: string): Promise<void> {
     );
     assert.match(output, /Model not configured/u);
     assert.match(output, /use \/config/u);
+    if (process.platform === "darwin") {
+      assert.match(output, /LOCAL SETTINGS/u);
+      assert.match(output, /Edit Skill/u);
+    }
   } finally {
     await rm(root, { force: true, recursive: true });
   }

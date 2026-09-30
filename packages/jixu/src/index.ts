@@ -1,3 +1,5 @@
+export { jixuSkills, parseJixuSkills } from "./config-skills.ts";
+export type { JixuSkillSettings } from "./config-skills.ts";
 export {
   DEFAULT_JIXU_TOOL_SETTINGS,
   effectiveJixuToolPermission,

@@ -63,7 +63,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createHarness, defineAgent } from "jixu-core";
+import { createHarness, defineAgent, defineSkill } from "jixu-core";
 import { createLLMModelDriver } from "jixu-llm";
 import { JsonlEventStore } from "jixu-store-jsonl";
 import { SqliteEventStore } from "jixu-store-sqlite";
@@ -74,16 +74,30 @@ import {
   createJinaWebSearchTool,
 } from "jixu-tools-jina";
 import { createNodeTools } from "jixu-tools-node";
-import { JixuConfigStore } from "jixu-ai";
+import { JixuConfigStore, jixuSkills } from "jixu-ai";
 
 assert.equal(process.version, "v${nodeFloorVersion}");
 const root = await mkdtemp(join(tmpdir(), "jixu-installed-smoke-"));
 try {
+  // JX-AC-065: same released artifacts, ordinary public activation and JSONL recovery.
+  // JX-AC-066: persisted settings use the same public conversion as the native CLI.
+  const settings = new JixuConfigStore(join(root, "settings"));
+  const empty = await settings.load();
+  const entry = { name: "portability", description: "Installed package acceptance", version: "1", instructions: "Reply portable after reading this Skill.", enabled: true };
+  await settings.saveConnection({ api: "openai-chat-completions", apiKey: "fixture", baseUrl: "https://example.test/v1", model: "fixture", tools: empty.tools, skills: [entry, { ...entry, name: "disabled", enabled: false }] });
+  const loaded = await new JixuConfigStore(settings.directory).load();
+  assert.equal(loaded.skills.length, 2);
+  const skills = jixuSkills(loaded.skills);
+  assert.equal(skills.length, 1);
+  const skill = skills[0];
+  assert.ok(skill);
   const model = new SequenceModelDriver([
+    { status: "succeeded", value: { content: "", skillActivation: "portability", toolCalls: [] } },
     { status: "succeeded", value: { content: "portable", toolCalls: [] } },
   ]);
   const agent = defineAgent({
     instructions: "Prove the installed package can execute.",
+    skills: [skill],
     model: { provider: "fixture", model: "deterministic" },
     modelCapabilities: {
       contextWindowTokens: 32_768,
@@ -93,9 +107,18 @@ try {
     },
     tools: [],
   });
-  const harness = createHarness({ agent, modelDrivers: { fixture: model } });
+  const store = new JsonlEventStore(join(root, "skill-thread"));
+  const harness = createHarness({ agent, store, modelDrivers: { fixture: model } });
   const thread = await harness.createThread();
-  assert.equal((await thread.send("package portability")).status, "idle");
+  const state = await thread.send("package portability");
+  assert.equal(state.status, "idle");
+  assert.equal(state.error, null);
+  assert.deepEqual(model.effects[0].input.skills.active, []);
+  assert.deepEqual(model.effects[1].input.skills.active, [skill]);
+  assert.equal(state.activatedSkills.length, 1);
+  assert.deepEqual(await thread.replay(), state);
+  const reopened = await createHarness({ agent, store: new JsonlEventStore(join(root, "skill-thread")), checkpoints: false, modelDrivers: {} }).openThread(thread.id);
+  assert.deepEqual(await reopened.state(), state);
 
   const jsonl = new JsonlEventStore(join(root, "jsonl"));
   await jsonl.createThread("jsonl-import-smoke");
@@ -123,7 +146,7 @@ try {
 
 function typeConsumer(): string {
   return `
-import { createHarness, defineAgent, type ModelDriver } from "jixu-core";
+import { createHarness, defineAgent, defineSkill, type ModelDriver } from "jixu-core";
 import { createLLMModelDriver } from "jixu-llm";
 import { JsonlEventStore } from "jixu-store-jsonl";
 import { SqliteEventStore } from "jixu-store-sqlite";
@@ -134,11 +157,12 @@ import {
   createJinaWebSearchTool,
 } from "jixu-tools-jina";
 import { createNodeTools } from "jixu-tools-node";
-import { JixuConfigStore } from "jixu-ai";
+import { JixuConfigStore, jixuSkills } from "jixu-ai";
 
 const fixture: ModelDriver = new SequenceModelDriver([]);
 const agent = defineAgent({
   instructions: "Type-check the installed public API.",
+  skills: [defineSkill({ name: "format", description: "Output formatting", version: "1", instructions: "Use concise prose." })],
   model: { provider: "fixture", model: "deterministic" },
   modelCapabilities: {
     contextWindowTokens: 32_768,
@@ -159,6 +183,7 @@ void createNodeTools;
 void createJinaWebSearchTool;
 void createJinaWebReadTool;
 void JixuConfigStore;
+void jixuSkills;
 void createLLMModelDriver;
 `;
 }

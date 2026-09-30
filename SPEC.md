@@ -1,8 +1,8 @@
 # Jixu Single-Agent Harness Specification
 
-**Version:** 0.4.54
+**Version:** 0.4.58
 **Status:** normative, pre-1.0
-**Last updated:** 2026-08-28
+**Last updated:** 2026-09-30
 
 ## 1. Product definition
 
@@ -334,9 +334,9 @@ interface ThreadEvent<TType extends string, TPayload> {
 - **JX-EVT-004.** Events MUST be immutable after append.
 - **JX-EVT-005.** Correlation metadata MAY group work but MUST NOT replace
   Thread or Event identity.
-- **JX-EVT-006.** Event schema version 13 is the current Thread schema. Versions
-  5 through 12 remain readable for their historical Event shapes so existing
-  Threads can continue by appending version 13 Events. Version 5 MUST reject
+- **JX-EVT-006.** Event schema version 14 is the current Thread schema. Versions
+  5 through 13 remain readable for their historical Event shapes so existing
+  Threads can continue by appending version 14 Events. Version 5 MUST reject
   structured input fields introduced by version 6; versions 5 and 6 MUST reject
   mode fields and `thread.mode_changed` introduced by version 7; and versions 5
   through 7 MUST reject bounded Context fields and compaction Events introduced
@@ -346,7 +346,7 @@ interface ThreadEvent<TType extends string, TPayload> {
   earliest pre-release Agent snapshots and model requests MAY omit bounded
   Context fields. Those known omissions are interpreted with the frozen
   32,768/4,096 portable profile and derived default Context Policy without
-  rewriting stored Events. Schemas 9 through 13 require both immutable Agent
+  rewriting stored Events. Schemas 9 through 14 require both immutable Agent
   fields and a capability-bearing bounded Context Manifest. Schema 10 adds durable
   turn interruption plus the `model.cancelled` and pre-dispatch
   `tool.cancelled` outcomes; those Event types MUST be rejected under every
@@ -358,8 +358,10 @@ interface ThreadEvent<TType extends string, TPayload> {
   continuation; both MUST be rejected under every earlier schema. Schema 13
   adds Model Runtime Context schema 4 and the `control_only_repair`
   continuation, including State-derived reserved-control exposure; those shapes
-  MUST be rejected under every earlier schema. Every other Event schema version
-  MUST fail closed.
+  MUST be rejected under every earlier schema. Schema 14 adds Skill catalogue,
+  activation outcome and Context fields plus Runtime Context schema 5 for
+  `skill_activated`; these MUST be rejected under schemas 5 through 13. Every
+  other Event schema version MUST fail closed.
 
 The v0.4 families are:
 
@@ -601,6 +603,22 @@ routing authority.
   while a hard-limit or matcher change MUST advance that entry's profile revision.
   The audit metadata MUST NOT add a runtime network request, mutable registry,
   provider routing authority, or fallback for an unknown model.
+- **JX-PROV-013.** Both first-party protocols MUST render accepted causal
+  receipts as completed coordination facts with a concrete remaining action.
+  After `plan_updated`, the model-facing context MUST explain that the Plan
+  change has already been applied and that hiding reserved controls prevents
+  duplicate bookkeeping, not ordinary work or confirmation of the accepted
+  change. After `tool_outcome_resolved`, it MUST explain that the earlier
+  unknown-outcome wait is resolved by the recorded operator decisions. It MUST
+  distinguish accepting uncertainty from confirming an external success and
+  MUST NOT invite the same resolution decision again. This rendering changes
+  neither the original failed Tool result nor the immutable Agent instructions.
+  Anthropic Messages MUST additionally place the bounded operator-decision
+  receipt after all `tool_result` blocks in the existing final user message.
+  This is transport context derived from the same durable resolution, not a new
+  user input, Tool output, message in State, or Event. Only operator decisions
+  and their Tool/Effect identities belong in that text; untrusted Tool output
+  and error bodies MUST remain inside their original `tool_result` blocks.
 
 ## 9. Continuity operations
 
@@ -874,7 +892,10 @@ metadata. It is not the default for a new current-schema Agent.
   that set with resolution Event identity, original Effect, Tool and Tool-call
   identity, decision, and bounded original error evidence. Provider adapters
   MUST render that same provider-neutral receipt without converting it into a
-  native Tool result or user message. The Reducer MUST omit the prior
+  native Tool result or an additional user message. The Anthropic transport
+  annotation specified by `JX-PROV-013` is a text block in the existing final
+  Tool-result message and does not enter the model-message projection in State.
+  The Reducer MUST omit the prior
   explanation-only assistant turn from the current and future model-message
   projection after final resolution, and the compiled Context MUST preserve
   that omission; otherwise providers that reject assistant
@@ -1056,6 +1077,55 @@ continue safely without treating the compacted text as Thread authority.
 - **JX-SKILL-003.** Skill content MUST be activated progressively. Its version
   and digest MUST be materialized before the content enters a model request or
   Continuity Handoff.
+  Applications configure immutable Skills with `defineSkill({ name, description,
+  version, instructions })` and `defineAgent({ skills })`. Names are unique
+  lowercase ASCII slugs (1-64 characters); descriptions are 1-512 characters,
+  versions 1-64 characters, and bodies 1-16,384 UTF-8 bytes. An Agent accepts
+  at most 16 Skills and 65,536 body bytes in total. Catalogue descriptors contain
+  name, description, version, byte length and the existing canonical JSON
+  drift-detection digest; the digest is not a security signature. Omitted and
+  empty catalogues are equivalent for historical Agent recovery.
+- **JX-SKILL-004.** The model sees catalogue metadata initially, with the reserved
+  `jixu_activate_skill` control when at least one Skill remains inactive. An
+  Agent with a non-empty Skill catalogue MUST reserve that name. Agents without
+  Skills retain ordinary Tools with that historical name; their persisted Tool
+  calls MUST NOT be reinterpreted as Skill activation. A
+  model response MAY request exactly one inactive name using `skillActivation`.
+  It MUST NOT combine that request with ordinary Tool calls or Plan proposals
+  (including rejected Plan controls). Activation is unavailable during unknown
+  Tool-outcome explanation, Plan repair, and execution-only control recovery.
+  The Dispatcher resolves the name against the immutable Agent and materializes
+  the exact body in `model.completed.payload.activatedSkill` before append.
+  The Reducer validates the descriptor and digest, derives activated Skills from
+  that same Event, and requests the next model continuation only afterward.
+  No Tool Effect, file read, callback or second activation history is involved.
+  Unknown, repeated, malformed, mixed or unavailable activation requests produce
+  a non-retryable model failure; they never execute sibling Tools. A chain can
+  activate each catalogue entry at most once before clear, bounding control-only
+  activation by the catalogue size. Prose accompanying a valid activation remains
+  in the durable outcome and public transcript, but MUST be omitted from the
+  current and future model-message projection. Activation is not a final answer;
+  the accepted Runtime Context supplies its receipt without assistant prefill or
+  an invented user input. This preserves the same provider continuation boundary
+  as `JX-CTX-020`. Provider rendering MUST identify the activation receipt as
+  internal coordination and direct the model to honor the user's requested
+  output format rather than narrate activation unless asked about it.
+- **JX-SKILL-005.** Activated bodies remain instructional Context until durable
+  clear, which removes them together with the active Handoff while retaining the
+  immutable catalogue. Every model request accounts for catalogue, activation
+  control and active bodies in its digest and input budget. The Manifest records
+  catalogue and individual Skill provenance, version, digest and token estimate;
+  an active body cannot be silently dropped or replaced by a lossy summary.
+  Compaction receives only previously materialized active bodies and their
+  source Events. Handoff facts may reference those Events, while later requests
+  retain the exact active bodies independently of the Handoff. Replay needs no
+  Skill loader or Driver; Fork maps activation provenance into the child, and
+  incompatible catalogue/body configuration rejects recovery before dispatch.
+  Skills are application-trusted configuration, subject to the same no-secrets
+  rule as Agent instructions. They neither grant Tool permissions nor install
+  capabilities. Automatic filesystem discovery, hot reload and package
+  installation remain outside this implementation boundary. The reference TUI
+  manages explicit local Skill configuration under `JX-TUI-040`.
 
 ### 11.3 MCP and providers
 
@@ -1551,6 +1621,29 @@ not own execution truth.
   surface MUST advance to the next retained unknown Effect, and after the final
   resolution it MUST disappear while the ordinary Agent continuation runs.
 
+- **JX-TUI-040.** Configuration MUST expose a Skills manager with keyboard and
+  primary-button access to list, create, edit, enable, disable and remove explicit
+  local Skills. Native multiline editing MUST preserve the exact accepted body.
+  Entries contain `name`, `description`, `version`, `instructions` and `enabled`;
+  the complete saved collection, including disabled entries, follows the bounds
+  in `JX-SKILL-003`. Only enabled entries become ordinary `defineSkill` values in
+  the reference Agent, sorted by name so local insertion order does not prevent
+  recovery of the same enabled catalogue. The manager MUST explain that enabled
+  means available for progressive activation, not already active in a Thread,
+  and that instructions
+  must contain no secrets. Draft changes MUST remain reversible before Apply;
+  invalid data and failed connection/Store validation MUST leave the prior saved
+  configuration and selected workspace intact. Apply validates the complete
+  configuration, constructs a new Agent/Harness, then atomically saves schema 7
+  to the existing settings file. It returns to the ordinary workspace with no
+  selected Thread; existing histories are retained and protected by the normal
+  snapshot check. Configuration changes MUST NOT rewrite a Thread or mutate its
+  Agent. Restoring the original enabled catalogue permits ordinary recovery.
+  Schemas 3-6 load with an empty collection; schemas 5-6 need not be rewritten
+  until Save. Unknown schemas and malformed Skill records fail closed without
+  echoing configuration content. No filesystem loader, direct activation button
+  or parallel activation state is introduced.
+
 Configuration uses one local BYOK settings file with restrictive POSIX
 permissions and never records secrets in Thread data.
 
@@ -1784,8 +1877,12 @@ implement another TUI, Harness, or Thread lifecycle.
   request-varying runtime context contains bounded rejection feedback while its
   Plan-control descriptor remains stable; it does not produce `model.failed` or
   retain an empty assistant message. A second invalid Plan-only response for
-  the same input produces no third model request and settles with
-  `plan_repair_exhausted`. A single atomic `supersede` proposal produces the
+  the same input preserves the accepted Plan and produces one execution-only
+  model request carrying a `plan_repair_exhausted` receipt, as required by
+  `JX-PLAN-009` and `JX-AC-063`. That request exposes ordinary Tools but neither
+  reserved control. Failure or another empty or control-only outcome at that
+  boundary settles with a typed error and no further repair request. A single
+  atomic `supersede` proposal produces the
   previous Plan's terminal revision followed by a new active Plan with a new
   identity. Abandoning an active Plan requires only the `abandon` operation and
   derives the terminal snapshot from that active Plan.
@@ -2144,8 +2241,10 @@ implement another TUI, Harness, or Thread lifecycle.
   `abandoned_unknown` appends its own Event and creates exactly one model
   request whose schema-v3 Runtime Context contains both accepted resolutions
   and their original bounded failures. OpenAI Chat Completions and Anthropic
-  Messages render equivalent system receipt semantics; neither emits a second
-  native Tool result or synthetic user message. Its provider message history
+  Messages render equivalent system receipt semantics; Anthropic also appends
+  the bounded operator receipt after the existing final user message's Tool
+  results as required by `JX-PROV-013`. Neither emits a second native Tool result
+  or an additional user message. Its provider message history
   ends with the original failed Tool receipt, not the earlier explanation-only
   assistant turn, while that explanation remains visible in the durable public
   transcript. The old Tool Effects are never redispatched, while a new
@@ -2154,7 +2253,9 @@ implement another TUI, Harness, or Thread lifecycle.
   already-requested resolution continuation, and duplicate, wrong-Effect,
   non-waiting, and invalid decisions fail closed. The reference TUI exposes the
   same three decisions by command and primary-button input and advances across
-  multiple unknown Effects without losing their durable receipts.
+  multiple unknown Effects without losing their durable receipts. Both protocol
+  contract tests verify that the rendered context explicitly closes the earlier
+  wait, preserves the resolution meanings, and forbids inventing Tool output.
 - **JX-AC-062 — Adaptive evidence retrieval.** A deterministic ordinary Harness
   scenario first receives ten bounded `web_search` metadata candidates with no
   fetched page content. Its next model response selects multiple independent
@@ -2177,7 +2278,9 @@ implement another TUI, Harness, or Thread lifecycle.
   Tools. At most one execution repair is requested; another control-only or
   empty result settles with a typed error. Recovery resumes only an already
   durable repair Effect, Replay dispatches zero Drivers, and schema 5-12
-  histories retain their recorded pre-repair control behavior.
+  histories retain their recorded pre-repair control behavior. Both protocol
+  contract tests verify that an accepted-Plan continuation identifies the change
+  as already applied and scopes control unavailability to duplicate bookkeeping.
 - **JX-AC-064 — Bounded foreground process-tree termination.** Deterministic
   first-party Node Tool fixtures launch a shell whose descendant inherits an
   output pipe and ignores graceful termination. One fixture reaches the
@@ -2193,6 +2296,34 @@ implement another TUI, Harness, or Thread lifecycle.
   A normal short command retains its real exit code and output. A
   termination-mechanism failure is likewise not normalized to `tool.completed`,
   and no path retries the command automatically.
+
+- **JX-AC-065 — Progressive Skill continuity.** An ordinary public Harness first
+  sends catalogue metadata without bodies, accepts one activation atomically in
+  `model.completed`, and sends the exact body in the next bounded request through
+  both supported provider protocols. The control never becomes a Tool Effect.
+  Deterministic fixtures cover unknown/repeated/mixed/unavailable activation,
+  forged body/digest, schema downgrade, clear/reactivation, bounded Context,
+  compaction with Skill provenance, and an append failure after accepted
+  activation but before the next request. Recovery with Checkpoints disabled and
+  Replay preserve activation without re-executing a Driver; Fork preserves exact
+  content and maps origin IDs while leaving its parent unchanged. Changed Skill
+  configuration fails before dispatch. A clean installed-package consumer runs
+  the documented path, and an explicitly enabled live probe verifies useful
+  body-dependent output on both LLM protocols with a fixed request cap.
+
+- **JX-AC-066 — Skills management in the reference TUI.** The ordinary
+  Configuration entry supports Skill creation, exact multiline edits, enable/
+  disable and removal with keyboard and mouse at 80x24 and a larger viewport.
+  Cancel discards pending changes; invalid edits and failed Apply preserve the
+  previous configuration. Saving and restarting restores enabled and disabled
+  entries, while model requests initially include only enabled metadata. The
+  ordinary Harness activates a body, recovers it and rejects changed catalogue
+  recovery before dispatch. Fixtures cover schema 3-6 migration, malformed and
+  duplicate records, per-body and aggregate limits, permissions and preservation
+  of connection/Tool settings. Clean installed-package acceptance exercises the
+  same public configuration conversion used by the CLI; the packaged native
+  TUI exposes the manager. No live paid request is required to verify UI-only
+  behavior; existing protocol activation acceptance remains `JX-AC-065`.
 
 The minimum validation for a code change is targeted tests, typecheck, lint, and
 `git diff --check`. Release work also runs the complete acceptance suite and
@@ -2848,6 +2979,61 @@ The public Bash input/output schemas, 30-second default, five-minute maximum,
 Tool permission, Event schemas, Reducer, settings, and Replay semantics do not
 change. This version adds no dependency, automatic background execution,
 managed-process API, hidden retry, sandbox claim, or second process authority.
+
+Version 0.4.55 reconciles the stale Plan-repair wording in `JX-AC-031` with
+`JX-PLAN-009`, `JX-AC-063`, and the schema-13 behavior already specified in
+Version 0.4.53. Exhausted Plan repair permits one bounded execution-only model
+continuation rather than terminating before ordinary work can proceed. The
+existing acceptance test verifies exactly that third model request. A live
+installed-package probe also exposed that models could mistake hidden Plan
+controls for a refusal of an already accepted change, or repeat a waiting
+message after an explicit Tool outcome resolution. `JX-PROV-013` makes both
+first-party Drivers render those receipts as completed coordination facts and
+state the remaining work explicitly. A paired live diagnostic confirmed that
+flattening Anthropic's system blocks did not fix the stale wait, while placing
+the operator decision after the existing Tool-result blocks did. Anthropic now
+uses that native text-block position without adding a user message, changing
+Tool output, or promoting Tool error text into instructions. This changes
+provider request wording and
+acceptance evidence, but no Event schema, Reducer version, Agent snapshot,
+public API, package version, or stored-data compatibility. Historical Replay
+remains read-only; live generation retains the ordinary nondeterministic model
+boundary.
+
+Version 0.4.56 implements `JX-SKILL-001` through `JX-SKILL-005` in `jixu-core`
+and `jixu-llm`. Event schema 14 adds optional catalogue, activation and Context
+fields; existing schemas 5-13 remain readable and new fields cannot be smuggled
+into them. Reducer version 20 invalidates older disposable Checkpoints. Runtime
+Context schema 5 is reserved for the accepted `model.completed` activation
+receipt. Existing Agents without Skills preserve their snapshots and request
+shapes. Public Skill configuration is additive; changing an existing Thread's
+catalogue or body requires a new Agent/Thread rather than rewriting its history.
+No package version or reference-TUI configuration migration is introduced.
+
+Version 0.4.57 adds the reference TUI Skills manager in `jixu-ai` and settings
+schema 7. Existing schema 3-6 configurations gain an empty Skills collection;
+model connection values, Tool policy and credentials are preserved. The public
+connection config accepts an optional `skills` array (omission means empty),
+while loaded settings expose the normalized array. Explicit local records are
+validated before persistence; their digests are derived by `defineSkill`, never
+stored as a second editable authority. Applying a new catalogue constructs a
+new immutable Agent and leaves existing Threads unchanged. To reopen an
+incompatible Thread, restore its original enabled Skill configuration. Event
+schema 14, Reducer 20, Context semantics and published package versions do not
+change. The manager is unreleased until the next accepted package publication.
+
+Version 0.4.58 publishes the framework, facade, adapters, Tool packages,
+testkit and both supported native CLI packages as `0.5.0`. This release includes
+Progressive Skills and its TUI manager, explicit unknown Tool-outcome resolution,
+bounded Plan recovery, improved retrieval guidance and foreground Bash process-
+tree termination. Existing Event schemas 5-13 remain readable; current writes
+use schema 14 and Reducer 20. Settings schema 7 reads schemas 3-6 as described
+above. Changed enabled Skill configuration remains incompatible with a Thread's
+original Agent; restoring that configuration permits ordinary recovery. The
+supported native targets remain macOS arm64 and Linux x64 with glibc. npm
+packages, standalone executables, checksums and GitHub Release metadata MUST
+come from the same successful target-native release-candidate run and verified
+aggregate manifest. Publication does not add a second build or signing path.
 
 ## 19. Implementation order
 

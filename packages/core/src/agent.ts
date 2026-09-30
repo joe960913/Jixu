@@ -1,3 +1,5 @@
+import { parseSkillCatalogue, parseSkillDefinition, SKILL_CONTROL_NAME } from "./skill.ts";
+import type { SkillDefinition } from "./skill.ts";
 import type {
   AgentSnapshot,
   ModelRef,
@@ -139,11 +141,13 @@ export type ExecutableTool = Tool<JsonValue, JsonValue>;
 
 export interface AgentDefinition {
   readonly snapshot: AgentSnapshot;
+  readonly skills?: readonly SkillDefinition[];
   readonly tools: readonly ExecutableTool[];
 }
 
 export interface AgentConfig {
   readonly context?: ContextPolicyConfig;
+  readonly skills?: readonly SkillDefinition[];
   readonly instructions: string;
   readonly model: ModelRef;
   readonly modelCapabilities: ModelCapabilityProfileConfig;
@@ -154,6 +158,7 @@ export function defineAgent(config: AgentConfig): AgentDefinition {
   const tools = new Map<string, ExecutableTool>();
   for (const tool of config.tools ?? []) {
     if (
+      (tool.descriptor.name === SKILL_CONTROL_NAME && (config.skills?.length ?? 0) > 0) ||
       tool.descriptor.name === PLAN_CONTROL_NAME ||
       tool.descriptor.name === PROGRESS_CONTROL_NAME
     ) {
@@ -182,7 +187,10 @@ export function defineAgent(config: AgentConfig): AgentDefinition {
       "Legacy Model Capability Profiles are reserved for historical Event recovery",
     );
   }
+  const skills = Object.freeze((config.skills ?? []).map(parseSkillDefinition));
+  const catalogue = parseSkillCatalogue(skills.map(skill => skill.descriptor));
   const snapshot: AgentSnapshot = Object.freeze({
+    ...(catalogue.length === 0 ? {} : { skills: cloneFrozenJson(catalogue) }),
     contextPolicy: defineContextPolicy(config.context, modelCapabilities),
     instructions: config.instructions,
     model: Object.freeze({ ...config.model }),
@@ -192,6 +200,7 @@ export function defineAgent(config: AgentConfig): AgentDefinition {
 
   return Object.freeze({
     snapshot,
+    skills,
     tools: Object.freeze([...tools.values()]),
   });
 }

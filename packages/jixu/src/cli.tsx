@@ -20,6 +20,7 @@ import {
 } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 
+import { jixuSkills } from "./config-skills.ts";
 import { createJixuReferenceAgentInstructions } from "./agent-instructions.ts";
 import {
   createJixuExitOutput,
@@ -257,8 +258,8 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
       maxOutputTokens: modelCapabilities.maxOutputTokens,
       provider: MODEL_DRIVER_ID,
     });
-    await configStore.saveConnection(config);
     const agent = defineAgent({
+      skills: jixuSkills(config.skills),
       instructions: createJixuReferenceAgentInstructions({
         fileScope: config.tools.fileScope,
         tools: enabledTools,
@@ -274,6 +275,7 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
       toolPermissionPolicy: jixuToolPermissionPolicy(config.tools),
     });
     await harness.listThreads();
+    await configStore.saveConnection(config);
     return createThreadController({ harness, ...controls });
   };
   const renderer = await createCliRenderer({
@@ -313,6 +315,7 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)): P
             ? {}
             : { modelCapabilities: stored.modelCapabilities }),
           tools: stored.tools,
+          skills: stored.skills,
         }}
         motion={process.env.JIXU_MOTION !== "off"}
         onQuit={quitInteractively}

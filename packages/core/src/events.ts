@@ -1,3 +1,4 @@
+import type { SkillDefinition } from "./skill.ts";
 import type {
   AgentSnapshot,
   DriverError,
@@ -19,7 +20,7 @@ import type { ModelAccounting } from "./metrics.ts";
 import type { PlanSnapshot, PlanUpdateProposal } from "./plan.ts";
 import type { AcceptedInput } from "./input.ts";
 
-export const CURRENT_EVENT_SCHEMA_VERSION = 13;
+export const CURRENT_EVENT_SCHEMA_VERSION = 14;
 
 export function isSupportedEventSchemaVersion(value: number): boolean {
   return (
@@ -31,6 +32,7 @@ export function isSupportedEventSchemaVersion(value: number): boolean {
     value === 10 ||
     value === 11 ||
     value === 12 ||
+    value === 13 ||
     value === CURRENT_EVENT_SCHEMA_VERSION
   );
 }
@@ -77,6 +79,7 @@ export interface ThreadEventPayloads {
   };
   readonly "input.received": AcceptedInput;
   readonly "model.completed": {
+    readonly activatedSkill?: SkillDefinition;
     readonly accounting: ModelAccounting;
     readonly effectId: string;
     readonly planRejections?: readonly PendingPlanRejection[];

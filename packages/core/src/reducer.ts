@@ -1,3 +1,4 @@
+import { assertSkillActivation } from "./skill.ts";
 import type {
   AgentSnapshot,
   DriverError,
@@ -42,7 +43,7 @@ import {
   samePlan,
 } from "./plan.ts";
 
-export const REDUCER_VERSION = 19;
+export const REDUCER_VERSION = 20;
 
 export interface TransitionResult {
   readonly effects: readonly EffectRequest[];
@@ -383,6 +384,7 @@ function sameReadyEffect(
     planControlName: expected.input.planControl.name,
     planRejectionFeedback: expected.input.planRejectionFeedback ?? null,
     progressControlName: expected.input.progressControl.name,
+    skills: expected.input.skills ?? null,
     tools: expected.input.tools,
   };
   const persistedBase = {
@@ -395,6 +397,7 @@ function sameReadyEffect(
     planControlName: persisted.input.planControl.name,
     planRejectionFeedback: persisted.input.planRejectionFeedback ?? null,
     progressControlName: persisted.input.progressControl.name,
+    skills: persisted.input.skills ?? null,
     tools: persisted.input.tools,
   };
   if (
@@ -815,6 +818,7 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         state: advance(state, event.sequence, {
           error: null,
           inputQueue: [],
+          activatedSkills: [],
           acceptedHandoff: null,
           contextClearBoundary: {
             eventId: event.id,
@@ -1191,6 +1195,35 @@ export function reduce(state: ThreadState, event: AnyThreadEvent): TransitionRes
         "model.generate",
       );
       const response = event.payload.response;
+      if (response.skillActivation !== undefined || event.payload.activatedSkill !== undefined) {
+        const skill = event.payload.activatedSkill;
+        if (
+          response.skillActivation === undefined || skill === undefined ||
+          response.toolCalls.length > 0 || (response.planUpdates?.length ?? 0) > 0 ||
+          (event.payload.planRejections?.length ?? 0) > 0
+        ) {
+          throw new InvalidTransitionError(
+            "Skill activation outcome must match one exclusive request",
+          );
+        }
+        assertSkillActivation(response.skillActivation, skill, completedEffect.input.skills);
+        const nextState = advance(state, event.sequence, {
+          activatedSkills: [
+            ...state.activatedSkills,
+            { skill, eventId: event.id, sequence: event.sequence },
+          ],
+          metrics: recordModelAccounting(
+            recordEffectOutcome(state.metrics, "model", "succeeded"),
+            event.payload.accounting,
+          ),
+          pendingEffects: remaining,
+        });
+        return withReadyEffects(nextState, event.sequence, [
+          createContextEffect(
+            nextState, { eventId: event.id, reason: "skill_activated" }, 0,
+          ),
+        ]);
+      }
       const explainsIndeterminate =
         completedEffect.input.runtimeContext?.continuation.reason ===
         "tool_indeterminate";

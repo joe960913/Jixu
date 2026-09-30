@@ -62,6 +62,7 @@ function completeInitial(
         model,
         ...(modelCapabilities === undefined ? {} : { modelCapabilities }),
         tools,
+        skills: initial?.skills ?? [],
       };
 }
 
@@ -103,6 +104,7 @@ export function JixuApp({
           ? {}
           : { modelCapabilities: config.modelCapabilities }),
         tools: config.tools,
+        skills: config.skills ?? [],
       });
       setActive({ config, controller });
       setConnecting(false);

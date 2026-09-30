@@ -1,3 +1,4 @@
+import { assertSkillActivation, SKILL_CONTROL_NAME } from "./skill.ts";
 import type { AgentDefinition, ExecutableTool } from "./agent.ts";
 import { parseModelResponse } from "./domain.ts";
 import type { DriverError } from "./domain.ts";
@@ -297,10 +298,31 @@ export class EffectDispatcher {
         (rejection, index) =>
           parseDriverError(rejection, `Model Plan rejection ${index}`),
       );
+      const response = parseModelResponse(outcome.value);
+      if (effect.input.skills !== undefined && response.toolCalls.some(call => call.name === SKILL_CONTROL_NAME)) {
+        throw new TypeError("Skill activation must use the model control response field");
+      }
+      const activatedSkill = response.skillActivation === undefined
+        ? undefined
+        : (this.#agent.skills ?? []).find((skill) =>
+            skill.descriptor.name === response.skillActivation,
+          );
+      if (response.skillActivation !== undefined) {
+        if (
+          activatedSkill === undefined || response.toolCalls.length > 0 ||
+          (response.planUpdates?.length ?? 0) > 0 || planRejections.length > 0
+        ) {
+          throw new TypeError(
+            "Skill activation must name an inactive Skill and cannot accompany Tool or Plan actions",
+          );
+        }
+        assertSkillActivation(response.skillActivation, activatedSkill, effect.input.skills);
+      }
       return {
         payload: {
           accounting,
           effectId: effect.id,
+          ...(activatedSkill === undefined ? {} : { activatedSkill }),
           ...(planRejections.length === 0
             ? {}
             : {
@@ -310,7 +332,7 @@ export class EffectDispatcher {
                   proposals: [],
                 })),
               }),
-          response: parseModelResponse(outcome.value),
+          response,
         },
         type: "model.completed",
       };

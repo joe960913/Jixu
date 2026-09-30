@@ -1,3 +1,4 @@
+import { parseSkillCatalogue, parseSkillDefinition, parseSkillContext } from "./skill.ts";
 import type { Checkpoint } from "./domain.ts";
 import { parseModelResponse } from "./domain.ts";
 import {
@@ -7,6 +8,7 @@ import {
   MAX_CONTROL_REPAIR_ATTEMPTS,
   MAX_PLAN_REPAIR_ATTEMPTS,
   MODEL_CONTROL_CONTEXT_SCHEMA_VERSION,
+  MODEL_SKILL_CONTEXT_SCHEMA_VERSION,
   MODEL_CONTEXT_SCHEMA_VERSION,
   MODEL_OUTCOME_RESOLUTION_CONTEXT_SCHEMA_VERSION,
   MODEL_RUNTIME_CONTEXT_SCHEMA_VERSION,
@@ -164,6 +166,7 @@ function assertAgentSnapshot(
 ): void {
   const item = object(value, label);
   string(item.instructions, `${label}.instructions`);
+  if (item.skills !== undefined) parseSkillCatalogue(item.skills);
   const model = object(item.model, `${label}.model`);
   string(model.model, `${label}.model.model`);
   string(model.provider, `${label}.model.provider`);
@@ -439,7 +442,8 @@ function assertModelRuntimeContext(
     runtimeSchemaVersion !== MODEL_CONTEXT_SCHEMA_VERSION &&
     runtimeSchemaVersion !== MODEL_RUNTIME_CONTEXT_SCHEMA_VERSION &&
     runtimeSchemaVersion !== MODEL_OUTCOME_RESOLUTION_CONTEXT_SCHEMA_VERSION &&
-    runtimeSchemaVersion !== MODEL_CONTROL_CONTEXT_SCHEMA_VERSION
+    runtimeSchemaVersion !== MODEL_CONTROL_CONTEXT_SCHEMA_VERSION &&
+    runtimeSchemaVersion !== MODEL_SKILL_CONTEXT_SCHEMA_VERSION
   ) {
     throw new SchemaValidationError(`${label}.schemaVersion is unsupported`);
   }
@@ -467,10 +471,14 @@ function assertModelRuntimeContext(
       `${label}.schemaVersion requires Event schema 13`,
     );
   }
+  if (runtimeSchemaVersion === MODEL_SKILL_CONTEXT_SCHEMA_VERSION && eventSchemaVersion < 14) {
+    throw new SchemaValidationError(`${label}.schemaVersion requires Event schema 14`);
+  }
   const continuation = object(runtime.continuation, `${label}.continuation`);
   string(continuation.causedByEventId, `${label}.continuation.causedByEventId`);
   const reason = string(continuation.reason, `${label}.continuation.reason`);
   if (
+    reason !== "skill_activated" &&
     reason !== "control_only_repair" &&
     reason !== "input_received" &&
     reason !== "plan_rejected" &&
@@ -489,6 +497,9 @@ function assertModelRuntimeContext(
     throw new SchemaValidationError(
       `${label}.schemaVersion does not match continuation reason`,
     );
+  }
+  if ((reason === "skill_activated") !== (runtimeSchemaVersion === MODEL_SKILL_CONTEXT_SCHEMA_VERSION)) {
+    throw new SchemaValidationError(`${label}.schemaVersion does not match Skill activation reason`);
   }
   const controlContextReason =
     reason === "control_only_repair" ||
@@ -522,6 +533,7 @@ function assertModelRuntimeContext(
     `${label}.continuation.receipt.type`,
   );
   if (
+    receiptType !== "model.completed" &&
     receiptType !== "input.received" &&
     receiptType !== "model.failed" &&
     receiptType !== "plan.rejected" &&
@@ -535,6 +547,7 @@ function assertModelRuntimeContext(
     );
   }
   const expectedReceiptType = {
+    skill_activated: "model.completed",
     input_received: "input.received",
     plan_rejected: "plan.rejected",
     plan_updated: "plan.updated",
@@ -830,6 +843,8 @@ function assertContextManifestSourceV2(
   string(source.id, `${label}.id`);
   const kind = string(source.kind, `${label}.kind`);
   if (
+    kind !== "skill_catalogue" &&
+    kind !== "skill" &&
     kind !== "active_plan" &&
     kind !== "agent" &&
     kind !== "artifact" &&
@@ -1118,6 +1133,20 @@ function assertContextManifestMatchesInput(
         `${label}.contextManifest Agent source does not match input`,
       );
     }
+    const skills = input.skills === undefined ? undefined : parseSkillContext(input.skills);
+    const catalogueSources = sources.filter(entry => entry.kind === "skill_catalogue");
+    const skillSources = sources.filter(entry => entry.kind === "skill");
+    if (skills === undefined ? catalogueSources.length !== 0 || skillSources.length !== 0 :
+        catalogueSources.length !== 1 || catalogueSources[0]?.digest !== jsonDigest(skills.catalogue) ||
+        catalogueSources[0]?.id !== "skill-catalogue" || catalogueSources[0]?.disposition !== "included" ||
+        skillSources.length !== skills.active.length || skills.active.some((skill, index) => {
+          const entry = skillSources[index];
+          return entry?.digest !== skill.descriptor.digest || entry.version !== skill.descriptor.version ||
+            entry.id !== `skill:${skill.descriptor.name}` || entry.disposition !== "included" || entry.causedByEventId === null ||
+            entry.estimatedTokens !== estimateContextTokens(skill);
+        })) {
+      throw new SchemaValidationError(`${label}.contextManifest Skill sources do not match input`);
+    }
     const toolsDigest = jsonDigest(input.tools);
     const toolsSource = oneSource("tools");
     if (
@@ -1210,6 +1239,7 @@ function assertContextManifestMatchesInput(
         messages: input.messages,
         planControl: controls.planControl,
         progressControl: controls.progressControl,
+        ...(input.skills === undefined ? {} : { skills: input.skills }),
         runtime: input.runtimeContext,
         tools: input.tools,
       }) + imageBytes;
@@ -1395,6 +1425,10 @@ function assertModelContinuation(
   const continuation = object(value, label);
   string(continuation.eventId, `${label}.eventId`);
   const reason = string(continuation.reason, `${label}.reason`);
+  if (reason === "skill_activated") {
+    if (eventSchemaVersion < 14) throw new SchemaValidationError("Skill continuation requires Event schema 14");
+    return;
+  }
   if (reason === "input_received") return;
   if (reason === "control_only_repair") {
     if (eventSchemaVersion < 13) {
@@ -1619,6 +1653,21 @@ function assertThreadState(
     throw new SchemaValidationError(`${label}.agent must be present`);
   }
   assertAgentSnapshot(state.agent, `${label}.agent`);
+  const activatedSkills = array(state.activatedSkills, `${label}.activatedSkills`);
+  const catalogue = parseSkillCatalogue(object(state.agent, "Agent").skills ?? []);
+  const activeNames = new Set<string>();
+  for (const value of activatedSkills) {
+    const active = object(value, "Activated Skill");
+    assertContextBoundary(active, "Activated Skill source");
+    const skill = parseSkillDefinition(active.skill);
+    if (activeNames.has(skill.descriptor.name) || !catalogue.some(entry => jsonEquals(entry, skill.descriptor)) ||
+        Number(active.sequence) > Number(state.revision) ||
+        (isJsonObject(state.contextClearBoundary) && Number(active.sequence) <= Number(state.contextClearBoundary.sequence))) {
+      throw new SchemaValidationError("Activated Skill does not match State provenance or catalogue");
+    }
+    activeNames.add(skill.descriptor.name);
+  }
+
   if (state.acceptedHandoff !== null) {
     assertAcceptedHandoff(state.acceptedHandoff, `${label}.acceptedHandoff`);
   }
@@ -1993,6 +2042,53 @@ function parseEffect(
     throw new SchemaValidationError(`${label}.attempt must be positive`);
   }
   const input = object(item.input, `${label}.input`);
+  const contextSources = isJsonObject(input.contextManifest) &&
+      Array.isArray(input.contextManifest.sources)
+    ? input.contextManifest.sources : [];
+  const compactionSources = Array.isArray(input.sourceManifest)
+    ? input.sourceManifest : [];
+  const hasSkillSource = [...contextSources, ...compactionSources].some((entry) =>
+    isJsonObject(entry) && (entry.kind === "skill" || entry.kind === "skill_catalogue"),
+  );
+  if (
+    eventSchemaVersion < 14 &&
+    (input.skills !== undefined || input.activeSkills !== undefined || hasSkillSource)
+  ) {
+    throw new SchemaValidationError("Skill Context requires Event schema 14");
+  }
+  if (input.skills !== undefined) {
+    if (type !== "model.generate") {
+      throw new SchemaValidationError("Skill Context requires model.generate");
+    }
+    parseSkillContext(input.skills);
+  }
+  const skillSources = compactionSources.filter((entry) =>
+    isJsonObject(entry) && entry.kind === "skill",
+  );
+  if (input.activeSkills !== undefined) {
+    if (type !== "context.compact") {
+      throw new SchemaValidationError("Active Skills require context.compact");
+    }
+    const activeSkills = array(input.activeSkills, "Active Skills").map(parseSkillDefinition);
+    parseSkillCatalogue(activeSkills.map((skill) => skill.descriptor));
+    const sourceIds = array(input.sourceEventIds, "Compaction source IDs");
+    if (
+      skillSources.length !== activeSkills.length ||
+      activeSkills.some((skill, index) => {
+        const source = skillSources[index];
+        return !isJsonObject(source) ||
+          source.digest !== skill.descriptor.digest ||
+          source.version !== skill.descriptor.version ||
+          source.id !== `skill:${skill.descriptor.name}` ||
+          typeof source.causedByEventId !== "string" ||
+          !sourceIds.includes(source.causedByEventId);
+      })
+    ) {
+      throw new SchemaValidationError("Compaction Skill sources do not match active bodies");
+    }
+  } else if (skillSources.length > 0) {
+    throw new SchemaValidationError("Compaction Skill sources require active bodies");
+  }
   const allowLegacyModelMode = eventSchemaVersion < 7;
   const allowLegacyModelCapabilities = eventSchemaVersion === 8;
 
@@ -2152,6 +2248,7 @@ function parseEffect(
         planControl: controls.planControl,
         planRejectionFeedback: input.planRejectionFeedback ?? null,
         progressControl: controls.progressControl,
+        ...(input.skills === undefined ? {} : { skills: input.skills }),
         runtime: input.runtimeContext,
         tools: input.tools,
       });
@@ -2257,6 +2354,9 @@ function assertEventPayload(
     }
     case "thread.created":
       assertAgentSnapshot(payload.agent, "payload.agent");
+      if (schemaVersion < 14 && object(payload.agent, "Agent").skills !== undefined) {
+        throw new SchemaValidationError("Skill catalogue requires Event schema 14");
+      }
       if (
         schemaVersion < 8 &&
         object(payload.agent, "payload.agent").contextPolicy !== undefined
@@ -2461,6 +2561,13 @@ function assertEventPayload(
               `payload.planRejections[${index}]`,
             ),
         );
+      }
+      if (schemaVersion < 14 && (payload.activatedSkill !== undefined || object(payload.response, "Model response").skillActivation !== undefined)) {
+        throw new SchemaValidationError("Skill activation requires Event schema 14");
+      }
+      if (payload.activatedSkill !== undefined) parseSkillDefinition(payload.activatedSkill);
+      if ((payload.activatedSkill !== undefined) !== (object(payload.response, "Model response").skillActivation !== undefined)) {
+        throw new SchemaValidationError("Skill activation must contain its materialized body");
       }
       parseModelResponse(payload.response);
       return;

@@ -1,3 +1,4 @@
+import type { ActivatedSkill, SkillDescriptor } from "./skill.ts";
 import type { EffectRequest } from "./effects.ts";
 import type { ContextPolicy } from "./context-policy.ts";
 import type { ModelCapabilityProfile } from "./model-capabilities.ts";
@@ -44,6 +45,7 @@ export interface ToolDescriptor {
 }
 
 export interface AgentSnapshot {
+  readonly skills?: readonly SkillDescriptor[];
   readonly contextPolicy?: ContextPolicy;
   readonly instructions: string;
   readonly model: ModelRef;
@@ -89,6 +91,7 @@ export type ToolMessage = ToolFailureMessage | ToolSuccessMessage;
 export type ModelMessage = AssistantMessage | ToolMessage | UserMessage;
 
 export interface ModelResponse {
+  readonly skillActivation?: string;
   readonly content: string;
   readonly planUpdates?: readonly PlanUpdateProposal[];
   readonly toolCalls: readonly ToolCall[];
@@ -122,6 +125,9 @@ export function parseModelResponse(value: unknown): ModelResponse {
     };
   });
 
+  if (value.skillActivation !== undefined && (typeof value.skillActivation !== "string" || value.skillActivation.length === 0 || value.skillActivation.length > 64)) {
+    throw new TypeError("Model Skill activation must be a bounded name");
+  }
   const planUpdates = value.planUpdates ?? [];
   if (!Array.isArray(planUpdates)) {
     throw new TypeError("Model response planUpdates must be an array");
@@ -129,6 +135,7 @@ export function parseModelResponse(value: unknown): ModelResponse {
 
   return {
     content,
+    ...(value.skillActivation === undefined ? {} : { skillActivation: value.skillActivation as string }),
     planUpdates: planUpdates.map((proposal, index) =>
       parsePlanUpdateProposal(proposal, `Model response planUpdates[${index}]`),
     ),
@@ -204,6 +211,7 @@ export interface PendingPlanRejection {
 }
 
 export interface ThreadState {
+  readonly activatedSkills: readonly ActivatedSkill[];
   readonly acceptedHandoff: AcceptedContinuityHandoff | null;
   readonly activePlan: PlanSnapshot | null;
   readonly activePlanSource: ContextBoundary | null;
@@ -244,6 +252,7 @@ export interface Checkpoint {
 
 export function createInitialThreadState(threadId: string): ThreadState {
   return {
+    activatedSkills: [],
     acceptedHandoff: null,
     activePlan: null,
     activePlanSource: null,

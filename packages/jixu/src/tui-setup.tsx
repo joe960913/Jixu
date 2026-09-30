@@ -20,6 +20,8 @@ import type {
   JixuToolSettings,
 } from "./config.ts";
 import { jixuTheme } from "./theme.ts";
+import { SkillCenter } from "./tui-skill-center.tsx";
+import type { JixuSkillSettings } from "./config-skills.ts";
 import { ToolCenter } from "./tui-tool-center.tsx";
 
 export interface JixuInitialConfiguration {
@@ -30,6 +32,7 @@ export interface JixuInitialConfiguration {
   readonly model?: string;
   readonly modelCapabilities?: JixuConnectionConfig["modelCapabilities"];
   readonly tools?: JixuToolSettings;
+  readonly skills?: readonly JixuSkillSettings[];
 }
 
 interface SetupProps {
@@ -332,7 +335,8 @@ export function Setup({
   const [tools, setTools] = useState(
     initial?.tools ?? DEFAULT_JIXU_TOOL_SETTINGS,
   );
-  const [panel, setPanel] = useState<"connection" | "tools">("connection");
+  const [skills, setSkills] = useState<readonly JixuSkillSettings[]>(initial?.skills ?? []);
+  const [panel, setPanel] = useState<"connection" | "tools" | "skills">("connection");
   const [focus, setFocus] = useState<SetupFocus>(0);
   const [presetCursor, setPresetCursor] = useState(() =>
     selectedEndpointPresetIndex(
@@ -352,7 +356,7 @@ export function Setup({
   const wideChrome = width >= 110;
   const workspaceLabel = truncatePathStart(
     workspace,
-    Math.max(12, width - 77),
+    Math.max(12, width - 100),
   );
 
   useEffect(() => {
@@ -389,6 +393,7 @@ export function Setup({
   };
 
   const connect = async () => {
+    if (connecting) return;
     const cleanKey = apiKey.trim();
     const cleanModel = model.trim();
     let cleanBaseUrl: string;
@@ -449,6 +454,7 @@ export function Setup({
         model: cleanModel,
         ...(modelCapabilities === undefined ? {} : { modelCapabilities }),
         tools,
+        skills,
       });
     } catch (connectionError) {
       setConnecting(false);
@@ -461,7 +467,18 @@ export function Setup({
   };
 
   useKeyboard((key) => {
-    if (panel === "tools") return;
+    if (connecting) return;
+    if (key.name === "f2") {
+      key.preventDefault();
+      setPanel(current => current === "connection" ? "tools" : current === "tools" ? "skills" : "connection");
+      return;
+    }
+    if (key.ctrl && ["1", "2", "3"].includes(key.name)) {
+      key.preventDefault();
+      setPanel(key.name === "1" ? "connection" : key.name === "2" ? "tools" : "skills");
+      return;
+    }
+    if (panel !== "connection") return;
     if (key.name === "escape") {
       key.preventDefault();
       if (!connecting) onBack();
@@ -575,7 +592,7 @@ export function Setup({
           <text fg={jixuTheme.secondary} selectable={false}>  </text>
           <box
             id="config-connection-tab"
-            onMouseDown={onPrimaryMouseDown(() => setPanel("connection"))}
+            onMouseDown={onPrimaryMouseDown(() => { if (!connecting) setPanel("connection"); })}
           >
             <text
               fg={panel === "connection" ? jixuTheme.brand : jixuTheme.secondary}
@@ -587,13 +604,19 @@ export function Setup({
           <text fg={jixuTheme.secondary} selectable={false}>  </text>
           <box
             id="config-tools-tab"
-            onMouseDown={onPrimaryMouseDown(() => setPanel("tools"))}
+            onMouseDown={onPrimaryMouseDown(() => { if (!connecting) setPanel("tools"); })}
           >
             <text
               fg={panel === "tools" ? jixuTheme.brand : jixuTheme.secondary}
               selectable={false}
             >
               <strong>TOOLS</strong>
+            </text>
+          </box>
+          <text selectable={false}>  </text>
+          <box id="config-skills-tab" onMouseDown={onPrimaryMouseDown(() => { if (!connecting) setPanel("skills"); })}>
+            <text fg={panel === "skills" ? jixuTheme.brand : jixuTheme.secondary} selectable={false}>
+              <strong>SKILLS</strong>
             </text>
           </box>
           <box style={{ flexGrow: 1 }} />
@@ -625,7 +648,10 @@ export function Setup({
         </text>
       </box>
 
-      {panel === "tools" ? (
+      {panel === "skills" ? (
+        <SkillCenter busy={connecting} error={error} onApply={() => void connect()}
+          onBack={() => setPanel("connection")} onChange={setSkills} value={skills} />
+      ) : panel === "tools" ? (
         <ToolCenter
           busy={connecting}
           error={error}
@@ -825,6 +851,7 @@ export function Setup({
         <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
           <box style={{ flexDirection: "row", gap: 2 }}>
             <KeyAction action="Back" keyName="Esc" />
+            <KeyAction action="Tabs" keyName="F2" />
             {!compact && <KeyAction action="Next" keyName="Tab" />}
             {wideChrome && (
               <KeyAction action="Previous" keyName="Shift+Tab" />

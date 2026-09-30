@@ -1,3 +1,5 @@
+export { defineSkill, createSkillContext, SKILL_CONTROL_NAME } from "./skill.ts";
+export type { SkillConfig, SkillDefinition, SkillDescriptor, SkillContext, SkillControlDescriptor, ActivatedSkill } from "./skill.ts";
 export {
   defineAgent,
   defineSchema,
@@ -34,6 +36,7 @@ export {
   MAX_CONTROL_REPAIR_ATTEMPTS,
   MAX_PLAN_REPAIR_ATTEMPTS,
   MODEL_CONTROL_CONTEXT_SCHEMA_VERSION,
+  MODEL_SKILL_CONTEXT_SCHEMA_VERSION,
   MODEL_CONTEXT_SCHEMA_VERSION,
   MODEL_OUTCOME_RESOLUTION_CONTEXT_SCHEMA_VERSION,
   MODEL_RUNTIME_CONTEXT_SCHEMA_VERSION,

@@ -26,6 +26,8 @@ import {
 import { NODE_TOOL_NAMES } from "jixu-tools-node";
 import type { NodeToolName } from "jixu-tools-node";
 
+import { parseJixuSkills, type JixuSkillSettings } from "./config-skills.ts";
+
 export type JixuApi =
   | "anthropic-messages"
   | "openai-chat-completions";
@@ -37,6 +39,7 @@ export interface JixuConnectionConfig {
   readonly model: string;
   readonly modelCapabilities?: JixuModelCapabilityOverride;
   readonly tools: JixuToolSettings;
+  readonly skills?: readonly JixuSkillSettings[];
 }
 
 export interface JixuModelCapabilityOverride {
@@ -70,6 +73,7 @@ export interface JixuStoredConfiguration {
   readonly baseUrl?: string;
   readonly model?: string;
   readonly modelCapabilities?: JixuModelCapabilityOverride;
+  readonly skills: readonly JixuSkillSettings[];
   readonly tools: JixuToolSettings;
 }
 
@@ -82,10 +86,16 @@ interface SettingsFile {
     readonly modelCapabilities?: JixuModelCapabilityOverride;
   };
   readonly tools: JixuToolSettings;
-  readonly version: 6;
+  readonly skills: readonly JixuSkillSettings[];
+  readonly version: 7;
 }
 
 type LegacySettingsFile =
+  | {
+      readonly connection: SettingsFile["connection"];
+      readonly tools: JixuToolSettings;
+      readonly version: 6;
+    }
   | {
       readonly connection: {
         readonly api: JixuApi;
@@ -380,11 +390,12 @@ function parseSettings(value: unknown): LegacySettingsFile | SettingsFile {
     (value.version !== 3 &&
       value.version !== 4 &&
       value.version !== 5 &&
-      value.version !== 6) ||
+      value.version !== 6 &&
+      value.version !== 7) ||
     !isRecord(value.connection)
   ) {
     throw new TypeError(
-      "settings.json must use Jixu settings schema version 3, 4, 5, or 6",
+      "settings.json must use Jixu settings schema version 3, 4, 5, 6, or 7",
     );
   }
   if (value.version === 3) {
@@ -442,7 +453,9 @@ function parseSettings(value: unknown): LegacySettingsFile | SettingsFile {
   const tools = parseToolSettings(value.tools);
   return value.version === 5
     ? { connection, tools, version: 5 }
-    : { connection, tools, version: 6 };
+    : value.version === 6
+      ? { connection, tools, version: 6 }
+      : { connection, tools, skills: parseJixuSkills(value.skills), version: 7 };
 }
 
 function parseAuth(value: unknown): AuthFile {
@@ -528,6 +541,7 @@ function normalizeConfiguration(
             : { modelCapabilities: settings.connection.modelCapabilities }),
         }),
     tools: settings?.tools ?? DEFAULT_JIXU_TOOL_SETTINGS,
+    skills: settings?.skills ?? Object.freeze([]),
   };
 }
 
@@ -549,10 +563,13 @@ function migrateSettings(
   return {
     connection: {
       ...(settings === null ? {} : settings.connection),
-      ...(auth === null ? {} : { apiKey: auth.connection.key }),
+      ...(auth === null || (settings?.version === 6 && settings.connection.apiKey !== undefined)
+        ? {}
+        : { apiKey: auth.connection.key }),
     },
     tools,
-    version: 6,
+    skills: Object.freeze([]),
+    version: 7,
   };
 }
 
@@ -579,10 +596,10 @@ export class JixuConfigStore {
       readJson(this.settingsPath, "settings.json", parseSettings),
       readJson(this.#legacyAuthPath, "auth.json", parseAuth),
     ]);
-    let settings = loadedSettings?.version === 6
+    let settings = loadedSettings?.version === 7
       ? loadedSettings
       : migrateSettings(loadedSettings, auth);
-    if (loadedSettings?.version === 6 && auth !== null) {
+    if (loadedSettings?.version === 7 && auth !== null) {
       settings = {
         ...loadedSettings,
         connection: {
@@ -626,6 +643,7 @@ export class JixuConfigStore {
             "Model capability override",
           );
     const tools = parseToolSettings(config.tools);
+    const skills = parseJixuSkills(config.skills ?? []);
     if (apiKey.length === 0) throw new TypeError("API Key must not be empty");
     if (model.length === 0) throw new TypeError("Model ID must not be empty");
 
@@ -640,7 +658,8 @@ export class JixuConfigStore {
           ...(modelCapabilities === undefined ? {} : { modelCapabilities }),
         },
         tools,
-        version: 6,
+        skills,
+        version: 7,
       } satisfies SettingsFile, 0o600);
       await unlink(this.#legacyAuthPath).catch((error) => {
         if (errorCode(error) !== "ENOENT") throw error;

@@ -17,6 +17,7 @@ import {
   parseProgressUpdate,
   PLAN_CONTROL_NAME,
   PROGRESS_CONTROL_NAME,
+  SKILL_CONTROL_NAME,
 } from "jixu-core";
 import type {
   ContextCompactEffect,
@@ -37,6 +38,7 @@ import type {
   PlanUpdateProposal,
   ProgressControlDescriptor,
   ToolDescriptor,
+  SkillControlDescriptor,
   ToolMessage,
 } from "jixu-core";
 
@@ -62,11 +64,12 @@ type UltraReasoningEffort = "high" | "xhigh";
 
 function exposedModelTools(
   effect: ModelGenerateEffect,
-): readonly (ToolDescriptor | PlanControlDescriptor | ProgressControlDescriptor)[] {
+): readonly (ToolDescriptor | PlanControlDescriptor | ProgressControlDescriptor | SkillControlDescriptor)[] {
   const runtime = effect.input.runtimeContext;
   if (runtime === undefined) {
     return [
       ...effect.input.tools,
+      ...(effect.input.skills?.control ? [effect.input.skills.control] : []),
       effect.input.planControl,
       effect.input.progressControl,
     ];
@@ -78,6 +81,7 @@ function exposedModelTools(
   );
   return [
     ...effect.input.tools,
+    ...(effect.input.skills?.control ? [effect.input.skills.control] : []),
     ...(controls.planControl === null ? [] : [controls.planControl]),
     ...(controls.progressControl === null ? [] : [controls.progressControl]),
   ];
@@ -201,6 +205,42 @@ function jsonString(value: JsonValue): string {
   return JSON.stringify(value);
 }
 
+function toolOutcomeResolutionContext(
+  runtime: ModelGenerateEffect["input"]["runtimeContext"],
+): string | null {
+  if (runtime?.continuation.reason !== "tool_outcome_resolved") return null;
+  const facts = [
+    "Jixu operator receipt: the earlier unknown-outcome wait has been resolved. These recorded decisions are later than the Tool failures and any earlier instruction to wait. Acknowledge them and continue any remaining authorized work. Never fabricate a Tool result or automatically repeat the old action.",
+  ];
+  for (const resolution of runtime.continuation.receipt.toolResolutions ?? []) {
+    const decision = {
+      occurred: "confirmed that the external action occurred, without providing a Tool output",
+      not_occurred: "confirmed that the external action did not occur",
+      abandoned_unknown: "accepted leaving the external outcome unknown (abandoned_unknown) and explicitly ended the wait, without claiming success or failure",
+    }[resolution.resolution];
+    facts.push(
+      `Recorded operator decision for Tool ${JSON.stringify(resolution.toolName)}, Effect ${JSON.stringify(resolution.effectId)}: the operator ${decision}. This decision is complete; no further guidance about this Effect is needed. Your next reply must acknowledge this recorded decision instead of repeating the earlier request to wait.`,
+    );
+  }
+  return facts.join("\n");
+}
+
+function skillContextBlocks(
+  skills: ModelGenerateEffect["input"]["skills"],
+): readonly string[] {
+  if (skills === undefined) return [];
+  return [
+    [
+      "Jixu Skill catalogue (metadata only). If a relevant Skill is inactive, activate it before applying its instructions. Activation supplies context only; it grants no Tool permissions. Active bodies below are already loaded and remain in force until clear; never activate them again.",
+      JSON.stringify(skills.catalogue),
+    ].join("\n"),
+    [
+      "Accepted active Skill bodies (application-configured instructional context):",
+      JSON.stringify(skills.active),
+    ].join("\n"),
+  ];
+}
+
 function modelRuntimeContext(
   activePlan: ModelGenerateEffect["input"]["activePlan"],
   runtime: ModelGenerateEffect["input"]["runtimeContext"],
@@ -222,6 +262,17 @@ function modelRuntimeContext(
       `Accepted causal receipt: ${JSON.stringify(runtime.continuation.receipt)}`,
       `Remaining obligations: ${runtime.obligations.join(", ")}`,
     );
+    if (runtime.continuation.reason === "skill_activated") {
+      context.push("The requested Skill activation has already succeeded. Its exact body is included in the active Skill context. Apply it to complete the pending user request now. This receipt is internal coordination: do not acknowledge or narrate activation unless the user asks about its status. Honor the output format requested by the user and the active Skill; provide only that result. Do not repeat activation or announce a future load.");
+    }
+    if (runtime.continuation.reason === "plan_updated") {
+      context.push(
+        "The requested Plan change has already been accepted and applied. The receipt and current Plan below are its result. Reserved controls are unavailable on this continuation only to prevent duplicate bookkeeping; this is not a refusal of the user's request. If the request was only to change the Plan, confirm the accepted change now. Otherwise continue the remaining authorized work through ordinary Tools or provide its substantive result. Do not claim you cannot make a change that this receipt already confirms.",
+      );
+    }
+    const resolutionContext = toolOutcomeResolutionContext(runtime);
+    if (resolutionContext !== null) context.push(resolutionContext);
+
     if (
       runtime.obligations.includes("execute_or_respond") ||
       runtime.obligations.includes("respond_or_act")
@@ -298,10 +349,14 @@ async function toChatMessages(
   rejectionFeedback: ModelGenerateEffect["input"]["planRejectionFeedback"],
   handoff: ModelGenerateEffect["input"]["continuityHandoff"],
   artifacts: ModelDriverContext["artifacts"],
+  skills?: ModelGenerateEffect["input"]["skills"],
 ): Promise<ChatCompletionMessageParam[]> {
   const input: ChatCompletionMessageParam[] = [];
   if (instructions.length > 0) {
     input.push({ content: instructions, role: "system" });
+  }
+  for (const content of skillContextBlocks(skills)) {
+    input.push({ content, role: "system" });
   }
   const handoffContext = continuityHandoffContext(handoff);
   if (handoffContext !== null) {
@@ -365,7 +420,7 @@ function toolMessageContent(message: ToolMessage): JsonValue {
 }
 
 function toChatTool(
-  tool: ToolDescriptor | PlanControlDescriptor | ProgressControlDescriptor,
+  tool: ToolDescriptor | PlanControlDescriptor | ProgressControlDescriptor | SkillControlDescriptor,
 ): ChatCompletionTool {
   return {
     function: {
@@ -384,6 +439,7 @@ function toAnthropicSystem(
   runtime: ModelGenerateEffect["input"]["runtimeContext"],
   rejectionFeedback: ModelGenerateEffect["input"]["planRejectionFeedback"],
   handoff: ModelGenerateEffect["input"]["continuityHandoff"],
+  skills?: ModelGenerateEffect["input"]["skills"],
 ): string | readonly AnthropicTextBlock[] | undefined {
   const runtimeContext = modelRuntimeContext(
     activePlan,
@@ -391,13 +447,15 @@ function toAnthropicSystem(
     rejectionFeedback,
   );
   const handoffContext = continuityHandoffContext(handoff);
-  if (runtimeContext === null && handoffContext === null) {
+  const skillBlocks = skillContextBlocks(skills);
+  if (runtimeContext === null && handoffContext === null && skillBlocks.length === 0) {
     return instructions.length === 0 ? undefined : instructions;
   }
   return [
     ...(instructions.length === 0
       ? []
       : [{ text: instructions, type: "text" as const }]),
+    ...skillBlocks.map(text => ({ text, type: "text" as const })),
     ...(handoffContext === null
       ? []
       : [{ text: handoffContext, type: "text" as const }]),
@@ -476,7 +534,7 @@ async function toAnthropicMessages(
 }
 
 function toAnthropicTool(
-  tool: ToolDescriptor | PlanControlDescriptor | ProgressControlDescriptor,
+  tool: ToolDescriptor | PlanControlDescriptor | ProgressControlDescriptor | SkillControlDescriptor,
 ): AnthropicTool {
   return {
     description: tool.description,
@@ -521,6 +579,7 @@ function compactionMetadata(effect: ContextCompactEffect): string {
   }
   return JSON.stringify({
     activePlan: effect.input.activePlan,
+    ...(effect.input.activeSkills === undefined ? {} : { activeSkills: effect.input.activeSkills }),
     previousHandoff: effect.input.previousHandoff?.handoff ?? null,
     sourceEventIds: effect.input.sourceEventIds,
     sourceManifest: effect.input.sourceManifest,
@@ -659,6 +718,7 @@ function isProgressOnly(
   return (
     sawProgressControl &&
     response.content.trim().length === 0 &&
+    response.skillActivation === undefined &&
     (response.planUpdates?.length ?? 0) === 0 &&
     response.toolCalls.length === 0
   );
@@ -678,6 +738,7 @@ function completedResponse(
   const planUpdates: PlanUpdateProposal[] = [];
   const toolCalls: ModelResponse["toolCalls"][number][] = [];
   let sawProgressControl = false;
+  let skillActivation: string | undefined;
 
   for (const [index, pending] of pendingTools.entries()) {
     if (pending.id === undefined || pending.name === undefined) {
@@ -710,6 +771,16 @@ function completedResponse(
       throw new TypeError(
         `Tool call ${pending.id} arguments must be a JSON object`,
       );
+    }
+    if (pending.name === SKILL_CONTROL_NAME && effect.input.skills !== undefined) {
+      if (skillActivation !== undefined || effect.input.skills?.control == null ||
+          Object.keys(parsed).length !== 1 || typeof parsed.name !== "string" ||
+          !effect.input.skills.catalogue.some(skill => skill.name === parsed.name) ||
+          effect.input.skills.active.some(skill => skill.descriptor.name === parsed.name)) {
+        throw new TypeError("Skill activation must name one available inactive Skill");
+      }
+      skillActivation = parsed.name;
+      continue;
     }
     if (pending.name === PROGRESS_CONTROL_NAME) {
       try {
@@ -744,9 +815,12 @@ function completedResponse(
     });
   }
 
+  if (skillActivation !== undefined && (toolCalls.length > 0 || planUpdates.length > 0 || planRejectionMessages.length > 0)) {
+    throw new TypeError("Skill activation cannot accompany Tool or Plan actions");
+  }
   return {
     planRejectionMessages,
-    response: { content, planUpdates, toolCalls },
+    response: { content, planUpdates, toolCalls, ...(skillActivation === undefined ? {} : { skillActivation }) },
     sawProgressControl,
   };
 }
@@ -1102,6 +1176,7 @@ class OpenAIChatCompletionsModelDriver implements ModelDriver {
         effect.input.planRejectionFeedback,
         effect.input.continuityHandoff,
         context.artifacts,
+        effect.input.skills,
       );
     } catch (error) {
       return artifactFailure(error, this.#provider, this.#redactError);
@@ -1688,6 +1763,7 @@ class AnthropicMessagesModelDriver implements ModelDriver {
       effect.input.runtimeContext,
       effect.input.planRejectionFeedback,
       effect.input.continuityHandoff,
+      effect.input.skills,
     );
     const tools = exposedModelTools(effect).map(toAnthropicTool);
     let messages: AnthropicMessage[];
@@ -1698,6 +1774,27 @@ class AnthropicMessagesModelDriver implements ModelDriver {
       );
     } catch (error) {
       return artifactFailure(error, this.#provider, this.#redactError);
+    }
+    const resolutionReceipt = toolOutcomeResolutionContext(effect.input.runtimeContext);
+    if (resolutionReceipt !== null) {
+      const last = messages.at(-1);
+      if (last?.role !== "user" || !Array.isArray(last.content) ||
+          !last.content.some((block) => block.type === "tool_result")) {
+        return {
+          status: "failed",
+          error: {
+            code: `${this.#provider}_resolution_context_invalid`,
+            message: "Tool outcome resolution requires a final Tool-result message",
+            retryable: false,
+          },
+        };
+      }
+      // Native client Tool results precede supplemental text in the same message:
+      // https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls
+      messages[messages.length - 1] = {
+        ...last,
+        content: [...last.content, { text: resolutionReceipt, type: "text" }],
+      };
     }
     let stream: AsyncIterable<unknown>;
     try {

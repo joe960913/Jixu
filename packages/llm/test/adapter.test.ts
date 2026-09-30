@@ -5,6 +5,8 @@ import {
   artifactDigest,
   createHarness,
   defineAgent,
+  defineSkill,
+  SKILL_CONTROL_NAME,
   InMemoryEventStore,
   PLAN_CONTROL,
   PROGRESS_CONTROL,
@@ -986,7 +988,7 @@ test("JX-PROV-002 JX-PROV-004 JX-AC-010 JX-AC-049 both protocols preserve native
   ]);
 });
 
-test("JX-PROV-002 JX-PROV-004 JX-AC-061 both protocols carry outcome resolution as system context without inventing a Tool result", async () => {
+test("JX-PROV-002 JX-PROV-004 JX-PROV-013 JX-AC-061 both protocols carry outcome resolution as system context without inventing a Tool result", async () => {
   const chatClient = new FakeOpenAIChatClient(chatChunks());
   const anthropicClient = new FakeAnthropicClient(anthropicEvents());
 
@@ -1019,6 +1021,10 @@ test("JX-PROV-002 JX-PROV-004 JX-AC-061 both protocols carry outcome resolution 
   );
   assert.equal(chatToolMessages.length, 1);
   assert.match(String(chatResolutionContext?.content), /"resolution":"occurred"/u);
+  assert.match(String(chatResolutionContext?.content), /earlier unknown-outcome wait has been resolved/u);
+  assert.match(String(chatResolutionContext?.content), /without providing a Tool output/u);
+  assert.match(String(chatResolutionContext?.content), /Recorded operator decision for Tool "search"/u);
+  assert.match(String(chatResolutionContext?.content), /operator confirmed that the external action occurred/u);
   assert.match(
     String(chatResolutionContext?.content),
     /Do not repeat: repeat_resolved_tool_action/u,
@@ -1037,6 +1043,18 @@ test("JX-PROV-002 JX-PROV-004 JX-AC-061 both protocols carry outcome resolution 
     anthropicSystem.map((block) => block.text).join("\n"),
     /"resolution":"occurred"/u,
   );
+  assert.match(anthropicSystem.map((block) => block.text).join("\n"), /earlier unknown-outcome wait has been resolved/u);
+  assert.match(anthropicSystem.map((block) => block.text).join("\n"), /Never fabricate a Tool result/u);
+  assert.match(anthropicSystem.map((block) => block.text).join("\n"), /Recorded operator decision for Tool "search"/u);
+  const lastMessage = anthropicClient.body?.messages.at(-1);
+  assert.equal(anthropicClient.body?.messages.length, 3);
+  assert.equal(lastMessage?.role, "user");
+  assert.ok(Array.isArray(lastMessage?.content));
+  assert.deepEqual(lastMessage.content.map(block => block.type), ["tool_result", "text"]);
+  const decisionBlock = lastMessage.content.at(-1);
+  assert.ok(decisionBlock?.type === "text");
+  assert.match(decisionBlock.text, /operator confirmed that the external action occurred/u);
+  assert.doesNotMatch(decisionBlock.text, /Jina Search returned HTTP 503/u);
   assert.equal(
     anthropicClient.body?.messages.some(
       (message) =>
@@ -1612,7 +1630,7 @@ function progressOnlyAnthropicClient(): FakeAnthropicClient {
   ]);
 }
 
-test("JX-PLAN-010 JX-SIG-005 JX-AC-063 both protocols derive reserved-control exposure from Runtime Context", async () => {
+test("JX-PLAN-010 JX-SIG-005 JX-PROV-013 JX-AC-063 both protocols derive reserved-control exposure from Runtime Context", async () => {
   for (const [reason, expectedNames] of [
     ["plan_rejected", ["read", PLAN_CONTROL.name]],
     ["plan_updated", ["read"]],
@@ -1643,6 +1661,18 @@ test("JX-PLAN-010 JX-SIG-005 JX-AC-063 both protocols derive reserved-control ex
       anthropicClient.body?.tools?.map((tool) => tool.name),
       expectedNames,
     );
+    if (reason === "plan_updated") {
+      const system = anthropicClient.body?.system;
+      assert.ok(Array.isArray(system));
+      for (const rendered of [
+        chatClient.body?.messages.filter(message => message.role === "system").map(message => message.content).join("\n") ?? "",
+        system.map(block => block.text).join("\n"),
+      ]) {
+        assert.match(rendered, /Plan change has already been accepted and applied/u);
+        assert.match(rendered, /only to prevent duplicate bookkeeping/u);
+        assert.match(rendered, /confirm the accepted change now/u);
+      }
+    }
   }
 });
 
@@ -2339,4 +2369,72 @@ test("JX-PROV-002 JX-AC-019 LLM adapter registry is immutable and rejects invali
   assert.equal(Object.isFrozen(adapter), true);
   assert.throws(() => createLLMAdapter({}), /at least one/);
   assert.throws(() => createLLMAdapter({ "": driver }), /Invalid/);
+});
+
+
+test("JX-AC-065 both native protocols progressively activate a Skill through the public Harness", async () => {
+  const skill = defineSkill({ name: "fixture-guide", description: "Use for fixture replies", version: "1", instructions: "The body-only acceptance word is ORCHID." });
+  for (const api of ["openai-chat-completions", "anthropic-messages"] as const) {
+    const requests: unknown[] = [];
+    const systems: string[][] = [];
+    const chat: OpenAIChatCompletionsClient = {
+      create(body) {
+        requests.push(structuredClone(body));
+        systems.push(body.messages.filter(message => message.role === "system").map(message => String(message.content)));
+        const first = requests.length === 1;
+        return new FakeOpenAIChatClient([{
+          choices: [{ index: 0, finish_reason: first ? "tool_calls" : "stop", delta: first ? {
+            content: "Loading the requested Skill.",
+            tool_calls: [{ index: 0, id: "activate", type: "function", function: { name: SKILL_CONTROL_NAME, arguments: '{"name":"fixture-guide"}' } }],
+          } : { content: "ORCHID" } }],
+        }]).create(body);
+      },
+    };
+    const anthropic: AnthropicMessagesClient = {
+      create(body) {
+        requests.push(structuredClone(body));
+        systems.push(typeof body.system === "string" ? [body.system] : body.system?.map(block => block.text) ?? []);
+        const first = requests.length === 1;
+        return new FakeAnthropicClient([
+          { type: "message_start", message: { id: "response", model: "fixture", usage: { input_tokens: 12, output_tokens: 0 } } },
+          ...(first ? [{ type: "content_block_start", index: 0, content_block: { type: "text", text: "Loading the requested Skill." } }] : []),
+          { type: "content_block_start", index: first ? 1 : 0, content_block: first ? { type: "tool_use", id: "activate", name: SKILL_CONTROL_NAME, input: { name: "fixture-guide" } } : { type: "text", text: "ORCHID" } },
+          { type: "message_delta", delta: { stop_reason: first ? "tool_use" : "end_turn" }, usage: { output_tokens: 4 } },
+          { type: "message_stop" },
+        ]).create(body);
+      },
+    };
+    const driver = createLLMModelDriver({ api, baseURL: "https://fixture.example/v1", provider: "fixture", openAIChatCompletionsClient: chat, anthropicMessagesClient: anthropic });
+    const legacy = await driver.generate(effect("fixture"), context());
+    assert.equal(legacy.status, "succeeded");
+    if (legacy.status === "succeeded") {
+      assert.equal(legacy.value.skillActivation, undefined);
+      assert.equal(legacy.value.toolCalls[0]?.name, SKILL_CONTROL_NAME);
+    }
+    requests.length = 0;
+    systems.length = 0;
+    const thread = await createHarness({
+      agent: defineAgent({ instructions: "Use relevant Skills", skills: [skill], model: { model: "fixture", provider: "fixture" }, modelCapabilities: TEST_MODEL_CAPABILITIES }),
+      modelDrivers: { fixture: driver },
+    }).createThread();
+    const state = await thread.send("Follow the fixture guide");
+    assert.equal(state.error, null);
+    assert.equal(state.result, "ORCHID");
+    assert.equal(requests.length, 2);
+    // JX-CTX-014: mutable bodies extend, rather than rewrite, the reusable prefix.
+    assert.equal(systems[0]?.[0], "Use relevant Skills");
+    assert.equal(systems[1]?.[0], systems[0]?.[0]);
+    assert.equal(systems[1]?.[1], systems[0]?.[1]);
+    assert.doesNotMatch(JSON.stringify(requests[0]), /ORCHID/u);
+    assert.match(JSON.stringify(requests[0]), /jixu_activate_skill/u);
+    assert.match(JSON.stringify(requests[1]), /ORCHID/u);
+    assert.doesNotMatch(JSON.stringify(requests[1]), /Loading the requested Skill/u);
+    assert.doesNotMatch(JSON.stringify(requests[1]), /jixu_activate_skill/u);
+    assert.match(JSON.stringify(requests[1]), /activation has already succeeded/u);
+    assert.match(JSON.stringify(requests[1]), /do not acknowledge or narrate activation/u);
+    const events = await thread.events();
+    assert.equal(events.filter(event => event.type === "tool.requested").length, 0);
+    assert.equal(events.filter(event => event.type === "model.completed" && event.payload.activatedSkill).length, 1);
+    assert.deepEqual(await thread.replay(), state);
+  }
 });

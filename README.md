@@ -107,6 +107,21 @@ console.log(state.result);
 The Agent definition is immutable. Each `send` continues the same durable
 Thread.
 
+### Progressive Skills
+
+`defineSkill` and `defineAgent({ skills })` are available in Jixu 0.5.0. A Skill supplies
+instructions without adding a Tool or granting permissions. The model initially
+sees its name, description and version, then activates the relevant body before
+using it. The accepted body is durable and participates in Context budgeting,
+Replay and Fork. Clear removes active bodies while retaining the catalogue.
+
+The reference TUI adds a local manager under `/config` → **SKILLS** (F2 cycles tabs).
+Create, edit, enable or remove Skills, then Apply for a fresh workspace. Existing
+Threads retain their original Agent and require matching Skill configuration.
+
+See the [Skill configuration example](packages/core/README.md#progressive-skills)
+and [installed-package acceptance](evals/reliability/README.md#progressive-skills).
+
 ## Thread operations
 
 The public Harness creates, opens, and lists Threads. A Thread exposes one

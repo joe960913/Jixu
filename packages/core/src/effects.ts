@@ -1,3 +1,4 @@
+import type { SkillContext } from "./skill.ts";
 import type {
   DriverError,
   ModelMessage,
@@ -31,6 +32,7 @@ export interface EffectEnvelope<TType extends string, TInput> {
 }
 
 export interface ModelGenerateInput {
+  readonly skills?: SkillContext;
   readonly activePlan: PlanSnapshot | null;
   readonly contextManifest?: ModelContextManifest;
   readonly continuityHandoff?: ContinuityHandoff | null;

@@ -71,6 +71,7 @@ function comparableAgentSnapshot(agent: AgentSnapshot): AgentSnapshot {
     ...agent,
     contextPolicy: contextPolicyFor(agent.contextPolicy, modelCapabilities),
     modelCapabilities,
+    ...(agent.skills === undefined || agent.skills.length === 0 ? { skills: [] } : {}),
   };
 }
 

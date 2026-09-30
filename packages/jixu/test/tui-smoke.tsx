@@ -1112,6 +1112,7 @@ try {
   });
   connectedFrame = setup.captureCharFrame();
   assert.deepEqual(connected, {
+    skills: [],
     api: "openai-chat-completions",
     apiKey: secret,
     baseUrl: "https://router.example/v1",
@@ -2662,6 +2663,7 @@ try {
   });
   const restoredFrame = restoredSetup.captureCharFrame();
   assert.deepEqual(restored, {
+    skills: [],
     api: "anthropic-messages",
     apiKey: secret,
     baseUrl: "https://router.example/v1",
@@ -3562,4 +3564,193 @@ try {
   act(() => {
     multimodalSetup.renderer.destroy();
   });
+}
+
+// JX-AC-066: ordinary Configuration drafts, native multiline editing, atomic Apply,
+// restart and public Harness activation. Input and renderer commits remain separate.
+{
+  const { mkdtemp, readFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { JixuConfigStore } = await import("../src/config.ts");
+  const { jixuSkills } = await import("../src/config-skills.ts");
+  const root = await mkdtemp(join(tmpdir(), "jixu-skill-tui-"));
+  const settings = new JixuConfigStore(root);
+  const store = new InMemoryEventStore();
+  const controllers: ThreadController[] = [];
+  const harnesses: ReturnType<typeof createHarness>[] = [];
+  let failApply = false;
+  const connect = async (config: JixuConnectionConfig, controls: { onConfigure: () => void; onQuit: () => void }) => {
+    if (failApply) throw new Error("Fixture connection unavailable");
+    const agent = defineAgent({
+      instructions: "Use relevant Skills.", skills: jixuSkills(config.skills),
+      model: { model: "fixture-model", provider: "fixture" },
+      modelCapabilities: TEST_MODEL_CAPABILITIES,
+    });
+    const harness = createHarness({ agent, store, modelDrivers: { fixture: {
+      async generate(effect) {
+        const context = effect.input.skills;
+        if ((context?.catalogue.length ?? 0) > 0 && context?.active.length === 0) {
+          assert.ok(!JSON.stringify(effect).includes("BODY SENTINEL"));
+          return { status: "succeeded", value: { content: "", skillActivation: "review", toolCalls: [] } };
+        }
+        if (context?.active.length) assert.equal(context.active[0]?.instructions, "BODY SENTINEL\n第二行保持原样。\n");
+        return { status: "succeeded", value: { content: "Skill verified.", toolCalls: [] } };
+      },
+    } } });
+    await harness.listThreads();
+    await settings.saveConnection(config);
+    const controller = createThreadController({ harness, ...controls });
+    harnesses.push(harness);
+    controllers.push(controller);
+    return controller;
+  };
+  const initial = {
+    api: "openai-chat-completions", apiKey: "fixture", baseUrl: "https://example.test/v1",
+    model: "fixture-model", tools: DEFAULT_JIXU_TOOL_SETTINGS, autoConnect: true,
+  } as const;
+  const ui = await testRender(<JixuApp connect={connect} initial={initial} onQuit={() => undefined} workspace={root} />, { height: 24, width: 80, kittyKeyboard: true });
+  const render = async () => { await act(async () => { await ui.renderOnce(); await ui.flush(); }); };
+  const key = async (name: string, modifiers = {}) => {
+    const codes: Record<string, string> = { return: KeyCodes.RETURN, escape: KeyCodes.ESCAPE, tab: KeyCodes.TAB, space: " ", up: KeyCodes.ARROW_UP, down: KeyCodes.ARROW_DOWN, f2: KeyCodes.F2 };
+    await act(async () => { ui.mockInput.pressKey(codes[name] ?? name, modifiers); });
+    await render();
+  };
+  const click = async (id: string) => {
+    const element = ui.renderer.root.findDescendantById(id);
+    assert.ok(element, id);
+    assert.ok(element.y >= 0 && element.y < 24 && element.x >= 0 && element.x < 80, `${id} must be visible`);
+    await act(async () => { await ui.mockMouse.click(element.x, element.y); });
+    await render();
+  };
+  const text = async (value: string) => { await act(async () => { await ui.mockInput.typeText(value); }); await render(); };
+  const open = async () => {
+    await act(async () => { await controllers.at(-1)!.submit("/config"); });
+    await render();
+    await key("f2");
+    await key("f2");
+    assert.match(ui.captureCharFrame(), /LOCAL SETTINGS/);
+  };
+  try {
+    await render();
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+    await render();
+    await act(async () => { await controllers.at(-1)!.submit("baseline"); });
+    await render();
+    const originalController = controllers.at(-1)!;
+    const originalThread = originalController.getSnapshot().currentThreadId;
+    const savedBefore = await readFile(settings.settingsPath, "utf8");
+    await open();
+    await key("n", { ctrl: true });
+    await key("s", { ctrl: true });
+    assert.match(ui.captureCharFrame(), /Skill (name|instructions)/);
+    assert.equal(await readFile(settings.settingsPath, "utf8"), savedBefore);
+    await text("review");
+    await key("return");
+    await text("Review implementation evidence");
+    await key("tab");
+    await key("return");
+    await act(async () => { await ui.mockInput.pasteBracketedText("BODY SENTINEL\n第二行保持原样。\n"); });
+    await render();
+    assert.equal((ui.renderer.root.findDescendantById("skill-instructions") as TextareaRenderable).plainText, "BODY SENTINEL\n第二行保持原样。\n");
+    await key("s", { ctrl: true });
+    assert.match(ui.captureCharFrame(), /ON\s+review/);
+    await key("space");
+    assert.match(ui.captureCharFrame(), /OFF\s+review/);
+    await click("skill-toggle");
+    await click("skill-edit");
+    await click("skill-instructions");
+    await key("a", { ctrl: true });
+    await text("Discard this edit");
+    await key("escape");
+    assert.match(ui.captureCharFrame(), /ON\s+review/);
+    failApply = true;
+    await key("s", { ctrl: true });
+    assert.match(ui.captureCharFrame(), /Fixture connection unavailable/);
+    assert.equal(await readFile(settings.settingsPath, "utf8"), savedBefore);
+    assert.equal(originalController.getSnapshot().currentThreadId, originalThread);
+    failApply = false;
+    await click("skill-apply");
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+    await render();
+    const saved = await settings.load();
+    assert.equal(saved.skills[0]?.instructions, "BODY SENTINEL\n第二行保持原样。\n");
+    assert.equal(controllers.at(-1)!.getSnapshot().currentThreadId, null);
+    await act(async () => { await controllers.at(-1)!.submit("Use review"); });
+    await render();
+    const threadId = controllers.at(-1)!.getSnapshot().currentThreadId!;
+    const thread = await harnesses.at(-1)!.openThread(threadId);
+    assert.equal((await thread.state()).activatedSkills[0]?.skill.instructions, saved.skills[0]?.instructions);
+    assert.deepEqual(await thread.replay(), await thread.state());
+    // Discarding removal preserves the same selected Thread and saved configuration.
+    const selectedController = controllers.at(-1)!;
+    await open();
+    await click("skill-remove");
+    assert.match(ui.captureCharFrame(), /No Skills yet/);
+    await click("config-back");
+    assert.equal(controllers.at(-1), selectedController);
+    assert.equal(selectedController.getSnapshot().currentThreadId, threadId);
+    assert.deepEqual((await settings.load()).skills, saved.skills);
+    // Mouse navigation and editor Done, then keyboard removal/Apply.
+    await act(async () => { await selectedController.submit("/config"); });
+    await render();
+    await click("config-skills-tab");
+    await click("skill-new");
+    await text("disabled");
+    await key("return");
+    await text("An unused draft");
+    await key("return");
+    await key("return");
+    await text("Disabled instructions");
+    await click("skill-editor-done");
+    await key("space");
+    await key("up");
+    await click("skill-row-1");
+    assert.match(ui.captureCharFrame(), /› OFF\s+disabled/);
+    await key("s", { ctrl: true });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+    await render();
+    assert.equal((await settings.load()).skills[1]?.enabled, false);
+    assert.equal((await harnesses.at(-1)!.openThread(threadId)).id, threadId);
+    await open();
+    await key("down");
+    await key("d", { ctrl: true });
+    await key("space");
+    await key("s", { ctrl: true });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+    await render();
+    await assert.rejects(harnesses.at(-1)!.openThread(threadId), /Agent/);
+    // Restart restores local disabled entries through the ordinary initial configuration.
+    const restarted = await settings.load();
+    const filled = [restarted.skills[0]!, ...Array.from({ length: 15 }, (_, index) => ({
+      ...restarted.skills[0]!, name: `sample-${String(index).padStart(2, "0")}`,
+      description: "Long description. ".repeat(28),
+    }))];
+    await settings.saveConnection({ ...initial, skills: filled });
+    const full = await settings.load();
+    act(() => { ui.renderer.destroy(); });
+    const restored = await testRender(<JixuApp connect={connect} initial={{ ...full, autoConnect: true }} onQuit={() => undefined} workspace={root} />, { height: 24, width: 80, kittyKeyboard: true });
+    try {
+      await act(async () => { await restored.renderOnce(); await new Promise(resolve => setTimeout(resolve, 30)); await restored.flush(); });
+      await act(async () => { await controllers.at(-1)!.submit("/config"); });
+      await act(async () => { await restored.renderOnce(); await restored.flush(); });
+      await act(async () => { restored.mockInput.pressKey("3", { ctrl: true }); });
+      await act(async () => { await restored.renderOnce(); await restored.flush(); });
+      assert.match(restored.captureCharFrame(), /OFF\s+review/);
+      assert.match(restored.captureCharFrame(), /16\/16 Skills\s+0 enabled/);
+      for (let index = 0; index < 15; index++) {
+        await act(async () => { restored.mockInput.pressArrow("down"); });
+        await act(async () => { await restored.renderOnce(); await restored.flush(); });
+      }
+      assert.match(restored.captureCharFrame(), /› OFF\s+sample-14/);
+      const apply = restored.renderer.root.findDescendantById("skill-apply");
+      assert.ok(apply && apply.y >= 0 && apply.y < 24);
+      await act(async () => { restored.resize(120, 40); });
+      await act(async () => { await restored.renderOnce(); await restored.flush(); });
+      assert.match(restored.captureCharFrame(), /16\/16 Skills\s+0 enabled/);
+    } finally { act(() => { restored.renderer.destroy(); }); }
+  } finally {
+    if (!ui.renderer.isDestroyed) act(() => { ui.renderer.destroy(); });
+    await rm(root, { recursive: true, force: true });
+  }
 }
