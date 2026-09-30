@@ -3580,7 +3580,7 @@ try {
   const controllers: ThreadController[] = [];
   const harnesses: ReturnType<typeof createHarness>[] = [];
   let failApply = false;
-  const connect = async (config: JixuConnectionConfig, controls: { onConfigure: () => void; onQuit: () => void }) => {
+  const configure = async (config: JixuConnectionConfig, controls: { onConfigure: () => void; onQuit: () => void }) => {
     if (failApply) throw new Error("Fixture connection unavailable");
     const agent = defineAgent({
       instructions: "Use relevant Skills.", skills: jixuSkills(config.skills),
@@ -3604,6 +3604,14 @@ try {
     harnesses.push(harness);
     controllers.push(controller);
     return controller;
+  };
+  let connectionSettled: Promise<void> = Promise.resolve();
+  const connect = (config: JixuConnectionConfig, controls: { onConfigure: () => void; onQuit: () => void }) => {
+    const operation = configure(config, controls);
+    // React receives the original result; the test waits for completion, including
+    // the deliberate rejection case, instead of guessing filesystem latency.
+    connectionSettled = operation.then(() => undefined, () => undefined);
+    return operation;
   };
   const initial = {
     api: "openai-chat-completions", apiKey: "fixture", baseUrl: "https://example.test/v1",
@@ -3633,7 +3641,7 @@ try {
   };
   try {
     await render();
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+    await act(async () => { await connectionSettled; });
     await render();
     await act(async () => { await controllers.at(-1)!.submit("baseline"); });
     await render();
@@ -3671,7 +3679,7 @@ try {
     assert.equal(originalController.getSnapshot().currentThreadId, originalThread);
     failApply = false;
     await click("skill-apply");
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+    await act(async () => { await connectionSettled; });
     await render();
     const saved = await settings.load();
     assert.equal(saved.skills[0]?.instructions, "BODY SENTINEL\n第二行保持原样。\n");
@@ -3708,7 +3716,7 @@ try {
     await click("skill-row-1");
     assert.match(ui.captureCharFrame(), /› OFF\s+disabled/);
     await key("s", { ctrl: true });
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+    await act(async () => { await connectionSettled; });
     await render();
     assert.equal((await settings.load()).skills[1]?.enabled, false);
     assert.equal((await harnesses.at(-1)!.openThread(threadId)).id, threadId);
@@ -3717,7 +3725,7 @@ try {
     await key("d", { ctrl: true });
     await key("space");
     await key("s", { ctrl: true });
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+    await act(async () => { await connectionSettled; });
     await render();
     await assert.rejects(harnesses.at(-1)!.openThread(threadId), /Agent/);
     // Restart restores local disabled entries through the ordinary initial configuration.
@@ -3731,7 +3739,7 @@ try {
     act(() => { ui.renderer.destroy(); });
     const restored = await testRender(<JixuApp connect={connect} initial={{ ...full, autoConnect: true }} onQuit={() => undefined} workspace={root} />, { height: 24, width: 80, kittyKeyboard: true });
     try {
-      await act(async () => { await restored.renderOnce(); await new Promise(resolve => setTimeout(resolve, 30)); await restored.flush(); });
+      await act(async () => { await restored.renderOnce(); await connectionSettled; await restored.flush(); });
       await act(async () => { await controllers.at(-1)!.submit("/config"); });
       await act(async () => { await restored.renderOnce(); await restored.flush(); });
       await act(async () => { restored.mockInput.pressKey("3", { ctrl: true }); });
